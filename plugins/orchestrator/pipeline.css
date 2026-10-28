@@ -37,6 +37,8 @@
 .pipeline-edge.history .edge-line{opacity:.3}
 .pipeline-edge.active-path .edge-line{stroke-width:4;opacity:1}
 .pipeline-edge.selected .edge-line,.pipeline-edge:hover .edge-line{stroke-width:5;opacity:1}
-.pipeline-edge.missing-dependency .edge-line{stroke:var(--warning);stroke-width:4;stroke-dasharray:6 4;opacity:1}
+.pipeline-edge.path-ready .edge-line{stroke:var(--add);stroke-width:4;opacity:1}
+.pipeline-edge.path-blocked .edge-line{stroke:var(--remove);stroke-width:4;opacity:1}
+.pipeline-edge.path-unrelated:not(:hover):not(.selected) .edge-line{opacity:.1}
 .pipeline-preview{stroke:var(--accent);opacity:1;stroke-dasharray:5 4;pointer-events:none}
 @media(max-width:900px){.pipeline-help{display:none}}

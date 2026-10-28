@@ -129,7 +129,9 @@ button.ctx:hover{color:var(--fg)}
 .card:hover{border-color:var(--line-strong)}
 .card.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
 .card.dep-highlight,.pipeline-node.dep-highlight{outline:2px solid var(--accent);outline-offset:4px}
-.card.missing-dependency:not(.dep-highlight),.pipeline-node.missing-dependency:not(.dep-highlight){outline:2px dashed var(--warning);outline-offset:4px}
+.card.path-ready:not(.dep-highlight),.pipeline-node.path-ready:not(.dep-highlight){outline:2px solid var(--add);outline-offset:4px}
+.card.path-blocked:not(.dep-highlight),.pipeline-node.path-blocked:not(.dep-highlight){outline:2px solid var(--remove);outline-offset:4px}
+.card.path-unrelated:not(.dep-highlight):not(:hover),.pipeline-node.path-unrelated:not(.dep-highlight):not(:hover){opacity:.4}
 .card.dragging{opacity:.35}
 .card.needs{border-color:color-mix(in srgb,var(--warning) 55%,var(--line))}
 .card.needs::before{content:"";position:absolute;top:9px;bottom:9px;left:-1px;width:3px;border-radius:0 3px 3px 0;background:var(--warning)}
@@ -744,7 +746,7 @@ function renderBoard() {
   root.querySelectorAll(".col-b").forEach(b => { scrolls[b.dataset.col] = b.scrollTop; });
   root.replaceChildren(...board.columns.map(columnEl));
   root.querySelectorAll(".col-b").forEach(b => { if (scrolls[b.dataset.col]) b.scrollTop = scrolls[b.dataset.col]; });
-  highlightMissingDependencies();
+  highlightDependencyPath();
 }
 function columnEl(col) {
   const tasks = colTasks(col.id).filter(t => inFlow(t) && matches(t));
@@ -800,7 +802,7 @@ function refreshCard(t) {
   if (boardView === "pipeline") { renderPipeline(); return; }
   const old = document.querySelector(`.card[data-id="${CSS.escape(t.id)}"]`);
   if (old) old.replaceWith(cardEl(t));
-  highlightMissingDependencies();
+  highlightDependencyPath();
 }
 
 // MARK: drag and drop
@@ -1196,7 +1198,7 @@ function openPanel(id) {
   $("#panel").hidden = $("#resizer").hidden = false;
   document.querySelectorAll(".card,.pipeline-node").forEach(c => c.classList.toggle("sel", c.dataset.id === id));
   updatePanel();
-  highlightMissingDependencies();
+  highlightDependencyPath();
 }
 function closePanel() {
   highlightDependency(null);
@@ -1208,7 +1210,7 @@ function closePanel() {
   $("#panel").replaceChildren();
   history.replaceState(null, "", location.pathname + location.search);
   document.querySelectorAll(".card.sel,.pipeline-node.sel").forEach(c => c.classList.remove("sel"));
-  highlightMissingDependencies();
+  highlightDependencyPath();
 }
 // Text field bound to a task property: saved on blur, never overwritten by snapshots while focused or unsaved.
 function boundField(el, key, opts = {}) {
@@ -1402,14 +1404,31 @@ function dependencyMenu(t) {
     .map(x => ({ label: `${taskNumber(x.id)} ${x.title}`, action: () => act("PATCH", tpath(t.id), { dependsOn: [...t.dependsOn, x.id] }).catch(() => {}) }));
   return items.length ? items : [{ header: "No other open task" }];
 }
-function highlightMissingDependencies() {
-  const missing = new Set((findTask(openId)?.dependsOn || []).filter(id => findTask(id)?.column !== "done"));
+function highlightDependencyPath() {
+  const tasks = new Map(board.tasks.map(t => [t.id, t]));
+  const upstream = new Set(), connections = new Set(), pending = openId ? [openId] : [];
+  while (pending.length) {
+    const id = pending.pop();
+    if (upstream.has(id)) continue;
+    upstream.add(id);
+    for (const prerequisite of tasks.get(id)?.dependsOn || []) {
+      connections.add(prerequisite + ":" + id);
+      pending.push(prerequisite);
+    }
+  }
   document.querySelectorAll("#board .card,#board .pipeline-node").forEach(node => {
-    node.classList.toggle("missing-dependency", missing.has(node.dataset.id));
+    const id = node.dataset.id, prerequisite = id !== openId && upstream.has(id);
+    const ready = tasks.get(id)?.column === "done";
+    node.classList.toggle("path-ready", prerequisite && ready);
+    node.classList.toggle("path-blocked", prerequisite && !ready);
+    node.classList.toggle("path-unrelated", !!openId && !upstream.has(id));
   });
   if (boardView === "pipeline" && pipeline.root) {
     for (const edge of pipeline.edges.values()) {
-      edge.group.classList.toggle("missing-dependency", edge.to === openId && missing.has(edge.from));
+      const related = connections.has(edge.key), ready = tasks.get(edge.from)?.column === "done";
+      edge.group.classList.toggle("path-ready", related && ready);
+      edge.group.classList.toggle("path-blocked", related && !ready);
+      edge.group.classList.toggle("path-unrelated", !!openId && !related);
     }
   }
 }

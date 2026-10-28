@@ -121,14 +121,17 @@ function pipelineInit() {
     } else if (node) {
       if (e.target.closest("button")) return;
       pipeline.gesture = { kind: "node", id: node.dataset.id, p, original: { ...pipeline.positions.get(node.dataset.id) }, moved: false };
-    } else pipeline.gesture = { kind: "pan", cx: e.clientX, cy: e.clientY, x: pipeline.x, y: pipeline.y };
+    } else pipeline.gesture = { kind: "pan", cx: e.clientX, cy: e.clientY, x: pipeline.x, y: pipeline.y, moved: false };
     root.setPointerCapture(e.pointerId);
     if (pipeline.gesture.kind !== "pan") e.preventDefault();
   });
   root.addEventListener("pointermove", e => {
     const g = pipeline.gesture; if (!g) return;
     const p = pipelinePoint(e);
-    if (g.kind === "pan") { pipeline.x = g.x + e.clientX - g.cx; pipeline.y = g.y + e.clientY - g.cy; pipelineTransform(); }
+    if (g.kind === "pan") {
+      if (Math.hypot(e.clientX - g.cx, e.clientY - g.cy) > 4) g.moved = true;
+      if (g.moved) { pipeline.x = g.x + e.clientX - g.cx; pipeline.y = g.y + e.clientY - g.cy; pipelineTransform(); }
+    }
     if (g.kind === "node") {
       if (Math.hypot(p.x - g.p.x, p.y - g.p.y) > 4) g.moved = true;
       if (g.moved) { const pos = { x: g.original.x + p.x - g.p.x, y: g.original.y + p.y - g.p.y }; pipeline.positions.set(g.id, pos); pipeline.nodes.get(g.id).style.transform = `translate(${pos.x}px,${pos.y}px)`; pipelineDrawEdges(); }
@@ -143,6 +146,7 @@ function pipelineInit() {
     pipeline.gesture = null; pipeline.preview?.remove();
     if (root.hasPointerCapture(e.pointerId)) root.releasePointerCapture(e.pointerId);
     if (!cancel && g.kind === "node" && !g.moved) openPanel(g.id);
+    if (!cancel && g.kind === "pan" && !g.moved) { pipeline.selected = null; closePanel(); }
     if (!cancel && g.kind === "connect") {
       const hit = document.elementFromPoint(e.clientX, e.clientY);
       const target = hit?.closest(".pipeline-node");
@@ -223,6 +227,6 @@ function renderPipeline() {
   for (const [key, edge] of pipeline.edges) if (!keys.has(key)) { edge.group.remove(); pipeline.edges.delete(key); }
   pipeline.remove.hidden = !pipeline.edges.has(pipeline.selected);
   pipelineDrawEdges(); pipelineTransform();
-  highlightMissingDependencies();
+  highlightDependencyPath();
   if (pipeline.fit) { pipeline.fit = false; requestAnimationFrame(pipelineFit); }
 }
