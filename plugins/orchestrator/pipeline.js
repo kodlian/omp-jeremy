@@ -14,25 +14,15 @@ function pipelinePoint(e) {
 function pipelineTransform() {
   pipeline.world.style.transform = `translate(${pipeline.x}px,${pipeline.y}px) scale(${pipeline.zoom})`;
 }
-function pipelineLayout(tasks, reset = false) {
-  if (reset) pipeline.positions.clear();
-  const ids = new Set(tasks.map(t => t.id)), depths = new Map();
-  function depth(t) {
-    if (depths.has(t.id)) return depths.get(t.id);
-    depths.set(t.id, 0);
-    const value = Math.max(0, ...t.dependsOn.filter(id => ids.has(id)).map(id => depth(findTask(id)) + 1));
-    depths.set(t.id, value);
-    return value;
-  }
-  const rows = new Map();
-  for (const t of tasks) {
-    const col = depth(t), row = rows.get(col) || 0;
-    rows.set(col, row + 1);
-    if (!pipeline.positions.has(t.id)) {
-      let y = row * 170;
-      while ([...pipeline.positions.values()].some(p => p.x === col * 340 && Math.abs(p.y - y) < 160)) y += 170;
-      pipeline.positions.set(t.id, { x: col * 340, y });
-    }
+function pipelineLayout(tasks) {
+  const missing = tasks.filter(t => !pipeline.positions.has(t.id));
+  if (!missing.length) return;
+  const positions = layoutTaskGraph(tasks);
+  for (const t of missing) {
+    const p = positions.get(t.id);
+    while ([...pipeline.positions.values()].some(other =>
+      Math.abs(other.x - p.x) < 300 && Math.abs(other.y - p.y) < 170)) p.y += 170;
+    pipeline.positions.set(t.id, p);
   }
 }
 function pipelineCurve(a, b) {
@@ -77,7 +67,7 @@ function pipelineInit() {
   world.append(svg); root.append(world);
   Object.assign(pipeline, { root, world, svg });
   const controls = h("div", { class: "pipeline-controls" });
-  controls.append(h("button", { class: "btn sm", onclick: pipelineFit }, "Fit all"), h("button", { class: "btn sm", onclick: () => { pipelineLayout(board.tasks.filter(inFlow), true); renderPipeline(); pipelineFit(); } }, "Auto-layout"));
+  controls.append(h("button", { class: "btn sm", onclick: pipelineFit }, "Fit all"), h("button", { class: "btn sm", onclick: () => { pipeline.positions.clear(); renderPipeline(); pipelineFit(); } }, "Auto-layout"));
   controls.append(h("button", { class: "btn sm", onclick: () => {
     const p = pipeline.positions.get(openId);
     if (!p || !pipeline.nodes.has(openId)) { toast("Open a visible task to focus it"); return; }
@@ -159,8 +149,8 @@ function renderPipeline() {
   const scope = flowSel || "all";
   if (pipeline.scope !== scope) { pipeline.positions.clear(); pipeline.scope = scope; pipeline.fit = true; }
   const all = board.tasks.filter(inFlow);
-  pipelineLayout(all);
   const tasks = all.filter(t => matches(t) && (!pipeline.hideDone.checked || t.column !== "done"));
+  pipelineLayout(tasks);
   const ids = new Set(tasks.map(t => t.id));
   pipeline.empty.hidden = tasks.length > 0;
   for (const [id, node] of pipeline.nodes) if (!ids.has(id)) { node.remove(); pipeline.nodes.delete(id); }

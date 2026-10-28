@@ -3163,7 +3163,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not page.exists():
                     raise ApiError(404, "index.html is missing")
                 return self.serve_bytes(page.read_bytes(), "text/html; charset=utf-8")
-            if self.command == "GET" and path in ("/markdown.js", "/pipeline.js", "/pipeline.css", "/native.js", "/native.css"):
+            if self.command == "GET" and path in ("/markdown.js", "/graph-layout.js", "/pipeline.js", "/pipeline.css", "/native.js", "/native.css"):
                 asset = ROOT / path.lstrip("/")
                 content_type = "text/javascript" if path.endswith(".js") else "text/css"
                 return self.serve_bytes(asset.read_bytes(), content_type + "; charset=utf-8")
