@@ -51,6 +51,8 @@ The attach command runs `agent_host.py attach <host directory>`; **Ctrl-\\** det
 
 The board takes its background and monospace font from the terminal's Ghostty configuration (`ghostty +show-config`, under Ghostty or cmux) and its colors from omp: each flow shows in the omp theme of its kanban sessions (All flows: the latest one), and follows theme changes. When the terminal's font is a Nerd Font, the agent's screen shows its icons too.
 
+Selecting a card or graph node keeps its details docked on the right, including in narrow panes. Below 560px, double-clicking the task explicitly opens details full-width; a single click never takes over the board. At larger widths, double-clicking also stays docked.
+
 ## Pipeline view
 
 The two icons at the top left switch between columns and a dependency canvas; the choice is remembered in this browser. The same flow selector, search, task panel and scheduler apply to both views.

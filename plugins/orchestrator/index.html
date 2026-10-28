@@ -321,9 +321,11 @@ button.ctx:hover{color:var(--fg)}
 .toast .icon{color:var(--add)}
 .toast.error .icon{color:var(--remove)}
 @media (max-width:900px){
-  .panel{position:absolute;inset:0 0 0 auto;z-index:20;width:100%;min-width:0;max-width:none}
-  .resizer{display:none}
+  .panel{min-width:0;width:min(var(--panel-w),60vw)}
   .search{width:150px}
+}
+@media (max-width:560px){
+  .panel.expanded{position:absolute;inset:0 0 0 auto;z-index:20;width:100%;max-width:none}
 }
 </style>
 <link rel="stylesheet" href="/appearance.css">
@@ -770,7 +772,7 @@ function cardEl(t) {
   top.append(h("span", { class: "spacer" }));
   if (t.pr) top.append(prChip(t.pr));
   const needs = needsAttention(t);
-  const el = h("div", { class: "card" + (t.id === openId ? " sel" : "") + (t.id === highlightedDependency ? " dep-highlight" : "") + (needs ? " needs" : ""), draggable: "true", "data-id": t.id, onclick: () => openPanel(t.id) },
+  const el = h("div", { class: "card" + (t.id === openId ? " sel" : "") + (t.id === highlightedDependency ? " dep-highlight" : "") + (needs ? " needs" : ""), draggable: "true", "data-id": t.id, onclick: () => openPanel(t.id), ondblclick: () => openPanel(t.id, true) },
     top, h("div", { class: "c-title" }, t.title || "Untitled"));
   const info = statusOf(t);
   if (info) el.append(h("div", { class: "c-line" }, stateEl(info)));
@@ -1191,11 +1193,12 @@ function currentTab(t) {
   return tab === "agent" && !canShowAgent(t) ? "task" : tab;
 }
 function setTab(tab) { tabFor[openId] = tab; updatePanel(); }
-function openPanel(id) {
+function openPanel(id, expanded = false) {
   if (!findTask(id)) return;
   if (openId !== id) { highlightDependency(null); openId = id; buildPanel(); }
   if (location.hash !== "#" + id) history.replaceState(null, "", "#" + id);
   $("#panel").hidden = $("#resizer").hidden = false;
+  $("#panel").classList.toggle("expanded", expanded && matchMedia("(max-width:560px)").matches);
   document.querySelectorAll(".card,.pipeline-node").forEach(c => c.classList.toggle("sel", c.dataset.id === id));
   updatePanel();
   highlightDependencyPath();
@@ -1207,6 +1210,7 @@ function closePanel() {
   P = null;
   stopPeek();
   $("#panel").hidden = $("#resizer").hidden = true;
+  $("#panel").classList.remove("expanded");
   $("#panel").replaceChildren();
   history.replaceState(null, "", location.pathname + location.search);
   document.querySelectorAll(".card.sel,.pipeline-node.sel").forEach(c => c.classList.remove("sel"));
@@ -1729,7 +1733,7 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
     r.classList.add("dragging");
     let width = 0;
     const move = ev => {
-      width = Math.round(Math.min(Math.max(innerWidth - ev.clientX, 380), innerWidth * 0.72));
+      width = Math.round(Math.min(Math.max(innerWidth - ev.clientX, 200), innerWidth * (innerWidth <= 900 ? 0.6 : 0.72)));
       document.documentElement.style.setProperty("--panel-w", `${width}px`);
     };
     const up = () => {

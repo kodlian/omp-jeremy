@@ -101,7 +101,10 @@ function pipelineInit() {
   pipeline.empty = h("div", { class: "pipeline-empty" }, "No matching tasks. Create a task or change the filter.");
   root.append(pipeline.empty);
   root.addEventListener("dblclick", e => {
-    if (!e.target.closest(".pipeline-node,.pipeline-controls,.pipeline-edge")) openTaskPrompt();
+    const hit = document.elementFromPoint(e.clientX, e.clientY);
+    const node = hit?.closest(".pipeline-node");
+    if (node && !hit.closest("button,[data-port]")) openPanel(node.dataset.id, true);
+    else if (!hit?.closest(".pipeline-node,.pipeline-controls,.pipeline-edge")) openTaskPrompt();
   });
   root.addEventListener("wheel", e => {
     e.preventDefault(); const p = pipelinePoint(e);
