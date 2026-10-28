@@ -1,0 +1,16 @@
+{
+  "name": "omp-integrations",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared terminal presentation and theme integration for omp extensions",
+  "exports": {
+    ".": "./src/index.ts",
+    "./terminal": "./src/terminal.ts",
+    "./theme": "./src/theme.ts",
+    "./fonts": "./src/fonts.ts",
+    "./python/terminals": "./python/omp_terminals.py"
+  },
+  "files": ["src", "python"],
+  "scripts": { "test": "bun test" }
+}

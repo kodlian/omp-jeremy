@@ -1,0 +1,22 @@
+{
+  "name": "omp-jeremy",
+  "owner": { "name": "kodlian" },
+  "metadata": {
+    "description": "Jeremy's omp plugins and shared integrations",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "orchestrator",
+      "description": "Beads-backed task orchestration, worktrees and agent sessions",
+      "source": "./plugins/orchestrator",
+      "version": "0.1.0"
+    },
+    {
+      "name": "git-diff-review",
+      "description": "Browser-based diff review with agent feedback and terminal appearance",
+      "source": "./plugins/git-diff-review",
+      "version": "0.1.0"
+    }
+  ]
+}

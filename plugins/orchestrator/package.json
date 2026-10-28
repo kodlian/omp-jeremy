@@ -1,0 +1,13 @@
+{
+  "name": "omp-kanboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Kanban board for omp: plans become tasks that run in their own worktrees and merge back",
+  "omp": {
+    "extensions": ["./dist/extension.js"]
+  },
+  "devDependencies": {
+    "omp-integrations": "workspace:*"
+  }
+}

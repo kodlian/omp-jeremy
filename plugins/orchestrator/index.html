@@ -1,0 +1,1733 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kanboard</title>
+<style>
+:root{
+  color-scheme:dark light;
+  --bg:light-dark(#ffffff,#161617);
+  --fg:light-dark(#1f2328,#e5e5e7);
+  --accent:light-dark(#0969da,#0a84ff);
+  --accent-fg:#ffffff;
+  --add:light-dark(#1a7f37,#30d158);
+  --remove:light-dark(#cf222e,#ff453a);
+  --warning:light-dark(#9a6700,#d29922);
+  --merged:light-dark(#8250df,#bf5af2);
+  --cyan:light-dark(#0e7490,#5ad1e6);
+  --muted:color-mix(in srgb,var(--fg) 62%,var(--bg));
+  --faint:color-mix(in srgb,var(--fg) 40%,var(--bg));
+  --surface:color-mix(in srgb,var(--fg) 3.5%,var(--bg));
+  --surface-2:color-mix(in srgb,var(--fg) 7%,var(--bg));
+  --raised:light-dark(var(--bg),color-mix(in srgb,var(--fg) 6.5%,var(--bg)));
+  --line:color-mix(in srgb,var(--fg) 12%,var(--bg));
+  --line-strong:color-mix(in srgb,var(--fg) 21%,var(--bg));
+  --hover:color-mix(in srgb,var(--fg) 8%,transparent);
+  --accent-soft:color-mix(in srgb,var(--accent) 18%,transparent);
+  --shadow:0 16px 40px rgb(0 0 0 / .35),0 0 0 1px var(--line-strong);
+  --radius:6px;
+  --header-h:40px;
+  --panel-w:460px;
+  --mono:"Fira Code",ui-monospace,"SF Mono",Menlo,monospace;
+  --ui:-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--fg);font:12px/1.45 var(--ui);-webkit-font-smoothing:antialiased}
+body{display:flex;flex-direction:column}
+button,input,textarea{margin:0;font:inherit;color:inherit}
+button{cursor:pointer}
+button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+input,textarea{outline:none}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+.icon{flex:none;display:block}
+.spacer{flex:1}
+.mono{font-family:var(--mono)}
+::selection{background:color-mix(in srgb,var(--accent) 35%,transparent)}
+::placeholder{color:var(--faint)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{border:3px solid transparent;border-radius:10px;background:color-mix(in srgb,var(--fg) 16%,transparent) padding-box}
+::-webkit-scrollbar-thumb:hover{background-color:color-mix(in srgb,var(--fg) 28%,transparent)}
+::-webkit-scrollbar-corner{background:transparent}
+.spin{animation:spin .9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{50%{opacity:.3}}
+@keyframes pop{from{opacity:0;transform:translateY(4px) scale(.98)}}
+@keyframes fade{from{opacity:0}}
+@keyframes flash{from{background:color-mix(in srgb,var(--add) 24%,transparent)}}
+@keyframes shake{25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+/* MARK: controls */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 11px;border:1px solid var(--line-strong);border-radius:var(--radius);background:var(--surface);font-weight:500;white-space:nowrap}
+.btn:hover{background:var(--hover)}
+.btn.sm{height:24px;padding:0 9px;font-size:11.5px}
+.btn.primary{border-color:transparent;background:var(--accent);color:var(--accent-fg);font-weight:600}
+.btn.primary:hover{background:var(--accent);filter:brightness(1.08)}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--muted)}
+.btn.ghost:hover{background:var(--hover);color:var(--fg)}
+.btn.danger{border-color:color-mix(in srgb,var(--remove) 40%,transparent);background:transparent;color:var(--remove)}
+.btn.danger:hover{background:color-mix(in srgb,var(--remove) 12%,transparent)}
+.btn.danger-solid{border-color:transparent;background:var(--remove);color:#fff;font-weight:600}
+.btn.danger-solid:hover{background:var(--remove);filter:brightness(1.08)}
+.btn:disabled{opacity:.45;pointer-events:none}
+.btn kbd{margin-right:-3px}
+kbd{display:inline-flex;align-items:center;height:16px;padding:0 4px;border-radius:4px;background:color-mix(in srgb,currentColor 15%,transparent);font:500 10px/1 var(--ui)}
+.tool-button{display:inline-flex;flex:none;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border:0;border-radius:var(--radius);background:transparent;color:var(--muted)}
+.tool-button:hover,.tool-button.active{background:var(--hover);color:var(--fg)}
+.tool-button:disabled{opacity:.35;pointer-events:none}
+.chip{display:inline-flex;align-items:center;gap:4px;min-width:0;height:18px;padding:0 6px;border-radius:4px;background:var(--surface-2);color:var(--muted);font-size:10.5px;font-weight:500;white-space:nowrap}
+.chip.mono{font-size:10px}
+button.chip{flex:none;border:0}
+button.chip:hover:not(:disabled){color:var(--fg)}
+button.chip:disabled{cursor:default;opacity:.7}
+.chip .x{display:inline-flex;margin-right:-2px;color:var(--faint)}
+.chip .x:hover{color:var(--remove)}
+.segmented{display:flex;width:fit-content;padding:2px;border-radius:7px;background:var(--hover)}
+.segmented button{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:96px;height:24px;padding:0 12px;border:0;border-radius:5px;background:transparent;color:var(--muted);font-weight:500}
+.segmented button:hover{color:var(--fg)}
+.segmented button.active{background:var(--bg);color:var(--fg);box-shadow:0 1px 2px rgb(0 0 0 / .25)}
+.segmented button:disabled{opacity:.4;pointer-events:none}
+.field{width:100%;height:30px;padding:0 9px;border:1px solid var(--line-strong);border-radius:var(--radius);background:var(--bg)}
+.field:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.dot{flex:none;width:7px;height:7px;border-radius:50%;background:currentColor}
+.dot.pulse{animation:pulse 1.4s ease-in-out infinite}
+.flash{animation:flash 1s ease-out}
+.shake{animation:shake .3s}
+
+/* MARK: toolbar */
+.toolbar{display:flex;flex:none;align-items:center;gap:8px;height:var(--header-h);padding:0 10px 0 14px;border-bottom:1px solid var(--line)}
+.brand{display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:650}
+.brand .icon{color:var(--accent)}
+.ctx{display:inline-flex;align-items:center;gap:5px;min-width:0;margin-left:4px;padding-left:12px;border-left:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.ctx strong{color:var(--fg);font-weight:600}
+.ctx .mono{overflow:hidden;font-size:11px;text-overflow:ellipsis}
+button.ctx{border-top:0;border-right:0;border-bottom:0;background:none;padding:0 0 0 12px}
+button.ctx:hover{color:var(--fg)}
+.tip{display:inline-flex}
+.tip[hidden]{display:none}
+.conn{flex:none;width:7px;height:7px;margin-left:2px;border-radius:50%;background:var(--remove)}
+.conn.on{background:var(--add)}
+.search{display:flex;align-items:center;gap:6px;width:220px;height:28px;padding:0 5px 0 8px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);color:var(--faint)}
+.search:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.search input{flex:1;min-width:0;height:100%;padding:0;border:0;background:transparent;color:var(--fg)}
+.search:focus-within kbd{display:none}
+
+/* MARK: board */
+.main{position:relative;display:flex;flex:1;min-height:0}
+.board{display:flex;flex:1;gap:10px;min-width:0;padding:12px;overflow-x:auto;overflow-y:hidden}
+.col{display:flex;flex:1 0 208px;flex-direction:column;min-width:0;max-width:400px;min-height:0;border-radius:10px;background:var(--surface);transition:box-shadow .12s}
+.col.over{box-shadow:inset 0 0 0 1px var(--accent)}
+.col-h{display:flex;flex:none;align-items:center;gap:7px;height:38px;padding:0 6px 0 12px}
+.col-t{font-weight:600}
+.col-h .count{color:var(--faint);font-weight:500;font-variant-numeric:tabular-nums}
+.col-b{display:flex;flex:1;flex-direction:column;gap:8px;min-height:60px;padding:0 8px 12px;overflow-y:auto}
+.col-empty{padding:18px 10px;border:1px dashed var(--line-strong);border-radius:8px;color:var(--faint);font-size:11.5px;text-align:center}
+.col-b:has(.ph) .col-empty{display:none}
+.card{position:relative;display:flex;flex:none;flex-direction:column;gap:6px;min-width:0;padding:9px 11px 10px;border:1px solid var(--line);border-radius:8px;background:var(--raised);box-shadow:0 1px 2px rgb(0 0 0 / .12);cursor:pointer;transition:border-color .12s,box-shadow .12s}
+.card:hover{border-color:var(--line-strong)}
+.card.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.card.dragging{opacity:.35}
+.card.needs{border-color:color-mix(in srgb,var(--warning) 55%,var(--line))}
+.card.needs::before{content:"";position:absolute;top:9px;bottom:9px;left:-1px;width:3px;border-radius:0 3px 3px 0;background:var(--warning)}
+.c-top{display:flex;align-items:center;gap:6px;min-width:0;color:var(--faint);font-size:11px}
+.c-id{font-family:var(--mono);font-size:10.5px}
+.c-title{display:-webkit-box;overflow:hidden;font-size:13px;font-weight:500;line-height:1.35;overflow-wrap:anywhere;-webkit-line-clamp:3;-webkit-box-orient:vertical}
+.c-line{display:flex;align-items:center;gap:6px;min-width:0;color:var(--muted);font-size:11px}
+.c-line>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.c-line>.icon{color:var(--faint)}
+.c-foot{display:flex;align-items:center;gap:8px;min-width:0;padding-top:7px;border-top:1px solid var(--line);color:var(--muted);font-size:11px}
+.ph{flex:none;height:44px;border:1.5px dashed var(--accent);border-radius:8px;background:var(--accent-soft)}
+.state{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:550;white-space:nowrap}
+.state .t{color:var(--muted);font-weight:400;font-variant-numeric:tabular-nums}
+.state.busy{color:var(--accent)}
+.state.needs{color:var(--warning)}
+.state.err{color:var(--remove)}
+.state.idle{color:var(--muted)}
+.state.idle .dot{color:var(--add)}
+.state.faint{color:var(--faint)}
+.state.ok{color:var(--add)}
+.branch{display:inline-flex;align-items:center;gap:4px;min-width:0;font-family:var(--mono);font-size:10.5px}
+.branch span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.diffstat{font-family:var(--mono);font-size:10.5px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.diffstat .a{color:var(--add)}
+.diffstat .r{color:var(--remove)}
+.udot{flex:none;width:6px;height:6px;border-radius:50%;background:var(--warning)}
+.pr-chip{display:inline-flex;flex:none;align-items:center;gap:3px;height:18px;padding:0 5px;border-radius:4px;background:color-mix(in srgb,currentColor 14%,transparent);font-size:10.5px;font-weight:600;text-decoration:none!important}
+
+/* MARK: panel */
+.resizer{flex:none;width:7px;margin:0 -3px 0 -4px;z-index:5;cursor:col-resize}
+.resizer:hover,.resizer.dragging{background:var(--accent-soft)}
+.panel{display:flex;flex:none;flex-direction:column;width:var(--panel-w);min-width:380px;max-width:72vw;min-height:0;border-left:1px solid var(--line);background:var(--bg)}
+.p-head{display:flex;flex:none;align-items:center;gap:6px;height:var(--header-h);padding:0 8px 0 14px;border-bottom:1px solid var(--line)}
+.p-id{margin-right:2px;color:var(--muted);font-family:var(--mono);font-size:11px}
+.p-primary{display:contents}
+.status-btn{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 8px;border:1px solid var(--line);border-radius:var(--radius);background:transparent;font-weight:500}
+.status-btn:hover{background:var(--hover)}
+.status-btn .chev{color:var(--faint)}
+.p-title-wrap{flex:none;padding:14px 16px 10px}
+.p-title{display:block;width:calc(100% + 12px);margin:0 -6px;padding:3px 6px;overflow:hidden;border:0;border-radius:6px;background:transparent;font-size:17px;font-weight:650;line-height:1.3;resize:none}
+.p-title:hover{background:var(--hover)}
+.p-title:focus{background:var(--surface-2)}
+.p-tabs{flex:none;padding:0 16px 10px;border-bottom:1px solid var(--line)}
+.p-tabs .dot{width:6px;height:6px}
+.p-scroll{flex:1;min-height:0;overflow-y:auto}
+.pane{display:flex;flex-direction:column;gap:18px;padding:16px}
+.sec{display:flex;flex-direction:column;gap:8px}
+.sec-h{display:flex;align-items:center;gap:6px;height:24px;color:var(--muted);font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase}
+.sec-h .meta{color:var(--faint);font-weight:400;letter-spacing:0;text-transform:none}
+.props{display:grid;grid-template-columns:104px minmax(0,1fr);row-gap:2px;align-items:center}
+.props label{display:flex;align-items:center;gap:7px;height:28px;color:var(--muted)}
+.props label .icon{color:var(--faint)}
+.prop{width:calc(100% + 7px);height:28px;margin-left:-7px;padding:0 7px;border:0;border-radius:5px;background:transparent;text-overflow:ellipsis}
+.prop.mono{font-size:11.5px}
+.prop.mono::placeholder{font-family:var(--ui);font-size:12px}
+.prop:hover:not(:disabled){background:var(--hover)}
+.prop:focus{background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--accent)}
+.prop:disabled{color:var(--muted);cursor:default}
+.p-desc{display:block;width:calc(100% + 14px);min-height:56px;margin:-6px -7px 0;padding:6px 7px;overflow:hidden;border:0;border-radius:6px;background:transparent;font-size:12.5px;line-height:1.55;resize:none}
+.p-desc:hover{background:var(--hover)}
+.p-desc:focus{background:var(--surface-2)}
+.prop-row{display:flex;gap:6px;align-items:center;min-width:0}
+.prop-row>.prop{flex:1;min-width:0}
+.deps{display:flex;flex-wrap:wrap;gap:4px;align-items:center;min-height:28px}
+
+/* MARK: plan */
+.md{font-size:12.5px;line-height:1.6;overflow-wrap:anywhere}
+.md>:first-child{margin-top:0}
+.md>:last-child{margin-bottom:0}
+.md h1,.md h2,.md h3,.md h4,.md h5,.md h6{margin:18px 0 6px;font-weight:650;line-height:1.3}
+.md h1{font-size:16px}
+.md h2{margin-top:20px;font-size:13.5px}
+.md h3{font-size:13px}
+.md h4,.md h5,.md h6{font-size:12.5px}
+.md p{margin:6px 0}
+.md ul,.md ol{margin:6px 0;padding-left:20px}
+.md li{margin:3px 0}
+.md li::marker{color:var(--faint)}
+.md li.task{margin-left:-18px;list-style:none}
+.md li.task input{margin:0 6px 0 0;vertical-align:-1px}
+.md code{padding:1px 4px;border-radius:4px;background:var(--surface-2);font-family:var(--mono);font-size:11px;-webkit-box-decoration-break:clone;box-decoration-break:clone}
+.md pre{margin:8px 0;padding:10px 12px;overflow-x:auto;border:1px solid var(--line);border-radius:7px;background:var(--surface);line-height:1.45}
+.md pre code{padding:0;background:none}
+.md blockquote{margin:8px 0;padding:2px 0 2px 12px;border-left:3px solid var(--line-strong);color:var(--muted)}
+.md table{margin:8px 0;border-collapse:collapse;font-size:12px}
+.md th,.md td{padding:4px 9px;border:1px solid var(--line)}
+.md th{background:var(--surface);font-weight:600}
+.md hr{margin:14px 0;border:0;border-top:1px solid var(--line)}
+.empty{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:16px;border:1px dashed var(--line-strong);border-radius:10px;color:var(--muted);line-height:1.5}
+.empty strong{display:flex;align-items:center;gap:7px;color:var(--fg);font-size:12.5px}
+.empty strong .icon{color:var(--accent)}
+.plan-edit{width:100%;min-height:360px;padding:10px 12px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);font-family:var(--mono);font-size:11.5px;line-height:1.55;resize:vertical}
+.plan-edit:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.edit-bar{display:flex;justify-content:flex-end;gap:6px}
+.activity{overflow:hidden;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+.activity.failed{border-color:color-mix(in srgb,var(--remove) 40%,var(--line));background:color-mix(in srgb,var(--remove) 6%,var(--bg))}
+.act-h{display:flex;align-items:center;gap:8px;min-height:38px;padding:0 8px 0 12px}
+.act-h .ic{color:var(--accent)}
+.activity.failed .act-h .ic{color:var(--remove)}
+.act-h .lbl{font-weight:600}
+.act-err{padding:0 12px 10px;color:var(--remove);white-space:pre-wrap;overflow-wrap:anywhere}
+.log{max-height:220px;margin:0;padding:8px 12px;overflow:auto;border-top:1px solid var(--line);color:var(--muted);font:11px/1.45 var(--mono);white-space:pre-wrap}
+
+/* MARK: agent */
+.agent-head{display:flex;align-items:center;gap:8px;min-height:26px}
+.agent-msg{display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border-radius:8px;background:var(--surface);color:var(--muted);font-size:11.5px;line-height:1.45}
+.agent-msg .icon{margin-top:2px;color:var(--faint)}
+.agent-msg span{display:-webkit-box;overflow:hidden;white-space:pre-wrap;-webkit-line-clamp:3;-webkit-box-orient:vertical}
+.agent-step{display:flex;align-items:center;gap:8px;min-width:0;color:var(--muted);font-size:11.5px}
+.agent-step span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent-step .icon{color:var(--faint)}
+.git-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;color:var(--muted);font-size:11.5px}
+.git-row .to{color:var(--faint)}
+.actions{display:flex;flex-wrap:wrap;gap:6px}
+.term{height:clamp(240px,50vh,760px);margin:0;padding:10px 12px;overflow:auto;border:1px solid var(--line);border-radius:10px;background:color-mix(in srgb,var(--fg) 2%,var(--bg));color:var(--fg);font:11px/1.35 var(--mono);white-space:pre}
+.banner{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+.banner>.icon{color:var(--merged)}
+.banner .txt{flex:1;color:var(--muted)}
+.banner .txt strong{color:var(--fg);font-weight:600}
+.banner.unsent>.icon{color:var(--warning)}
+
+/* MARK: composer */
+.composer-wrap{flex:none;padding:10px 12px 12px;border-top:1px solid var(--line)}
+.composer{display:flex;flex-direction:column;border:1px solid var(--line-strong);border-radius:12px;background:var(--surface);transition:border-color .12s,box-shadow .12s}
+.composer:focus-within{border-color:color-mix(in srgb,var(--accent) 70%,var(--line-strong));box-shadow:0 0 0 3px var(--accent-soft)}
+.composer textarea{display:block;width:100%;min-height:44px;max-height:220px;padding:11px 13px 4px;border:0;background:transparent;font-size:12.5px;line-height:1.5;resize:none}
+.composer textarea:disabled{cursor:not-allowed}
+.composer-bar{display:flex;align-items:center;gap:6px;padding:4px 6px 6px 7px}
+.hint{color:var(--faint);font-size:11px;white-space:nowrap}
+.send{display:inline-flex;flex:none;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border:0;border-radius:50%;background:var(--accent);color:var(--accent-fg)}
+.send:hover{filter:brightness(1.08)}
+.send:disabled{background:var(--surface-2);color:var(--faint);pointer-events:none}
+
+/* MARK: menu */
+.menu{position:fixed;z-index:90;min-width:210px;max-width:340px;padding:4px;border-radius:9px;background:var(--raised);box-shadow:var(--shadow);animation:pop .1s ease-out}
+.menu-h{padding:6px 9px 4px;color:var(--faint);font-size:10.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase}
+.menu button{display:flex;align-items:center;gap:9px;width:100%;height:30px;padding:0 9px;border:0;border-radius:6px;background:transparent;text-align:left;white-space:nowrap}
+.menu button .icon{color:var(--muted)}
+.menu button .lbl{flex:1;overflow:hidden;text-overflow:ellipsis}
+.menu button .sub{color:var(--faint);font-size:11px}
+.menu button .chk{color:var(--accent)}
+.menu button:hover,.menu button:focus-visible{outline:none;background:var(--accent);color:var(--accent-fg)}
+.menu button:hover .icon,.menu button:hover .sub,.menu button:focus-visible .icon,.menu button:focus-visible .sub{color:inherit}
+.menu button.danger,.menu button.danger .icon{color:var(--remove)}
+.menu button.danger:hover,.menu button.danger:hover .icon{background:var(--remove);color:#fff}
+.menu button:disabled{opacity:.4;pointer-events:none}
+.menu hr{margin:4px 2px;border:0;border-top:1px solid var(--line)}
+
+/* MARK: modals */
+.overlay{position:fixed;inset:0;z-index:70;display:flex;align-items:flex-start;justify-content:center;padding:12vh 16px 16px;background:rgb(0 0 0 / .45);animation:fade .12s ease-out}
+.overlay:has(.diff){padding-top:5vh}
+.modal{display:flex;flex-direction:column;width:440px;max-width:100%;max-height:100%;overflow:hidden;border-radius:12px;background:var(--raised);box-shadow:var(--shadow);animation:pop .14s ease-out}
+.m-body{display:flex;flex-direction:column;gap:10px;padding:18px 18px 16px}
+.m-body h2{margin:0;font-size:15px;font-weight:650}
+.m-text{margin:0;color:var(--muted);line-height:1.5}
+.m-label{margin-bottom:-4px;color:var(--muted);font-size:11.5px;font-weight:500}
+.m-note{display:flex;flex-wrap:wrap;align-items:center;gap:5px;color:var(--muted);font-size:11.5px}
+.m-note .mono{color:var(--fg);font-size:11px}
+.check{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:12px}
+.m-foot{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:10px 12px;border-top:1px solid var(--line);background:var(--surface)}
+.modal.nt{width:620px}
+.nt-head{display:flex;align-items:center;gap:6px;padding:14px 18px 0;color:var(--muted);font-size:11.5px;font-weight:500}
+.nt-head>.icon{color:var(--accent)}
+.nt-title{width:100%;padding:10px 18px 4px;border:0;background:transparent;font-size:18px;font-weight:650}
+.nt-desc{display:block;width:100%;min-height:110px;max-height:45vh;padding:4px 18px 12px;border:0;background:transparent;font-size:13px;line-height:1.55;resize:none}
+.nt-props{display:flex;flex-wrap:wrap;gap:6px;padding:0 18px 14px}
+.prop-chip{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 9px;border:1px solid var(--line-strong);border-radius:7px;color:var(--muted)}
+.prop-chip:focus-within{border-color:var(--accent)}
+.prop-chip input{width:96px;padding:0;border:0;background:transparent;color:var(--fg);font-family:var(--mono);font-size:11px;text-transform:uppercase}
+.prop-chip input::placeholder{font-family:var(--ui);font-size:12px;text-transform:none}
+.prop-chip .mono{color:var(--fg);font-size:11px}
+.nt-foot{display:flex;align-items:center;gap:8px;padding:10px 12px 10px 14px;border-top:1px solid var(--line);background:var(--surface)}
+.modal.diff{width:min(1200px,94vw);height:86vh}
+.diff-h{display:flex;align-items:flex-start;gap:10px;padding:12px 12px 12px 16px;border-bottom:1px solid var(--line)}
+.diff-h>.icon{margin-top:1px;color:var(--muted)}
+.diff-h pre{flex:1;max-height:22vh;margin:0;overflow:auto;color:var(--muted);font:11px/1.5 var(--mono)}
+.diff-b{flex:1;overflow:auto;font:11.5px/1.5 var(--mono)}
+.df-h{position:sticky;top:0;z-index:1;display:flex;align-items:center;gap:8px;padding:7px 16px;border-bottom:1px solid var(--line);background:var(--raised);font:600 12px/1.4 var(--ui)}
+.df-h .icon{color:var(--muted)}
+.df-l{min-height:17px;padding:0 16px;white-space:pre}
+.df-l.a{background:color-mix(in srgb,var(--add) 13%,transparent);color:color-mix(in srgb,var(--add) 70%,var(--fg))}
+.df-l.r{background:color-mix(in srgb,var(--remove) 13%,transparent);color:color-mix(in srgb,var(--remove) 70%,var(--fg))}
+.df-l.h{background:color-mix(in srgb,var(--cyan) 7%,transparent);color:var(--cyan)}
+.df-l.m{color:var(--faint)}
+.toasts{position:fixed;bottom:18px;left:50%;z-index:100;display:flex;flex-direction:column;align-items:center;gap:6px;transform:translateX(-50%);pointer-events:none}
+.toast{display:flex;align-items:center;gap:8px;max-width:520px;padding:8px 14px;border-radius:9px;background:var(--raised);box-shadow:var(--shadow);animation:pop .14s ease-out;pointer-events:auto}
+.toast .icon{color:var(--add)}
+.toast.error .icon{color:var(--remove)}
+@media (max-width:900px){
+  .panel{position:absolute;inset:0 0 0 auto;z-index:20;width:100%;min-width:0;max-width:none}
+  .resizer{display:none}
+  .search{width:150px}
+}
+</style>
+<link rel="stylesheet" href="/appearance.css">
+<link rel="stylesheet" href="/pipeline.css">
+<link rel="stylesheet" href="/native.css">
+</head>
+<body>
+<header class="toolbar">
+  <div class="view-switch" role="group" aria-label="Task view">
+    <button class="tool-button" id="boardViewBtn" title="Board view" aria-label="Board view"></button>
+    <button class="tool-button" id="pipelineViewBtn" title="Pipeline view" aria-label="Pipeline view"></button>
+  </div>
+  <span class="brand" id="brand"></span>
+  <button class="ctx" id="ctx"></button>
+  <span class="conn" id="conn" title="Disconnected"></span>
+  <span class="spacer"></span>
+  <label class="search" id="search"><input id="filter" placeholder="Filter tasks" spellcheck="false" autocomplete="off"><kbd>/</kbd></label>
+  <button class="tool-button" id="refreshBtn" title="Refresh agents, git and pull requests"></button>
+  <button class="btn primary" id="newBtn"></button>
+</header>
+<div class="main">
+  <div class="board" id="board"></div>
+  <div class="resizer" id="resizer" hidden></div>
+  <aside class="panel" id="panel" hidden></aside>
+</div>
+<div class="toasts" id="toasts"></div>
+<script>
+"use strict";
+// MARK: icons
+const LUCIDE = {
+  kanban:'<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M8 7v7"/><path d="M12 7v4"/><path d="M16 7v9"/>',
+  repo:'<path d="M18 19a5 5 0 0 1-5-5v8"/><path d="M9 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v5"/><circle cx="13" cy="12" r="2"/><circle cx="20" cy="19" r="2"/>',
+  branch:'<path d="M15 6a9 9 0 0 0-9 9V3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/>',
+  pr:'<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" x2="6" y1="9" y2="21"/>',
+  prDraft:'<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M18 6V5"/><path d="M18 11v-1"/><line x1="6" x2="6" y1="9" y2="21"/>',
+  prMerged:'<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/>',
+  prClosed:'<path d="m15.5 3.5 5 5"/><path d="m15.5 8.5 5-5"/><path d="M18 11.62V15"/><path d="M6 9v12"/><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/>',
+  merge:'<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/>',
+  link:'<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+  plus:'<path d="M5 12h14"/><path d="M12 5v14"/>',
+  x:'<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  check:'<path d="M20 6 9 17l-5-5"/>',
+  chevronDown:'<path d="m6 9 6 6 6-6"/>',
+  refresh:'<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+  arrowUp:'<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+  arrowRight:'<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
+  pencil:'<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
+  copy:'<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+  trash:'<path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+  more:'<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
+  terminal:'<path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>',
+  openIn:'<path d="M21 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h6"/><path d="m21 3-9 9"/><path d="M15 3h6v6"/>',
+  diff:'<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M9 10h6"/><path d="M12 13V7"/><path d="M9 17h6"/>',
+  compare:'<circle cx="5" cy="6" r="3"/><path d="M12 6h5a2 2 0 0 1 2 2v7"/><path d="m15 9-3-3 3-3"/><circle cx="19" cy="18" r="3"/><path d="M12 18H7a2 2 0 0 1-2-2V9"/><path d="m9 15 3 3-3 3"/>',
+  hammer:'<path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/><path d="m18 15 4-4"/><path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/>',
+  play:'<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/>',
+  pause:'<rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/>',
+  stop:'<rect width="18" height="18" x="3" y="3" rx="2"/>',
+  zap:'<path d="M4 14a1 1 0 0 1-.78-1.63l9-11A.5.5 0 0 1 13 1.5V9h7a1 1 0 0 1 .78 1.63l-9 11A.5.5 0 0 1 11 21.5V14z"/>',
+  message:'<path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/>',
+  file:'<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+  search:'<path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/>',
+  wrench:'<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z"/>',
+  alert:'<circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/>',
+  hand:'<path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
+  ticket:'<path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/>',
+};
+const icon = (name, size = 14, cls = "") => `<svg class="icon ${cls}" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${LUCIDE[name]}</svg>`;
+const spinner = (size = 12) => `<svg class="icon spin" viewBox="0 0 16 16" width="${size}" height="${size}" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="2"/><path d="M14 8a6 6 0 0 0-6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
+const COLUMN_GLYPH = {
+  backlog:'<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2.2 2.2"/>',
+  todo:'<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/>',
+  doing:'<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 4.5a3.5 3.5 0 0 1 0 7z" fill="currentColor"/>',
+  review:'<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 4.5a3.5 3.5 0 1 1-3.5 3.5H8z" fill="currentColor"/>',
+  done:'<circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M5 8.2l2 2 4-4.2" fill="none" style="stroke:var(--bg)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>',
+};
+const COLUMN_COLOR = { backlog: "var(--muted)", todo: "var(--fg)", doing: "var(--warning)", review: "var(--add)", done: "var(--merged)" };
+const colIcon = (id, size = 14) => `<svg class="icon" viewBox="0 0 16 16" width="${size}" height="${size}" style="color:${COLUMN_COLOR[id]}" aria-hidden="true">${COLUMN_GLYPH[id]}</svg>`;
+const PLANNING_MODE = {
+  auto: { label: "Auto", icon: "wrench", sub: "Briefly triage, then plan only when a decision or risk requires review" },
+  plan: { label: "Plan", icon: "file", sub: "Require plan review before implementation" },
+  fast: { label: "Fast", icon: "zap", sub: "Implement directly without plan review" },
+};
+function planningChoice(mode) { return PLANNING_MODE[mode] || PLANNING_MODE.plan; }
+function planningRoute(t) {
+  const policy = t.planningMode || "plan";
+  const route = t.planningOutcome || policy;
+  const choice = planningChoice(route);
+  const title = policy === "auto" && t.planningOutcome
+    ? `Auto triage chose ${choice.label}${route === "fast" ? " and skipped plan review" : ""}`
+    : choice.sub;
+  return { ...choice, title };
+}
+function planningBadge(t) {
+  const p = planningRoute(t);
+  return h("span", { class: "chip", title: p.title, "aria-label": `Planning: ${p.label}` }, I(p.icon, 10), p.label);
+}
+function planningItems(selected, choose) {
+  return Object.entries(PLANNING_MODE).map(([mode, p]) => ({
+    icon: p.icon, label: p.label, sub: p.sub, checked: mode === selected, action: () => choose(mode),
+  }));
+}
+
+// MARK: utils
+const $ = (s, r = document) => r.querySelector(s);
+function frag(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; }
+const I = (name, size, cls) => frag(icon(name, size, cls));
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function h(tag, attrs = {}, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k === "html") el.innerHTML = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of kids.flat()) if (c != null && c !== false) el.append(c instanceof Node ? c : document.createTextNode(c));
+  return el;
+}
+function ago(iso) {
+  if (!iso) return "";
+  const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  if (s < 45) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}
+function elapsed(iso) {
+  if (!iso) return "";
+  const s = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000));
+  const m = Math.floor(s / 60);
+  return m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m` : `${m}:${String(s % 60).padStart(2, "0")}`;
+}
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const isTyping = () => { const a = document.activeElement; return !!a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.isContentEditable); };
+const LS = {
+  get: k => { try { return localStorage.getItem("kanboard." + k); } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem("kanboard." + k, v); } catch {} },
+};
+function autosize(el, max = 400) {
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, max) + "px";
+  el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
+}
+function flash(el) { el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
+function toolButton(name, title, onclick, size = 15) {
+  return h("button", { class: "tool-button", title, "aria-label": title, onclick }, I(name, size));
+}
+function toast(text, error = false) {
+  const t = h("div", { class: "toast" + (error ? " error" : "") }, I(error ? "alert" : "check", 14), h("span", {}, text));
+  $("#toasts").append(t);
+  setTimeout(() => t.remove(), error ? 6000 : 3000);
+}
+async function copyText(text, message) {
+  try { await navigator.clipboard.writeText(text); toast(message); }
+  catch { toast("Couldn't copy to the clipboard", true); }
+}
+
+// MARK: api
+async function api(method, path, body) {
+  const opts = { method, headers: {} };
+  if (method !== "GET") { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body ?? {}); }
+  const res = await fetch(path, opts);
+  let data = null;
+  try { data = await res.json(); } catch {}
+  if (!res.ok) { const e = new Error((data && data.error) || `${res.status} ${res.statusText}`); e.data = data; e.status = res.status; throw e; }
+  return data;
+}
+async function act(method, path, body, okMessage) {
+  try { const r = await api(method, path, body); if (okMessage) toast(okMessage); return r; }
+  catch (e) { toast(e.message, true); throw e; }
+}
+const tpath = (id, suffix = "") => `/api/tasks/${encodeURIComponent(id)}${suffix}`;
+
+// MARK: state
+let board = null;
+let dragging = null;
+let pendingRender = false;
+let openId = null;
+let filter = "";
+let flowSel = new URLSearchParams(location.search).get("flow") || LS.get("flow") || null;
+let themeHref = "/appearance.css";
+const tabFor = {};
+const drafts = new Map();
+const sessionConnected = t => t.session?.connected === true;
+const findTask = id => board && board.tasks.find(t => t.id === id);
+const flows = () => (board && board.flows) || [];
+const selectedFlow = () => flows().find(f => f.id === flowSel) || null;
+const inFlow = t => { const f = selectedFlow(); return !f || t.flow === f.id; };
+const colTasks = col => board.tasks.filter(t => t.column === col).sort((a, b) => a.order - b.order);
+const colTitle = id => (board.columns.find(c => c.id === id) || { title: id }).title;
+const matches = t => !filter || `${t.id} ${t.title} ${t.ticket || ""} ${t.branch}`.toLowerCase().includes(filter);
+
+function setBoard(b) {
+  board = b;
+  applyTheme();
+  renderContext();
+  renderBoard();
+  if (openId) { if (findTask(openId)) updatePanel(); else closePanel(); }
+  const waiting = b.tasks.filter(t => t.agent && ["needs_input", "plan_ready", "disconnected"].includes(t.agent.state)).length;
+  document.title = waiting ? `${waiting} waiting · Kanboard` : "Kanboard";
+}
+function renderContext() {
+  const c = $("#ctx"), f = selectedFlow();
+  if (f) {
+    const parts = [I("repo", 13), h("strong", {}, f.name), I("branch", 12), h("span", { class: "mono" }, f.base)];
+    if (f.concurrencyLimit != null) parts.push(h("span", { class: "chip" }, `${f.concurrencyLimit} at once`));
+    parts.push(I("chevronDown", 12));
+    c.replaceChildren(...parts);
+    c.title = `New tasks branch from ${f.base} and merge back into it (${f.checkout})`;
+  } else {
+    c.replaceChildren(I("kanban", 13), h("strong", {}, "All flows"), I("chevronDown", 12));
+    c.title = "Show the tasks of one flow";
+  }
+  c.onclick = () => openMenu(c, flowMenu());
+}
+function flowMenu() {
+  const total = f => Object.values(f.counts || {}).reduce((a, b) => a + b, 0);
+  const cur = selectedFlow();
+  const items = [{ icon: "kanban", label: "All flows", sub: String(board.tasks.length), checked: !cur, action: () => setFlow(null) },
+    ...flows().map(f => ({ icon: "branch", label: `${f.name} · ${f.base}`, sub: String(total(f)), checked: !!cur && cur.id === f.id, action: () => setFlow(f.id) }))];
+  if (cur) items.push("-", { header: "Flow settings" },
+    { icon: "wrench", label: "Concurrent tasks", sub: cur.concurrencyLimit == null ? "Unlimited" : String(cur.concurrencyLimit), action: () => showConcurrencyModal(cur) },
+    { icon: "play", label: "Setup script", sub: scriptName(cur.setupScript), action: () => showScriptsModal(cur) },
+    { icon: "trash", label: "Teardown script", sub: scriptName(cur.teardownScript), action: () => showScriptsModal(cur) });
+  items.push("-", { header: "Beads" },
+    { icon: "link", label: "Readiness…", sub: cur ? cur.name : "All flows", action: () => showReadiness({ flow: cur ? cur.id : null }) },
+    { icon: "file", label: "Shared memories…", sub: cur ? cur.name : "Choose repository", action: () => showMemories() });
+  return items;
+}
+function showConcurrencyModal(flow) {
+  const input = h("input", { class: "field mono", type: "number", min: "1", step: "1", inputmode: "numeric",
+    placeholder: "Unlimited", value: flow.concurrencyLimit ?? "" });
+  const save = h("button", { class: "btn primary" }, "Save");
+  const submit = async () => {
+    const raw = input.value.trim();
+    if (raw && (!/^\d+$/.test(raw) || Number(raw) < 1)) {
+      toast("Concurrent tasks must be a positive whole number", true);
+      input.focus();
+      return;
+    }
+    save.disabled = true;
+    try {
+      const limit = raw ? Number(raw) : null;
+      const r = await act("PATCH", "/api/flows", { id: flow.id, concurrencyLimit: limit },
+        limit == null ? "Concurrent tasks are unlimited" : `Concurrent tasks limited to ${limit}`);
+      const current = flows().find(f => f.id === flow.id);
+      if (current) Object.assign(current, r.flow);
+      closeModal();
+      renderContext();
+      renderBoard();
+    } catch { save.disabled = false; }
+  };
+  save.onclick = submit;
+  input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); submit(); } });
+  openModal([
+    h("div", { class: "m-body" },
+      h("h2", {}, "Concurrent tasks"),
+      h("p", { class: "m-text" }, `Maximum task agents in In Progress for ${flow.name} · ${flow.base}. Additional started cards wait in Todo.`),
+      h("label", { class: "m-label" }, "Tasks at once"),
+      input,
+      h("div", { class: "m-note" }, "Leave blank for unlimited. Lowering the limit does not stop tasks already running.")),
+    h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), save)]);
+  setTimeout(() => { input.focus(); input.select(); }, 0);
+}
+const scriptName = path => (path ? path.split("/").pop() : "None");
+function showScriptsModal(flow) {
+  const field = value => h("input", { class: "field mono", type: "text", spellcheck: "false", autocomplete: "off",
+    placeholder: "None", value: value || "" });
+  const setup = field(flow.setupScript), teardown = field(flow.teardownScript);
+  const save = h("button", { class: "btn primary" }, "Save");
+  const submit = async () => {
+    save.disabled = true;
+    try {
+      const r = await act("PATCH", "/api/flows/scripts",
+        { id: flow.id, setupScript: setup.value.trim(), teardownScript: teardown.value.trim() }, `Scripts saved for ${flow.name}`);
+      for (const f of flows()) if (f.name === flow.name) Object.assign(f, { setupScript: r.flow.setupScript, teardownScript: r.flow.teardownScript });
+      closeModal();
+    } catch { save.disabled = false; }
+  };
+  save.onclick = submit;
+  for (const input of [setup, teardown]) input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); submit(); } });
+  openModal([
+    h("div", { class: "m-body" },
+      h("h2", {}, "Scripts"),
+      h("p", { class: "m-text" }, `Run with bash in the worktree, for every ${flow.name} flow: setup after a new worktree is created and before its agent starts, teardown before the worktree is removed.`),
+      h("label", { class: "m-label" }, "Setup script"),
+      setup,
+      h("label", { class: "m-label" }, "Teardown script"),
+      teardown,
+      h("div", { class: "m-note" }, "Paths may start with ~. Leave a field empty for none; a value equal to the default in config.json keeps following it.")),
+    h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), save)]);
+  setTimeout(() => { setup.focus(); setup.select(); }, 0);
+}
+function setFlow(id) {
+  flowSel = id;
+  applyTheme();
+  LS.set("flow", id || "");
+  const q = new URLSearchParams(location.search);
+  if (id) q.set("flow", id); else q.delete("flow");
+  const s = q.toString();
+  history.replaceState(null, "", location.pathname + (s ? "?" + s : "") + location.hash);
+  renderContext();
+  renderBoard();
+}
+/** Loads the selected flow's omp colors without flashing the previous theme. */
+function applyTheme() {
+  const href = `/appearance.css?flow=${encodeURIComponent(flowSel || "")}&v=${board.themeVersion || 0}`;
+  if (href === themeHref) return;
+  themeHref = href;
+  const old = [...document.querySelectorAll('link[href^="/appearance.css"]')];
+  document.head.append(h("link", { rel: "stylesheet", href, onload: () => old.forEach(l => l.remove()) }));
+}
+
+// MARK: events
+function connect() {
+  const es = new EventSource("/api/events");
+  es.onopen = () => setConn(true);
+  es.onerror = () => { setConn(false); if (es.readyState === EventSource.CLOSED) setTimeout(connect, 2000); };
+  es.addEventListener("snapshot", e => { setConn(true); setBoard(JSON.parse(e.data)); });
+  es.addEventListener("step", e => {
+    const { taskId, step } = JSON.parse(e.data);
+    const t = findTask(taskId);
+    if (!t || !t.agent) return;
+    t.agent.step = step;
+    refreshCard(t);
+    if (openId === taskId && P) updateAgent(t);
+  });
+}
+function setConn(on) { const d = $("#conn"); d.classList.toggle("on", on); d.title = on ? "Connected" : "Disconnected"; }
+async function loadState() { try { setBoard(await api("GET", "/api/state")); } catch (e) { toast(e.message, true); } }
+
+// MARK: status
+const AGENT_LABEL = { working: "Working", thinking: "Thinking", planning: "Planning" };
+const hasStarted = t => !!t.worktree || t.spawn.state === "running" || t.spawn.state === "done" || !!t.merged;
+function statusOf(t) {
+  if (t.spawn.state === "running") return { tone: "busy", spin: true, text: "Creating worktree" };
+  if (t.spawn.state === "failed") return { tone: "err", icon: "alert", text: "Start failed" };
+  if (t.column === "done" && t.merged) return { tone: "ok", icon: "merge", text: "Merged into " + t.base };
+  if (t.paused) {
+    if (t.column === "todo" && t.blockedBy.length) return { tone: "faint", icon: "pause", text: "Resumes after blockers clear: " + t.blockedBy.join(", ") };
+    if (t.column === "todo" && t.waitingForSlot) return { tone: "faint", icon: "pause", text: "Paused · waiting for task slot" };
+    return { tone: "faint", icon: "pause", text: t.column === "todo" ? "Resuming" : "Paused" };
+  }
+  if (!t.worktree && t.column === "todo" && t.spawn.state === "none" && t.blockedBy.length) return { tone: "faint", icon: "link", text: "Starts after blockers clear: " + t.blockedBy.join(", ") };
+  if (!t.worktree && t.column === "todo" && t.spawn.state === "none" && t.waitingForSlot) return { tone: "faint", icon: "play", text: "Waiting for task slot" };
+  if (t.agent) {
+    const s = t.agent.state;
+    if (s === "needs_input") return { tone: "needs", icon: "hand", text: "Needs you", since: t.agent.since };
+    if (s === "plan_ready") return { tone: "needs", icon: "file", text: "Plan ready for review", since: t.agent.since };
+    if (s === "disconnected") return { tone: "needs", icon: "alert", text: "Session disconnected" };
+    if (AGENT_LABEL[s]) return { tone: "busy", spin: true, text: AGENT_LABEL[s], since: t.agent.since };
+    if (t.column === "review" && t.merge === "local" && !t.pr) return { tone: "ok", icon: "merge", text: "Ready to merge" };
+    if (s === "stopped") return { tone: "faint", dot: true, text: "Agent stopped" };
+    return { tone: "idle", dot: true, text: "Idle" };
+  }
+  if (t.plan && !t.worktree) return { tone: "faint", icon: "file", text: "Draft plan" };
+  return null;
+}
+function stateEl(info) {
+  const el = h("span", { class: `state ${info.tone}` });
+  if (info.spin) el.append(frag(spinner(12)));
+  else if (info.icon) el.append(I(info.icon, 12));
+  else if (info.dot) el.append(h("span", { class: "dot" }));
+  el.append(h("span", {}, info.text));
+  if (info.since) el.append(h("span", { class: "t", "data-elapsed": info.since }, elapsed(info.since)));
+  return el;
+}
+function agentTone(t) {
+  if (!t.agent) return null;
+  const s = t.agent.state;
+  if (s === "needs_input" || s === "plan_ready") return "var(--warning)";
+  if (s === "disconnected") return "var(--warning)";
+  if (AGENT_LABEL[s]) return "var(--accent)";
+  if (s === "stopped") return "var(--faint)";
+  return "var(--add)";
+}
+function cardLine(t) {
+  if (t.agent && (AGENT_LABEL[t.agent.state] || t.agent.state === "needs_input") && t.agent.step) return { icon: t.agent.state === "needs_input" ? "hand" : "wrench", text: t.agent.step };
+  if (t.spawn.state === "failed" && t.spawn.error) return { icon: "alert", text: t.spawn.error };
+  if (t.agent && t.agent.message) return { icon: "message", text: t.agent.message };
+  return null;
+}
+const PR_STYLE = { open: ["pr", "var(--add)", "Open"], draft: ["prDraft", "var(--muted)", "Draft"], merged: ["prMerged", "var(--merged)", "Merged"], closed: ["prClosed", "var(--remove)", "Closed"] };
+function prChip(pr) {
+  const [ic, color, label] = PR_STYLE[pr.state] || PR_STYLE.open;
+  return h("a", { class: "pr-chip", href: pr.url, target: "_blank", rel: "noopener", draggable: "false", style: `color:${color}`, title: `${label} pull request: ${pr.title}`, onclick: e => e.stopPropagation() },
+    I(ic, 11), `#${pr.number}`);
+}
+const diffstat = git => h("span", { class: "diffstat" }, h("span", { class: "a" }, `+${git.added}`), " ", h("span", { class: "r" }, `\u2212${git.removed}`));
+
+// MARK: board
+const EMPTY_COLUMN = {
+  backlog: "No tasks yet. Press N to add one.",
+  todo: "Drop a task here to start it in a worktree",
+  doing: "Agents at work show up here",
+  review: "Tasks with an open pull request",
+  done: "Merged pull requests land here",
+};
+function renderBoard() {
+  if (!board) return;
+  if (dragging) { pendingRender = true; return; }
+  pendingRender = false;
+  $("#board").classList.toggle("pipeline-view", boardView === "pipeline");
+  if (boardView === "pipeline") { renderPipeline(); return; }
+  const root = $("#board");
+  const scrolls = {};
+  root.querySelectorAll(".col-b").forEach(b => { scrolls[b.dataset.col] = b.scrollTop; });
+  root.replaceChildren(...board.columns.map(columnEl));
+  root.querySelectorAll(".col-b").forEach(b => { if (scrolls[b.dataset.col]) b.scrollTop = scrolls[b.dataset.col]; });
+}
+function columnEl(col) {
+  const tasks = colTasks(col.id).filter(t => inFlow(t) && matches(t));
+  const head = h("div", { class: "col-h", html: colIcon(col.id) },
+    h("span", { class: "col-t" }, col.title), h("span", { class: "count" }, String(tasks.length)), h("span", { class: "spacer" }));
+  if (col.id === "backlog") head.append(toolButton("plus", "New task (N)", openComposer, 14));
+  const body = h("div", { class: "col-b", "data-col": col.id });
+  if (tasks.length) body.append(...tasks.map(cardEl));
+  else body.append(h("div", { class: "col-empty" }, filter ? "No matching tasks" : EMPTY_COLUMN[col.id]));
+  wireDrop(body, col.id);
+  return h("section", { class: "col", "data-col": col.id, ondblclick: e => {
+    if (!e.target.closest(".card,button,a,input")) openTaskPrompt({ column: col.id });
+  } }, head, body);
+}
+function cardEl(t) {
+  const top = h("div", { class: "c-top" }, h("span", { class: "c-id" }, t.id));
+  if (t.ticket) top.append(h("span", { class: "chip mono" }, t.ticket));
+  top.append(planningBadge(t));
+  if (t.dependsOn.length) top.append(h("span", { class: "chip", title: "Depends on " + t.dependsOn.join(", ") }, I("link", 10), t.dependsOn.join(" ")));
+  if (!selectedFlow() && board.repo && t.base !== board.repo.base) top.append(h("span", { class: "chip", title: `Merges into ${t.base} ${t.merge === "local" ? "locally" : "via a pull request"}` }, I("arrowRight", 10), t.base));
+  top.append(h("span", { class: "spacer" }));
+  if (t.pr) top.append(prChip(t.pr));
+  const needs = !!(t.agent && ["needs_input", "plan_ready", "disconnected"].includes(t.agent.state));
+  const el = h("div", { class: "card" + (t.id === openId ? " sel" : "") + (needs ? " needs" : ""), draggable: "true", "data-id": t.id, onclick: () => openPanel(t.id) },
+    top, h("div", { class: "c-title" }, t.title || "Untitled"));
+  const info = statusOf(t);
+  if (info) el.append(h("div", { class: "c-line" }, stateEl(info)));
+  const line = cardLine(t);
+  if (line) el.append(h("div", { class: "c-line", title: line.text }, I(line.icon, 12), h("span", {}, line.text)));
+  if (t.worktree) {
+    const foot = h("div", { class: "c-foot" }, h("span", { class: "branch", title: t.branch }, I("branch", 11), h("span", {}, t.branch)), h("span", { class: "spacer" }));
+    if (t.git && (t.git.added || t.git.removed)) foot.append(diffstat(t.git));
+    if (t.git && t.git.dirty > 0) foot.append(h("span", { class: "udot", title: plural(t.git.dirty, "uncommitted file") }));
+    el.append(foot);
+  }
+  el.addEventListener("dragstart", e => {
+    dragging = { id: t.id, el };
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", t.id);
+    requestAnimationFrame(() => el.classList.add("dragging"));
+  });
+  el.addEventListener("dragend", () => {
+    el.classList.remove("dragging");
+    placeholder.remove();
+    document.querySelectorAll(".col.over").forEach(c => c.classList.remove("over"));
+    dragging = null;
+    if (pendingRender) renderBoard();
+  });
+  return el;
+}
+function refreshCard(t) {
+  if (dragging) { pendingRender = true; return; }
+  if (boardView === "pipeline") { renderPipeline(); return; }
+  const old = document.querySelector(`.card[data-id="${CSS.escape(t.id)}"]`);
+  if (old) old.replaceWith(cardEl(t));
+}
+
+// MARK: drag and drop
+const placeholder = h("div", { class: "ph" });
+function wireDrop(body, col) {
+  body.addEventListener("dragover", e => {
+    if (!dragging) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    body.parentElement.classList.add("over");
+    const cards = [...body.querySelectorAll(".card:not(.dragging)")];
+    const after = cards.find(c => { const r = c.getBoundingClientRect(); return e.clientY < r.top + r.height / 2; });
+    if (after) { if (placeholder.nextSibling !== after) body.insertBefore(placeholder, after); }
+    else if (body.lastChild !== placeholder) body.append(placeholder);
+  });
+  body.addEventListener("dragleave", e => { if (!body.contains(e.relatedTarget)) body.parentElement.classList.remove("over"); });
+  body.addEventListener("drop", e => {
+    if (!dragging) return;
+    e.preventDefault();
+    body.parentElement.classList.remove("over");
+    const id = dragging.id;
+    const sibs = [...body.children].filter(c => c === placeholder || (c.classList.contains("card") && c.dataset.id !== id));
+    const i = sibs.indexOf(placeholder);
+    const prev = sibs[i - 1] && findTask(sibs[i - 1].dataset.id);
+    const next = sibs[i + 1] && findTask(sibs[i + 1].dataset.id);
+    let order;
+    if (prev && next) order = (prev.order + next.order) / 2;
+    else if (prev) order = prev.order + 1000;
+    else if (next) order = next.order - 1000;
+    else order = 1000;
+    placeholder.remove();
+    dragging = null;
+    const t = findTask(id);
+    if (t && t.column === col) { if (prev || next) reorderCard(t, order, next ? { before: next.id } : { after: prev.id }); }
+    else requestMove(id, col, order);
+  });
+}
+const needsStart = (t, col) => (col === "todo" || col === "doing") && !t.worktree && (t.spawn.state === "none" || t.spawn.state === "failed");
+async function requestMove(id, col, order) {
+  const t = findTask(id);
+  if (!t) return;
+  if (needsStart(t, col)) { showStartModal(t, col, order); renderBoard(); return; }
+  if (col !== t.column && t.moveRequiresConfirmation) { confirmWorkingMove(t, col, order); return; }
+  await doMove(t, col, order);
+}
+async function doMove(t, col, order, force, confirmedWorking = false, confirmedLegacy = false) {
+  const prev = { column: t.column, order: t.order };
+  t.column = col;
+  t.order = order ?? Math.max(0, ...colTasks(col).filter(x => x !== t).map(x => x.order)) + 1000;
+  renderBoard();
+  if (openId === t.id) updatePanel();
+  const body = { column: col };
+  if (order != null) body.order = order;
+  if (force) body.force = true;
+  if (confirmedWorking) body.confirmWorking = true;
+  if (confirmedLegacy) body.confirmLegacy = true;
+  try {
+    const r = await act("POST", tpath(t.id, "/move"), body);
+    if (r && r.note) toast(`${t.id} paused · ${r.note}`);
+    if (r && r.id) { delete r.note; Object.assign(t, r); }
+  }
+  catch (e) {
+    Object.assign(t, prev);
+    if (e.data?.requiresConfirmation === "legacySession") {
+      confirmModal("Replace the legacy session?", "First exit omp in the old terminal. Its process cannot be verified; continuing while it is running could start a second agent in the same worktree.", "Old session exited — continue",
+        () => doMove(t, col, order, force, confirmedWorking, true));
+    }
+  }
+  renderBoard();
+  if (openId === t.id) updatePanel();
+}
+async function reorderCard(t, order, place) {
+  const prev = t.order;
+  t.order = order;
+  renderBoard();
+  try { const r = await act("POST", tpath(t.id, "/reorder"), place); if (r && r.id) Object.assign(t, r); }
+  catch { t.order = prev; }
+  renderBoard();
+}
+
+// MARK: menus
+let menu = null;
+function openMenu(anchor, items, opts = {}) {
+  if (menu && menu.anchor === anchor) { closeMenu(); return; }
+  closeMenu();
+  const el = h("div", { class: "menu", role: "menu" });
+  for (const it of items) {
+    if (it === "-") { el.append(h("hr")); continue; }
+    if (it.header) { el.append(h("div", { class: "menu-h" }, it.header)); continue; }
+    const b = h("button", { class: it.danger ? "danger" : "", role: "menuitem", disabled: it.disabled, onclick: () => { closeMenu(); it.action(); } });
+    if (it.html) b.append(frag(it.html));
+    else if (it.icon) b.append(I(it.icon, 14));
+    b.append(h("span", { class: "lbl" }, it.label));
+    if (it.sub) b.append(h("span", { class: "sub" }, it.sub));
+    if (it.checked) b.append(I("check", 13, "chk"));
+    el.append(it.title ? h("div", { title: it.title }, b) : b);
+  }
+  el.addEventListener("keydown", e => {
+    const btns = [...el.querySelectorAll("button:not(:disabled)")];
+    const i = btns.indexOf(document.activeElement);
+    if (e.key === "ArrowDown") { e.preventDefault(); btns[(i + 1) % btns.length].focus(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); btns[(i - 1 + btns.length) % btns.length].focus(); }
+  });
+  document.body.append(el);
+  const r = anchor.getBoundingClientRect(), m = el.getBoundingClientRect();
+  const left = Math.max(8, Math.min(opts.align === "right" ? r.right - m.width : r.left, innerWidth - m.width - 8));
+  let top = opts.above ? r.top - m.height - 6 : r.bottom + 6;
+  if (top + m.height > innerHeight - 8) top = r.top - m.height - 6;
+  el.style.left = `${left}px`;
+  el.style.top = `${Math.max(8, top)}px`;
+  menu = { el, anchor };
+}
+function closeMenu() { if (menu) { menu.el.remove(); menu = null; } }
+document.addEventListener("mousedown", e => { if (menu && !menu.el.contains(e.target) && !menu.anchor.contains(e.target)) closeMenu(); }, true);
+document.addEventListener("scroll", e => {
+  const scroller = e.target === document ? document.documentElement : e.target;
+  if (menu && scroller.contains && scroller.contains(menu.anchor)) closeMenu();
+}, true);
+window.addEventListener("resize", closeMenu);
+
+// MARK: modals
+const modals = [];
+function openModal(children, cls = "") {
+  closeMenu();
+  const box = h("div", { class: "modal " + cls, role: "dialog" }, ...children);
+  const ov = h("div", { class: "overlay", onmousedown: e => { if (e.target === ov) closeModal(); } }, box);
+  document.body.append(ov);
+  modals.push(ov);
+  return box;
+}
+function closeModal() { const m = modals.pop(); if (m) m.remove(); }
+function confirmModal(title, text, label, fn, opts = {}) {
+  const ok = h("button", { class: "btn " + (opts.cls || "danger-solid"), onclick: () => { closeModal(); fn(); } }, label);
+  openModal([h("div", { class: "m-body" }, h("h2", {}, title), text ? h("p", { class: "m-text" }, text) : null, opts.extra || null),
+    h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), ok)]);
+  setTimeout(() => ok.focus(), 0);
+}
+function confirmWorkingMove(t, col, order) {
+  const pauses = (col === "todo" || col === "backlog") && !!t.worktree && !t.paused;
+  const frees = t.column === "doing" && col !== "doing";
+  const capacity = frees ? " It also frees this flow's task slot, so another queued task may start." : "";
+  const resumes = col === "todo" ? "Todo resumes it once it's first in line with its dependencies done and a task slot free." : "Backlog keeps it paused until you move it back.";
+  confirmModal(pauses ? `Pause ${t.id}?` : `Move working ${t.id} to ${colTitle(col)}?`,
+    pauses ? `Its agent stops what it's doing; the worktree and omp session stay. ${resumes}${capacity}`
+      : `Moving the card only changes Kanboard status; it does not stop omp or remove the worktree.${capacity}`,
+    pauses ? "Pause" : "Move anyway", () => doMove(t, col, order, false, true));
+}
+function confirmStop(t) {
+  const where = t.column === "review" ? "The card stays in Review" : "The card parks in Backlog";
+  confirmModal(`Stop ${t.id}'s agent?`,
+    `Its omp session exits; the worktree, branch and saved session stay. ${where}; moving it to Todo or In Progress resumes it. Closing only its terminal attachment does not stop a managed agent.`,
+    "Stop agent", async () => {
+      try { const r = await act("POST", tpath(t.id, "/stop"), {}, `${t.id} stopped`); if (r && r.note) toast(r.note, true); } catch {}
+    });
+}
+function showStartModal(t, col, order, force) {
+  const input = h("input", { class: "field mono", value: t.branch, spellcheck: "false" });
+  const start = h("button", { class: "btn primary" }, I("play", 12), "Start");
+  const go = async () => {
+    start.disabled = true;
+    const branch = input.value.trim();
+    try {
+      if (branch && branch !== t.branch) { const r = await act("PATCH", tpath(t.id), { branch }); if (r && r.id) Object.assign(t, r); }
+      closeModal();
+      await doMove(t, col, order, force);
+    } catch { start.disabled = false; }
+  };
+  start.onclick = go;
+  input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  openModal([
+    h("div", { class: "m-body" },
+      h("h2", {}, `Start ${t.id}`),
+      h("p", { class: "m-text" }, t.plan
+        ? "omp starts in plan mode in a new git worktree: it updates the draft plan to the code and waits for your approval."
+        : "omp starts in plan mode in a new git worktree: it plans from the title and description and waits for your approval."),
+      h("label", { class: "m-label" }, "Branch"), input,
+      h("div", { class: "m-note" }, I("branch", 12), "From", h("span", { class: "mono" }, t.base), t.merge === "local" ? "· merges back locally into" : "· pull request into", h("span", { class: "mono" }, t.base)),
+      t.blockedBy.length && !force ? h("div", { class: "m-note" }, I("link", 12), `Waits in Todo until its blockers clear: ${t.blockedBy.join(", ")}`) : null),
+    h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), start)]);
+  setTimeout(() => { input.focus(); input.select(); }, 0);
+}
+function confirmDelete(t) {
+  const text = t.moveRequiresConfirmation
+    ? "This task may still be working. Deleting it removes board tracking, but omp, its terminal attachment, worktree and branch stay."
+    : t.worktree ? "The board forgets this task. Its worktree, branch and terminal attachment stay." : "The task and its plan are deleted.";
+  confirmModal(`Delete ${t.id}?`, text, "Delete task", async () => {
+    try { await act("DELETE", tpath(t.id), { confirmWorking: t.moveRequiresConfirmation === true }); board.tasks = board.tasks.filter(x => x.id !== t.id); closePanel(); renderBoard(); } catch {}
+  });
+}
+function confirmCleanup(t, confirmedLegacy = false) {
+  const text = confirmedLegacy
+    ? "First exit omp in the old terminal. Only continue once it has ended; the board cannot stop or verify that legacy process."
+    : `Stops this task's managed agent, then deletes ${t.worktree}, branch ${t.branch} and its owned terminal attachment.`;
+  confirmModal("Remove the worktree?", text, confirmedLegacy ? "Old session exited — remove" : "Remove worktree", async () => {
+    try {
+      await act("POST", tpath(t.id, "/cleanup"), { confirmLegacy: confirmedLegacy }, "Worktree removed");
+    } catch (e) {
+      if (e.data?.requiresConfirmation === "legacySession") confirmCleanup(t, true);
+    }
+  });
+}
+function showMergeModal(t) {
+  const cleanup = h("input", { type: "checkbox" });
+  cleanup.checked = LS.get("mergeCleanup") !== "0";
+  confirmModal(`Merge ${t.id} into ${t.base}?`,
+    `${plural(t.git.commits, "commit")} on ${t.branch} (+${t.git.added} \u2212${t.git.removed} in ${plural(t.git.files, "file")}). Runs git merge --no-ff in the checkout of ${t.base}.`,
+    "Merge", async () => {
+      LS.set("mergeCleanup", cleanup.checked ? "1" : "0");
+      try { const r = await act("POST", tpath(t.id, "/merge"), { cleanup: cleanup.checked }, `Merged into ${t.base}`); if (r.cleanupError) toast(r.cleanupError, true); } catch {}
+    }, { cls: "primary", extra: h("label", { class: "check" }, cleanup, "Stop the agent and remove its worktree") });
+}
+
+// MARK: new task
+function openTaskPrompt({ column = "backlog", task = null, relation = null } = {}) {
+  if (modals.length || !board) return;
+  const prompt = h("textarea", { class: "nt-desc", rows: "5", placeholder: "Describe the task for the main agent…", "aria-label": "Task prompt" });
+  const flow = h("select", { class: "field", "aria-label": "Task flow" },
+    ...flows().map(f => h("option", { value: f.id }, `${f.name} · ${f.base}${f.live ? "" : " · main agent offline"}`)));
+  flow.value = task?.flow || selectedFlow()?.id || board.repo?.flow || flows()[0]?.id || "";
+  flow.disabled = !!task;
+  const send = h("button", { class: "btn primary" }, "Send to main agent", h("kbd", {}, "⌘↩"));
+  const cancel = h("button", { class: "btn ghost", onclick: closeModal }, "Cancel");
+  let sending = false;
+  const submit = async () => {
+    if (sending) return;
+    if (!prompt.value.trim()) { prompt.focus(); return; }
+    sending = true;
+    send.disabled = true;
+    send.replaceChildren(frag(spinner(12)), "Sending…");
+    try {
+      await act("POST", "/api/flows/prompt", {
+        text: prompt.value.trim(), flow: flow.value, column,
+        ...(task ? { task: task.id, relation } : {}),
+      }, "Sent to the main agent");
+      if (box.isConnected && modals.at(-1)?.contains(box)) closeModal();
+    } catch {} finally {
+      sending = false;
+      send.disabled = false;
+      send.replaceChildren("Send to main agent", h("kbd", {}, "⌘↩"));
+    }
+  };
+  send.onclick = submit;
+  const detail = task ? (relation === "after" ? `Depends on ${task.id}` : `Prerequisite for ${task.id}`) : `Requested column: ${colTitle(column)}`;
+  const box = openModal([
+    h("div", { class: "nt-head" }, I("message", 13), "New task request"),
+    h("div", { class: "m-body" }, flow, h("p", { class: "m-text" }, detail)),
+    prompt,
+    h("div", { class: "nt-foot" }, h("span", { class: "hint" }, "The main agent creates or updates the task."), h("span", { class: "spacer" }), cancel, send),
+  ], "nt");
+  box.addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
+  });
+  setTimeout(() => prompt.focus(), 0);
+}
+
+function openComposer({ parent = null } = {}) {
+  if (modals.length || !board) return;
+  const title = h("input", { class: "nt-title", placeholder: "Task title", spellcheck: "false" });
+  const desc = h("textarea", { class: "nt-desc", placeholder: "What should change, and why? Markdown works.", rows: "4" });
+  const ticket = h("input", { placeholder: "Ticket", spellcheck: "false", maxlength: "40" });
+  let planningMode = "auto";
+  const planning = h("button", { class: "prop-chip", type: "button" });
+  const renderPlanning = () => {
+    const p = planningChoice(planningMode);
+    planning.replaceChildren(I(p.icon, 13), p.label, I("chevronDown", 11));
+    planning.title = p.sub;
+    planning.setAttribute("aria-label", `Planning mode: ${p.label}`);
+  };
+  planning.onclick = () => openMenu(planning, planningItems(planningMode, mode => { planningMode = mode; renderPlanning(); }));
+  renderPlanning();
+  const create = h("button", { class: "btn primary" }, "Create task", h("kbd", {}, "\u2318\u21A9"));
+  const submit = async () => {
+    const name = title.value.trim();
+    if (!name) { title.focus(); title.classList.remove("shake"); void title.offsetWidth; title.classList.add("shake"); return; }
+    create.disabled = true;
+    try {
+      const flow = selectedFlow();
+      const t = await act("POST", "/api/tasks", { title: name, description: desc.value, ticket: ticket.value.trim() || null, planningMode,
+        ...(parentPick.value ? { parent: parentPick.value } : flow ? { repo: flow.checkout } : {}) });
+      if (!findTask(t.id)) board.tasks.push(t);
+      closeModal();
+      renderBoard();
+      openPanel(t.id);
+    } catch { create.disabled = false; }
+  };
+  create.onclick = submit;
+  desc.addEventListener("input", () => autosize(desc, innerHeight * 0.45));
+  const flow = selectedFlow();
+  const parentPick = nativeParentPicker(parent, flow ? flow.id : null);
+  const parentTask = parent && findTask(parent);
+  const base = parentTask ? parentTask.base : flow ? flow.base : board.repo ? board.repo.base : "";
+  const box = openModal([
+    h("div", { class: "nt-head" }, I("kanban", 13), "New task"),
+    title, desc,
+    h("div", { class: "nt-props" },
+      h("label", { class: "prop-chip", title: "Ticket ID, used in the branch name and the pull request" }, I("ticket", 13), ticket),
+      planning, parentPick.el,
+      h("span", { class: "prop-chip", title: `Branches from ${base} and opens its pull request into ${base}` }, I("branch", 13), h("span", { class: "mono" }, base))),
+    h("div", { class: "nt-foot" }, h("span", { class: "spacer" }), h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), create)], "nt");
+  box.addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
+    else if (e.key === "Enter" && e.target === title) { e.preventDefault(); desc.focus(); }
+    else if (e.key === "Enter" && e.target === ticket) { e.preventDefault(); submit(); }
+  });
+  setTimeout(() => title.focus(), 0);
+}
+
+// MARK: discuss
+const flowOf = t => flows().find(f => f.id === t.flow);
+const canDiscuss = t => !!(flowOf(t) || {}).live;
+const discussOff = t => `Run /kanban in ${(flowOf(t) || {}).checkout || t.repo} to discuss cards with omp`;
+const discussInOmp = t => act("POST", tpath(t.id, "/discuss"), {}, "Opened in omp").catch(() => {});
+async function openWorkspace() {
+  const id = openId;
+  try {
+    const r = await act("POST", tpath(id, "/open"), {});
+    if (r.attachCommand && (!r.presentation?.capabilities?.focus || r.presentation.kind === "plain")) {
+      const command = h("textarea", { class: "field mono", rows: "3", readonly: true, "aria-label": "Terminal attach command" }, r.attachCommand);
+      openModal([h("div", { class: "m-body" }, h("h2", {}, `Connect to ${id}`),
+        h("p", { class: "m-text" }, "Run this command in a terminal. Closing that attachment leaves the managed agent running."), command),
+        h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Close"),
+          h("button", { class: "btn primary", onclick: () => copyText(r.attachCommand, "Attach command copied") }, "Copy command"))]);
+    }
+  } catch {}
+}
+
+function showPlanReview(t) {
+  const feedback = h("textarea", { class: "field", rows: "3", placeholder: "What should change?", "aria-label": "Plan review feedback" });
+  const approve = h("button", { class: "btn primary" }, "Approve");
+  const refine = h("button", { class: "btn" }, "Request changes");
+  const submit = async decision => {
+    if (decision === "refine" && !feedback.value.trim()) { feedback.focus(); return; }
+    approve.disabled = refine.disabled = true;
+    try {
+      await act("POST", tpath(t.id, "/review"), { decision, feedback: feedback.value.trim() }, "Plan review sent");
+      closeModal();
+    } catch { approve.disabled = refine.disabled = false; }
+  };
+  approve.onclick = () => submit("approve");
+  refine.onclick = () => submit("refine");
+  approve.disabled = refine.disabled = !sessionConnected(t);
+  openModal([h("div", { class: "m-body nv-scroll" }, h("h2", {}, `Review ${t.id}`),
+    h("div", { class: "md", html: md(t.plan) }), feedback,
+    !sessionConnected(t) ? h("p", { class: "m-note" }, "The omp session must reconnect before it can receive this review.") : null),
+    h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), refine, approve)], "nv-wide");
+}
+
+// MARK: diff
+async function showDiff(t) {
+  const stat = h("pre", {}, "Loading…");
+  const body = h("div", { class: "diff-b" });
+  openModal([h("div", { class: "diff-h" }, I("diff", 16), stat, toolButton("x", "Close (Esc)", closeModal)), body], "diff");
+  try {
+    const d = await api("GET", tpath(t.id, "/diff"));
+    stat.textContent = (d.base ? `Compared with ${d.base}\n` : "") + (d.stat || "No changes") + (d.truncated ? "\nDiff truncated." : "");
+    renderDiff(body, d.diff || "");
+  } catch (e) { stat.textContent = e.message; }
+}
+function renderDiff(root, diff) {
+  const out = document.createDocumentFragment();
+  let file = null;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff --git")) {
+      const m = line.match(/^diff --git a\/(.*?) b\/(.*)$/);
+      file = h("div", {}, h("div", { class: "df-h" }, I("file", 13), m ? (m[1] === m[2] ? m[2] : `${m[1]} \u2192 ${m[2]}`) : line));
+      out.append(file);
+      continue;
+    }
+    if (!file) { file = h("div"); out.append(file); }
+    let c = "";
+    if (/^(index |--- |\+\+\+ |new file|deleted file|similarity|rename |old mode|new mode|Binary files)/.test(line)) c = "m";
+    else if (line.startsWith("@@")) c = "h";
+    else if (line.startsWith("+")) c = "a";
+    else if (line.startsWith("-")) c = "r";
+    file.append(h("div", { class: "df-l " + c }, line));
+  }
+  root.replaceChildren(out);
+}
+
+// MARK: panel
+let P = null;
+let peekTimer = null;
+const canShowAgent = t => !!t.worktree || t.spawn.state !== "none";
+function currentTab(t) {
+  const tab = tabFor[t.id] || (canShowAgent(t) ? "agent" : "task");
+  return tab === "agent" && !canShowAgent(t) ? "task" : tab;
+}
+function setTab(tab) { tabFor[openId] = tab; updatePanel(); }
+function openPanel(id) {
+  if (!findTask(id)) return;
+  if (openId !== id) { openId = id; buildPanel(); }
+  if (location.hash !== "#" + id) history.replaceState(null, "", "#" + id);
+  $("#panel").hidden = $("#resizer").hidden = false;
+  document.querySelectorAll(".card,.pipeline-node").forEach(c => c.classList.toggle("sel", c.dataset.id === id));
+  updatePanel();
+}
+function closePanel() {
+  if (P && P.cmode) drafts.set(`${openId}:${P.cmode}`, P.ta.value);
+  openId = null;
+  P = null;
+  stopPeek();
+  $("#panel").hidden = $("#resizer").hidden = true;
+  $("#panel").replaceChildren();
+  history.replaceState(null, "", location.pathname + location.search);
+  document.querySelectorAll(".card.sel,.pipeline-node.sel").forEach(c => c.classList.remove("sel"));
+}
+// Text field bound to a task property: saved on blur, never overwritten by snapshots while focused or unsaved.
+function boundField(el, key, opts = {}) {
+  el.addEventListener("input", () => {
+    if (key === "title" && el.value.includes("\n")) el.value = el.value.replace(/\n+/g, " ");
+    el.dataset.dirty = "1";
+    if (opts.autosize) autosize(el, opts.autosize);
+    if (opts.send) syncUnsent();
+  });
+  el.commit = async () => {
+    const t = findTask(openId);
+    if (!t || el.dataset.dirty !== "1") return;
+    let v = el.value;
+    if (key === "ticket") v = v.trim() || null;
+    else if (key !== "description") v = v.trim();
+    if ((t[key] ?? "") === (v ?? "")) { delete el.dataset.dirty; return; }
+    const r = await act("PATCH", tpath(t.id), { [key]: v });
+    delete el.dataset.dirty;
+    if (r && r.id) Object.assign(t, r);
+    flash(el);
+    renderBoard();
+    updatePanel();
+  };
+  el.addEventListener("blur", () => el.commit().catch(() => {}).finally(() => { if (opts.send) syncUnsent(); }));
+  el.addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && opts.send) {
+      e.preventDefault();
+      const t = findTask(openId);
+      if (t && takesUpdates(t)) sendUpdate(); else el.blur();
+    }
+    else if (e.key === "Enter" && opts.enter) { e.preventDefault(); el.blur(); }
+    else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      const t = findTask(openId);
+      delete el.dataset.dirty;
+      el.value = (t && t[key]) ?? "";
+      if (opts.autosize) autosize(el, opts.autosize);
+      el.blur();
+    }
+  });
+  return el;
+}
+function setField(el, v) {
+  if (document.activeElement === el || el.dataset.dirty === "1") return false;
+  if (el.value === (v ?? "")) return false;
+  el.value = v ?? "";
+  return true;
+}
+
+function buildPanel() {
+  const id = h("span", { class: "p-id" });
+  const status = h("button", { class: "status-btn", title: "Move to another column" });
+  status.onclick = () => {
+    const t = findTask(openId);
+    openMenu(status, board.columns.map(c => ({ html: colIcon(c.id), label: c.title, checked: c.id === t.column, action: () => requestMove(t.id, c.id) })));
+  };
+  const primary = h("span", { class: "p-primary" });
+  const openBtn = toolButton("openIn", "Connect to the agent terminal", openWorkspace);
+  const more = toolButton("more", "More actions", () => openMenu(more, moreMenu(findTask(openId)), { align: "right" }));
+  const head = h("div", { class: "p-head" }, id, status, h("span", { class: "spacer" }), primary, openBtn, more, toolButton("x", "Close (Esc)", closePanel));
+
+  const title = boundField(h("textarea", { class: "p-title", rows: "1", placeholder: "Title", spellcheck: "false" }), "title", { enter: true, autosize: 120, send: true });
+  const taskDot = h("span", { class: "dot", style: "color:var(--warning)" });
+  const tabTask = h("button", { onclick: () => setTab("task") }, I("file", 13), "Task", taskDot);
+  const agentDot = h("span", { class: "dot" });
+  const tabAgent = h("button", { onclick: () => setTab("agent") }, I("terminal", 13), "Agent", agentDot);
+
+  // task pane
+  const ticket = boundField(h("input", { class: "prop mono", placeholder: "Add a ticket", spellcheck: "false" }), "ticket", { enter: true });
+  const branch = boundField(h("input", { class: "prop mono", spellcheck: "false" }), "branch", { enter: true });
+  const base = boundField(h("input", { class: "prop mono", spellcheck: "false" }), "base", { enter: true });
+  const mergeChip = h("button", { class: "chip", onclick: () => { const t = findTask(openId); act("PATCH", tpath(t.id), { merge: t.merge === "local" ? "pr" : "local" }).catch(() => {}); } });
+  const planningChip = h("button", { class: "chip", onclick: () => {
+    const t = findTask(openId);
+    openMenu(planningChip, planningItems(t.planningMode, async mode => {
+      try {
+        const r = await act("PATCH", tpath(t.id), { planningMode: mode });
+        if (r && r.id) Object.assign(t, r);
+        renderBoard();
+        updatePanel();
+      } catch {}
+    }));
+  } });
+  const repo = boundField(h("input", { class: "prop mono", spellcheck: "false" }), "repo", { enter: true });
+  const deps = h("div", { class: "deps" });
+  const depsAdd = toolButton("plus", "Add a dependency", () => openMenu(depsAdd, dependencyMenu(findTask(openId))), 13);
+  const props = h("div", { class: "props" },
+    h("label", {}, I("ticket", 13), "Ticket"), ticket,
+    h("label", {}, I("branch", 13), "Branch"), branch,
+    h("label", { title: "The branch this task starts from and lands on" }, I("prMerged", 13), "Merges into"), h("div", { class: "prop-row" }, base, mergeChip),
+    h("label", {}, I("zap", 13), "Planning"), planningChip,
+    h("label", {}, I("repo", 13), "Repository"), repo,
+    h("label", {}, I("link", 13), "Depends on"), deps);
+  const desc = boundField(h("textarea", { class: "p-desc", rows: "2", placeholder: "Add a description…" }), "description", { autosize: 420, send: true });
+  const unsentText = h("div", { class: "txt" });
+  const unsentDismiss = h("button", { class: "btn sm ghost", title: "Keep this edit on the card without sending it", onclick: dismissUpdate }, "Dismiss");
+  const unsentSend = h("button", { class: "btn sm primary", title: "Save and send the new title and description to the agent", onmousedown: e => e.preventDefault(), onclick: sendUpdate },
+    I("arrowUp", 11), "Send to agent", h("kbd", {}, "\u2318\u21A9"));
+  const unsent = h("div", { class: "banner unsent" }, I("message", 16), unsentText, unsentDismiss, unsentSend);
+
+  const planMeta = h("span", { class: "meta" });
+  const editBtn = toolButton("pencil", "Edit the plan", () => setEditing(true), 14);
+  const copyBtn = toolButton("copy", "Copy the plan", () => copyText(findTask(openId).plan, "Plan copied"), 14);
+  const discussBtn = toolButton("message", "Discuss in omp", () => discussInOmp(findTask(openId)), 14);
+  const discussTip = h("span", { class: "tip" }, discussBtn);
+  const planView = h("div", { class: "md" });
+  const emptyDiscuss = h("button", { class: "btn sm", onclick: () => discussInOmp(findTask(openId)) }, I("message", 12), "Discuss in omp");
+  const emptyDiscussTip = h("span", { class: "tip" }, emptyDiscuss);
+  const planEmptyText = h("span");
+  const planEmpty = h("div", { class: "empty" },
+    planEmptyText,
+    h("div", { class: "actions" }, emptyDiscussTip));
+  const planEdit = h("textarea", { class: "plan-edit", spellcheck: "false" });
+  planEdit.addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); savePlan(); }
+    else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setEditing(false); }
+  });
+  const editBar = h("div", { class: "edit-bar" }, h("button", { class: "btn sm ghost", onclick: () => setEditing(false) }, "Cancel"),
+    h("button", { class: "btn sm primary", onclick: savePlan }, "Save plan"));
+  const taskPane = h("div", { class: "pane" }, props,
+    h("section", { class: "sec" }, h("div", { class: "sec-h" }, "Description"), desc, unsent),
+    h("section", { class: "sec" }, h("div", { class: "sec-h" }, "Plan", planMeta, h("span", { class: "spacer" }), editBtn, copyBtn, discussTip),
+      planEmpty, planView, planEdit, editBar));
+
+  // agent pane
+  const spawn = { ic: h("span", { class: "ic" }), lbl: h("span", { class: "lbl" }), err: h("div", { class: "act-err" }), log: h("pre", { class: "log" }) };
+  spawn.el = h("div", { class: "activity" }, h("div", { class: "act-h" }, spawn.ic, spawn.lbl), spawn.err, spawn.log);
+  const agentHead = h("div", { class: "agent-head" });
+  const agentStep = h("div", { class: "agent-step" }, I("wrench", 13), h("span"));
+  const agentMsg = h("div", { class: "agent-msg", title: "Your latest message to the agent" }, I("message", 13), h("span"));
+  const gitRow = h("div", { class: "git-row" });
+  const actions = h("div", { class: "actions" },
+    h("button", { class: "btn sm", onclick: () => showDiff(findTask(openId)) }, I("diff", 13), "Diff"),
+    h("button", { class: "btn sm", "data-presentation-diff": true, title: "Open the presentation's diff viewer", onclick: () => act("POST", tpath(openId, "/diff/open"), {}).catch(() => {}) }, I("compare", 13), "Terminal diff"),
+    h("button", { class: "btn sm", onclick: () => act("POST", tpath(openId, "/xcode"), {}).catch(() => {}) }, I("hammer", 13), "Xcode"));
+  const cleanupText = h("div", { class: "txt" });
+  const cleanup = h("div", { class: "banner" }, I("prMerged", 16), cleanupText,
+    h("button", { class: "btn sm danger", onclick: () => confirmCleanup(findTask(openId)) }, "Remove worktree"));
+  const term = h("pre", { class: "term" });
+  term.addEventListener("scroll", () => { if (P) P.termPinned = term.scrollHeight - term.scrollTop - term.clientHeight < 8; });
+  const closed = h("div", { class: "empty" }, h("strong", {}, I("terminal", 14), "Session disconnected"),
+    h("span", {}, "The board cannot confirm the agent's current state. A missing terminal attachment does not mean the agent stopped."),
+    h("button", { class: "btn sm", onclick: openWorkspace }, I("openIn", 12), "Connect terminal"));
+  const removed = h("div", { class: "empty" }, h("strong", {}, I("check", 14), "Worktree removed"), h("span", {}, "The task's worktree and branch were cleaned up."));
+  const live = h("div", { class: "sec" }, agentHead, agentStep, agentMsg, gitRow, actions, cleanup, term, closed);
+  const agentPane = h("div", { class: "pane" }, spawn.el, live, removed);
+
+  // composer
+  const ta = h("textarea", { rows: "1" });
+  const hint = h("span", { class: "hint" });
+  const send = h("button", { class: "send", title: "Send to the agent (\u2318\u21A9)", onclick: submitComposer }, I("arrowUp", 15));
+  const composer = h("div", { class: "composer-wrap" },
+    h("div", { class: "composer" }, ta, h("div", { class: "composer-bar" }, h("span", { class: "spacer" }), hint, send)));
+  ta.addEventListener("input", () => { if (P.cmode) drafts.set(`${openId}:${P.cmode}`, ta.value); autosize(ta, 220); syncSend(); });
+  ta.addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submitComposer(); } });
+
+  $("#panel").replaceChildren(head, h("div", { class: "p-title-wrap" }, title),
+    h("div", { class: "p-tabs" }, h("div", { class: "segmented" }, tabTask, tabAgent)),
+    h("div", { class: "p-scroll" }, taskPane, agentPane), composer);
+  P = { id, status, primary, openBtn, title, tabTask, taskDot, tabAgent, agentDot, ticket, branch, base, mergeChip, planningChip, repo, deps, depsAdd, desc, unsent, unsentText, unsentDismiss, unsentSend,
+        planMeta, editBtn, copyBtn, discussBtn, discussTip, emptyDiscuss, emptyDiscussTip,
+        planView, planEmpty, planEmptyText, planEdit, editBar, taskPane, spawn, agentHead, agentStep, agentMsg, gitRow, cleanup, cleanupText, term, closed, removed, live, agentPane,
+        composer, ta, hint, send, cmode: null, planSrc: null, editing: false, termPinned: true, sending: false, sendingUpdate: false };
+  P.native = nativePanel(props, taskPane);
+}
+
+function moreMenu(t) {
+  const items = [];
+  if (!t.worktree) items.push({ icon: "message", label: "Discuss in omp", disabled: !canDiscuss(t), title: canDiscuss(t) ? undefined : discussOff(t), action: () => discussInOmp(t) });
+  if (!t.worktree && t.spawn.state !== "running" && t.blockedBy.length) items.push({ icon: "play", label: "Start now (ignore dependencies)", action: () => showStartModal(t, "todo", undefined, true) });
+  items.push({ icon: "copy", label: "Copy branch name", action: () => copyText(t.branch, "Branch name copied") });
+  if (t.plan) items.push({ icon: "copy", label: "Copy plan", action: () => copyText(t.plan, "Plan copied") });
+  if (t.worktree) {
+    items.push("-", { icon: "diff", label: "Show diff", action: () => showDiff(t) },
+      { icon: "hammer", label: "Open in Xcode", action: () => act("POST", tpath(t.id, "/xcode"), {}).catch(() => {}) });
+    if (t.presentation?.capabilities?.diff) items.push({ icon: "compare", label: "Open terminal diff", action: () => act("POST", tpath(t.id, "/diff/open"), {}).catch(() => {}) });
+    if (t.column !== "done" && !t.merged && t.agent?.state !== "stopped") items.push({ icon: "stop", label: "Stop agent…", action: () => confirmStop(t) });
+    if (t.column !== "done") items.push({ icon: "trash", label: "Remove worktree…", danger: true, action: () => confirmCleanup(t) });
+  }
+  items.push("-", { header: "Beads" },
+    { icon: "plus", label: "Create child task…", disabled: t.column === "done" || !!t.merged, action: () => openComposer({ parent: t.id }) },
+    { icon: "link", label: "Readiness…", action: () => showReadiness({ id: t.id }) },
+    { icon: "refresh", label: "History…", action: () => showHistory(t.id) });
+  items.push("-", { icon: "trash", label: "Delete task…", danger: true, action: () => confirmDelete(t) });
+  return items;
+}
+function dependencyMenu(t) {
+  const tree = new Set([...nativeAncestors(t.id), ...nativeDescendants(t.id)]);
+  const items = board.tasks.filter(x => x.id !== t.id && x.flow === t.flow && !tree.has(x.id) && !t.dependsOn.includes(x.id) && x.column !== "done")
+    .map(x => ({ label: `${x.id} ${x.title}`, action: () => act("PATCH", tpath(t.id), { dependsOn: [...t.dependsOn, x.id] }).catch(() => {}) }));
+  return items.length ? items : [{ header: "No other open task" }];
+}
+function dependencyChip(t, id) {
+  const dep = findTask(id);
+  const remove = h("span", { class: "x", title: "Remove the dependency", onclick: e => { e.stopPropagation(); act("PATCH", tpath(t.id), { dependsOn: t.dependsOn.filter(d => d !== id) }).catch(() => {}); } }, I("x", 10));
+  return h("button", { class: "chip mono", title: dep ? dep.title : "deleted", onclick: () => openPanel(id) }, id, remove);
+}
+
+function updatePanel() {
+  const t = findTask(openId);
+  if (!t || !P) return;
+  const fixed = hasStarted(t);
+  P.id.textContent = t.id;
+  P.status.replaceChildren(frag(colIcon(t.column)), h("span", {}, colTitle(t.column)), I("chevronDown", 12, "chev"));
+  P.primary.replaceChildren();
+  const queued = t.column === "todo" && t.spawn.state === "none" && (t.blockedBy.length > 0 || t.waitingForSlot);
+  if (!t.worktree && !queued && (t.spawn.state === "none" || t.spawn.state === "failed")) {
+    const after = t.blockedBy.join(", ");
+    const waits = t.blockedBy.length ? `Queues the task; it starts on its own once its blockers clear: ${after}. Readiness explains each one.` : "Create the worktree and start omp on this task";
+    P.primary.append(h("button", { class: "btn sm primary", title: waits, onclick: () => requestMove(t.id, "todo") },
+      I("play", 11), t.spawn.state === "failed" ? "Retry start" : t.blockedBy.length ? "Start after blockers" : "Start"));
+  } else if (t.paused) {
+    const after = t.blockedBy.join(", ");
+    const waits = t.blockedBy.length ? `Waits in Todo until its blockers clear: ${after}. Readiness explains each one.` : "Moves it to In Progress; its agent continues where it stopped";
+    P.primary.append(h("button", { class: "btn sm primary", title: waits, onclick: () => requestMove(t.id, "doing") },
+      I("play", 11), t.blockedBy.length ? "Resume after blockers" : "Resume"));
+  } else if (t.worktree && t.agent && t.agent.state === "plan_ready") {
+    P.primary.append(h("button", { class: "btn sm primary", title: "Review the agent's proposed plan", onclick: () => showPlanReview(t) }, I("file", 11), "Review plan"));
+  } else if (t.worktree && t.merge === "local" && t.column !== "done" && t.git && t.git.commits > 0) {
+    P.primary.append(h("button", { class: "btn sm primary", disabled: t.git.dirty > 0, title: t.git.dirty > 0 ? "Commit the uncommitted changes first" : "git merge --no-ff into " + t.base,
+      onclick: () => showMergeModal(t) }, I("merge", 11), "Merge into " + t.base));
+  }
+  P.openBtn.hidden = !t.worktree;
+  if (setField(P.title, t.title) || !P.title.style.height) autosize(P.title, 120);
+  setField(P.ticket, t.ticket);
+  setField(P.branch, t.branch);
+  setField(P.base, t.base);
+  P.mergeChip.replaceChildren(I(t.merge === "local" ? "merge" : "pr", 11), t.merge === "local" ? "locally" : "via pull request");
+  P.mergeChip.disabled = fixed;
+  P.mergeChip.title = fixed ? "Fixed once the task starts" : "Click to switch how this task lands on " + t.base;
+  const planning = planningChoice(t.planningMode);
+  P.planningChip.replaceChildren(I(planning.icon, 10), planning.label, I("chevronDown", 10));
+  P.planningChip.setAttribute("aria-label", `Planning mode: ${planning.label}`);
+  P.planningChip.disabled = fixed;
+  P.planningChip.title = fixed ? "Fixed once the task starts" : planning.sub;
+  setField(P.repo, t.repo);
+  P.deps.replaceChildren(...t.dependsOn.map(id => dependencyChip(t, id)), P.depsAdd);
+  nativePanelUpdate(t);
+  P.branch.disabled = P.base.disabled = P.repo.disabled = fixed;
+  P.title.disabled = P.desc.disabled = t.column === "done" || !!t.merged;
+  if (setField(P.desc, t.description) || !P.desc.style.height) autosize(P.desc, 420);
+  syncUnsent(t);
+
+  const tab = currentTab(t);
+  P.tabAgent.disabled = !canShowAgent(t);
+  P.tabTask.classList.toggle("active", tab === "task");
+  P.tabAgent.classList.toggle("active", tab === "agent");
+  const tone = agentTone(t);
+  P.agentDot.hidden = !tone;
+  if (tone) { P.agentDot.style.color = tone; P.agentDot.classList.toggle("pulse", tone === "var(--accent)" || tone === "var(--warning)"); }
+  P.taskPane.hidden = tab !== "task";
+  P.agentPane.hidden = tab !== "agent";
+  updatePlan(t);
+  updateAgent(t);
+  updateComposer(t, tab);
+  if (tab === "agent") startPeek(); else stopPeek();
+}
+
+function updatePlan(t) {
+  if (P.planSrc !== t.plan) { P.planSrc = t.plan; P.planView.innerHTML = md(t.plan); }
+  const has = !!(t.plan || "").trim();
+  P.planMeta.dataset.ago = t.planUpdatedAt || "";
+  P.planMeta.textContent = t.planUpdatedAt ? `Updated ${ago(t.planUpdatedAt)}` : "";
+  P.planEmptyText.textContent = t.planningMode === "plan"
+    ? "No plan yet: this task will plan in its worktree and wait for your approval."
+    : t.planningMode === "fast"
+      ? "Fast task: it will implement directly without plan review."
+      : "Auto task: it will briefly triage, then implement directly unless a decision or risk needs plan review.";
+  P.planEmpty.hidden = has || P.editing || !!t.worktree;
+  P.planView.hidden = !has || P.editing;
+  P.planEdit.hidden = P.editBar.hidden = !P.editing;
+  P.editBtn.hidden = P.copyBtn.hidden = !has || P.editing;
+  P.discussTip.hidden = !!t.worktree || P.editing || !P.planEmpty.hidden;
+  const on = canDiscuss(t);
+  const tip = on ? `Bring the flow's omp session to the front with ${t.id} in its prompt` : discussOff(t);
+  for (const [b, w] of [[P.discussBtn, P.discussTip], [P.emptyDiscuss, P.emptyDiscussTip]]) {
+    b.disabled = !on;
+    b.title = w.title = tip;
+  }
+}
+function setEditing(on) {
+  if (!P) return;
+  P.editing = on;
+  if (on) P.planEdit.value = findTask(openId).plan || "";
+  updatePanel();
+  if (on) P.planEdit.focus();
+}
+async function savePlan() {
+  const t = findTask(openId);
+  if (!t) return;
+  try { const r = await act("PATCH", tpath(t.id), { plan: P.planEdit.value }); if (r && r.id) Object.assign(t, r); setEditing(false); renderBoard(); } catch {}
+}
+
+// MARK: edits to a started task
+const takesUpdates = t => (!!t.worktree || t.spawn.state === "running") && t.column !== "done" && !t.merged;
+function updateBlocked(t) {
+  if (!t.worktree) return "It can be sent once its agent is running.";
+  if (t.paused) return "It's paused: its agent gets it when it resumes.";
+  if (!sessionConnected(t)) return "Its omp session is disconnected; reconnect it before sending.";
+  const state = t.agent && t.agent.state;
+  if (state === "plan_ready") return "Its agent is waiting for plan review: include it there, or send it once the agent resumes.";
+  if (state === "needs_input") return "Its agent is waiting for your answer: connect to its terminal.";
+  if (!state || state === "stopped" || state === "disconnected") return "Its omp session is not connected.";
+  return null;
+}
+function syncUnsent(t = findTask(openId)) {
+  if (!P || !t) return;
+  const draft = takesUpdates(t) && [P.title, P.desc].some(el => el.dataset.dirty === "1");
+  P.taskDot.hidden = !t.pendingUpdate;
+  P.unsent.hidden = !(draft || t.pendingUpdate);
+  if (P.unsent.hidden) return;
+  const blocked = updateBlocked(t);
+  P.unsentText.replaceChildren(h("strong", {}, draft ? "Unsaved edit." : "Not sent to the agent."), " ",
+    blocked || (draft ? "Send it to the agent, or click away to keep it on the card only." : "It still works from the previous version."));
+  P.unsentSend.disabled = P.sendingUpdate || !!blocked;
+  P.unsentDismiss.hidden = draft;
+}
+async function sendUpdate() {
+  const p = P, id = openId;
+  if (!p || p.sendingUpdate || !findTask(id)) return;
+  p.sendingUpdate = true;
+  syncUnsent();
+  try {
+    await p.title.commit();
+    await p.desc.commit();
+    const t = findTask(id);
+    if (t && t.pendingUpdate) {
+      const r = await act("POST", tpath(id, "/update"), {});
+      const cur = findTask(id);
+      if (cur) cur.pendingUpdate = false;
+      toast(r.reopened ? `Sent to ${id}'s agent; the card moved back to In Progress` : `Sent to ${id}'s agent`);
+    }
+  } catch {}
+  p.sendingUpdate = false;
+  if (P === p) syncUnsent();
+}
+async function dismissUpdate() {
+  const id = openId;
+  try {
+    await act("POST", tpath(id, "/update"), { dismiss: true }, "Kept on the card without sending it");
+    const cur = findTask(id);
+    if (cur) cur.pendingUpdate = false;
+    syncUnsent();
+  } catch {}
+}
+
+function updateAgent(t) {
+  const spawning = t.spawn.state === "running", spawnFailed = t.spawn.state === "failed";
+  P.spawn.el.hidden = !(spawning || spawnFailed);
+  if (spawning || spawnFailed) {
+    P.spawn.el.classList.toggle("failed", spawnFailed);
+    P.spawn.ic.replaceChildren(spawning ? frag(spinner(13)) : I("alert", 14));
+    P.spawn.lbl.textContent = spawning ? "Creating the worktree and starting omp" : "Couldn't start the task";
+    P.spawn.err.hidden = !spawnFailed;
+    P.spawn.err.textContent = t.spawn.error || "";
+    const pinned = P.spawn.log.scrollHeight - P.spawn.log.scrollTop - P.spawn.log.clientHeight < 8;
+    if (P.spawn.log.textContent !== (t.spawn.log || "")) { P.spawn.log.textContent = t.spawn.log || ""; if (pinned) P.spawn.log.scrollTop = P.spawn.log.scrollHeight; }
+    P.spawn.log.hidden = !t.spawn.log;
+  }
+  P.live.hidden = !t.worktree;
+  P.removed.hidden = !!t.worktree || spawning || spawnFailed;
+  if (!t.worktree) return;
+  P.agentHead.replaceChildren(stateEl(t.agent ? statusOf({ ...t, spawn: { state: "done" } }) : { tone: "faint", dot: true, text: "No agent" }), planningBadge(t), h("span", { class: "spacer" }));
+  if (t.pr) P.agentHead.append(prChip(t.pr));
+  const step = t.agent && (AGENT_LABEL[t.agent.state] || t.agent.state === "needs_input") ? t.agent.step : null;
+  P.agentStep.hidden = !step;
+  P.agentStep.lastChild.textContent = step || "";
+  P.agentStep.title = step || "";
+  P.agentMsg.hidden = !(t.agent && t.agent.message);
+  P.agentMsg.lastChild.textContent = t.agent && t.agent.message ? t.agent.message : "";
+  P.gitRow.replaceChildren(h("span", { class: "branch", title: t.branch }, I("branch", 12), h("span", {}, t.branch)), I("arrowRight", 11, "to"), h("span", { class: "branch" }, h("span", {}, t.base)));
+  if (t.git && (t.git.added || t.git.removed)) P.gitRow.append(diffstat(t.git));
+  if (t.git && t.git.dirty > 0) P.gitRow.append(h("span", {}, plural(t.git.dirty, "uncommitted file")));
+  const readable = t.execution?.kind === "managed" || sessionConnected(t);
+  P.term.hidden = !readable;
+  P.closed.hidden = sessionConnected(t) || t.agent?.state === "stopped";
+  P.agentPane.querySelector("[data-presentation-diff]").hidden = !t.presentation?.capabilities?.diff;
+  P.cleanup.hidden = t.column !== "done";
+  P.cleanupText.replaceChildren(t.merged
+    ? h("span", {}, h("strong", {}, "Merged into " + t.base), ` ${ago(t.merged.at)} (${t.merged.sha.slice(0, 7)}). The worktree can go.`)
+    : t.pr && t.pr.state === "merged"
+      ? h("span", {}, h("strong", {}, `#${t.pr.number} merged`), ` into ${t.base}. The worktree can go.`)
+      : h("span", {}, h("strong", {}, "Done."), " Remove the worktree when you no longer need it."));
+}
+
+// MARK: composer
+function updateComposer(t, tab) {
+  const mode = tab === "agent" && t.worktree ? "agent" : null;
+  P.composer.hidden = !mode;
+  if (P.cmode !== mode) {
+    if (P.cmode) drafts.set(`${t.id}:${P.cmode}`, P.ta.value);
+    P.cmode = mode;
+    P.ta.value = mode ? drafts.get(`${t.id}:${mode}`) || "" : "";
+    autosize(P.ta, 220);
+  }
+  if (!mode) return;
+  const connected = sessionConnected(t);
+  const state = t.agent && t.agent.state;
+  const available = connected && !t.paused && !!state && !["stopped", "disconnected", "plan_ready", "needs_input"].includes(state);
+  P.ta.disabled = !available;
+  P.ta.placeholder = !connected ? "The omp session is disconnected"
+    : t.paused ? "Paused: move it to In Progress to message the agent"
+    : state === "plan_ready" ? "Its plan waits for review"
+    : state === "needs_input" ? "It waits for your answer; connect to its terminal"
+    : available ? "Message the agent…" : "No connected omp session";
+  syncSend();
+}
+function syncSend() {
+  if (!P || !P.cmode) return;
+  P.send.disabled = P.sending || P.ta.disabled || !P.ta.value.trim();
+  P.hint.textContent = P.ta.disabled ? "" : "\u2318\u21A9 to send";
+}
+async function submitComposer() {
+  const t = findTask(openId);
+  if (!t || !P || !P.cmode || P.sending) return;
+  const text = P.ta.value.trim();
+  const mode = P.cmode;
+  if (!text || P.ta.disabled) return;
+  P.sending = true;
+  syncSend();
+  try {
+    await act("POST", tpath(t.id, "/message"), { text }, "Sent to the agent");
+    drafts.delete(`${t.id}:${mode}`);
+    if (P && openId === t.id && P.cmode === mode) { P.ta.value = ""; autosize(P.ta, 220); }
+  } catch {}
+  if (P) { P.sending = false; syncSend(); }
+}
+
+// MARK: terminal peek
+function peekWanted() {
+  const t = openId && findTask(openId);
+  return !!(P && t && t.worktree && (t.execution?.kind === "managed" || sessionConnected(t)) && currentTab(t) === "agent" && document.visibilityState === "visible");
+}
+function startPeek() {
+  if (!peekWanted()) { stopPeek(); return; }
+  if (peekTimer) return;
+  const tick = async () => {
+    if (!peekWanted()) { stopPeek(); return; }
+    const id = openId;
+    try {
+      const r = await api("GET", tpath(id, "/screen"));
+      if (P && openId === id && P.term.textContent !== r.text) {
+        P.term.textContent = r.text;
+        if (P.termPinned) P.term.scrollTop = P.term.scrollHeight;
+      }
+    } catch {}
+  };
+  tick();
+  peekTimer = setInterval(tick, 2000);
+}
+function stopPeek() { clearInterval(peekTimer); peekTimer = null; }
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") startPeek(); else stopPeek(); });
+
+// MARK: resizer
+(() => {
+  const saved = parseInt(LS.get("panelWidth"), 10);
+  if (saved) document.documentElement.style.setProperty("--panel-w", `${saved}px`);
+  const r = $("#resizer");
+  r.addEventListener("pointerdown", e => {
+    e.preventDefault();
+    r.setPointerCapture(e.pointerId);
+    r.classList.add("dragging");
+    let width = 0;
+    const move = ev => {
+      width = Math.round(Math.min(Math.max(innerWidth - ev.clientX, 380), innerWidth * 0.72));
+      document.documentElement.style.setProperty("--panel-w", `${width}px`);
+    };
+    const up = () => {
+      r.classList.remove("dragging");
+      r.removeEventListener("pointermove", move);
+      r.removeEventListener("pointerup", up);
+      if (width) LS.set("panelWidth", String(width));
+    };
+    r.addEventListener("pointermove", move);
+    r.addEventListener("pointerup", up);
+  });
+})();
+
+</script>
+<script src="/markdown.js"></script>
+<script src="/pipeline.js"></script>
+<script src="/native.js"></script>
+<script>
+"use strict";
+// MARK: wiring
+$("#brand").append(I("kanban", 16), "Kanboard");
+$("#search").prepend(I("search", 13));
+$("#refreshBtn").append(I("refresh", 14));
+$("#refreshBtn").onclick = () => act("POST", "/api/refresh", {}, "Refreshing agents, git and pull requests").catch(() => {});
+$("#newBtn").append(I("plus", 14), "New task", h("kbd", {}, "N"));
+$("#newBtn").onclick = () => openComposer();
+for (const [view, id, glyph] of [["board", "boardViewBtn", "kanban"], ["pipeline", "pipelineViewBtn", "branch"]]) {
+  const button = $("#" + id);
+  button.append(I(glyph, 16));
+  button.setAttribute("aria-pressed", String(boardView === view));
+  button.onclick = () => {
+    boardView = view;
+    LS.set("boardView", view);
+    $("#boardViewBtn").setAttribute("aria-pressed", String(view === "board"));
+    $("#pipelineViewBtn").setAttribute("aria-pressed", String(view === "pipeline"));
+    renderBoard();
+  };
+}
+$("#filter").addEventListener("input", e => { filter = e.target.value.trim().toLowerCase(); renderBoard(); });
+$("#filter").addEventListener("keydown", e => { if (e.key === "Escape" && e.target.value) { e.preventDefault(); e.stopPropagation(); e.target.value = ""; filter = ""; renderBoard(); } });
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") {
+    if (menu) closeMenu();
+    else if (modals.length) closeModal();
+    else if (isTyping()) document.activeElement.blur();
+    else if (openId) closePanel();
+    else return;
+    e.preventDefault();
+    return;
+  }
+  if (isTyping() || modals.length || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === "n") { e.preventDefault(); openComposer(); }
+  else if (e.key === "/") { e.preventDefault(); $("#filter").focus(); }
+});
+window.addEventListener("hashchange", () => {
+  const id = decodeURIComponent(location.hash.slice(1));
+  if (id && findTask(id)) openPanel(id);
+  else if (!id && openId) closePanel();
+});
+setInterval(() => {
+  document.querySelectorAll("[data-elapsed]").forEach(el => { if (el.dataset.elapsed) el.textContent = elapsed(el.dataset.elapsed); });
+  if (P && P.planMeta.dataset.ago) P.planMeta.textContent = `Updated ${ago(P.planMeta.dataset.ago)}`;
+}, 1000);
+
+(async () => {
+  await loadState();
+  if (selectedFlow() && new URLSearchParams(location.search).get("flow") !== flowSel) setFlow(flowSel);
+  const id = decodeURIComponent(location.hash.slice(1));
+  if (id && findTask(id)) openPanel(id);
+  connect();
+})();
+</script>
+</body>
+</html>

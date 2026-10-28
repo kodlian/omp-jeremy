@@ -1,0 +1,21 @@
+{
+  "name": "omp-git-diff-review",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "omp /review: browser diff review with a file tree, line comments sent back to the agent",
+  "omp": {
+    "extensions": ["./dist/extension.js"]
+  },
+  "scripts": {
+    "build": "bun build web/main.js --outdir web/dist --splitting --format esm --minify",
+    "prepare": "bun run build",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "omp-integrations": "workspace:*",
+    "lucide": "^1.55.0",
+    "shiki": "^4.5.0",
+    "@types/bun": "latest"
+  }
+}

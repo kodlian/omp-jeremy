@@ -1,0 +1,14 @@
+{
+  "name": "omp-jeremy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": ["plugins/*", "packages/*"],
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "test": "bun test packages/integrations/tests plugins/git-diff-review/tests"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
