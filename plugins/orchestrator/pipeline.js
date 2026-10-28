@@ -50,10 +50,11 @@ function pipelineFit() {
 function pipelineAnimateConnection(edge) {
   if (!edge || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   const length = edge.path.getTotalLength();
+  const stroke = getComputedStyle(edge.path).stroke;
   edge.path.animate([
-    { strokeDasharray: `${length} ${length}`, strokeDashoffset: length },
-    { strokeDasharray: `${length} ${length}`, strokeDashoffset: 0 },
-  ], { duration: 550, easing: "ease-out" });
+    { strokeDasharray: `${length} ${length}`, strokeDashoffset: length, stroke, opacity: 1, strokeWidth: 4 },
+    { strokeDasharray: `${length} ${length}`, strokeDashoffset: 0, stroke, opacity: 1, strokeWidth: 4 },
+  ], { duration: Math.min(1200, Math.max(700, length * .8)), easing: "linear" });
 }
 async function pipelineChange(from, to, previous = null) {
   const task = findTask(to);
@@ -222,5 +223,6 @@ function renderPipeline() {
   for (const [key, edge] of pipeline.edges) if (!keys.has(key)) { edge.group.remove(); pipeline.edges.delete(key); }
   pipeline.remove.hidden = !pipeline.edges.has(pipeline.selected);
   pipelineDrawEdges(); pipelineTransform();
+  highlightMissingDependencies();
   if (pipeline.fit) { pipeline.fit = false; requestAnimationFrame(pipelineFit); }
 }

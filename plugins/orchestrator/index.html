@@ -129,6 +129,7 @@ button.ctx:hover{color:var(--fg)}
 .card:hover{border-color:var(--line-strong)}
 .card.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
 .card.dep-highlight,.pipeline-node.dep-highlight{outline:2px solid var(--accent);outline-offset:4px}
+.card.missing-dependency:not(.dep-highlight),.pipeline-node.missing-dependency:not(.dep-highlight){outline:2px dashed var(--warning);outline-offset:4px}
 .card.dragging{opacity:.35}
 .card.needs{border-color:color-mix(in srgb,var(--warning) 55%,var(--line))}
 .card.needs::before{content:"";position:absolute;top:9px;bottom:9px;left:-1px;width:3px;border-radius:0 3px 3px 0;background:var(--warning)}
@@ -743,6 +744,7 @@ function renderBoard() {
   root.querySelectorAll(".col-b").forEach(b => { scrolls[b.dataset.col] = b.scrollTop; });
   root.replaceChildren(...board.columns.map(columnEl));
   root.querySelectorAll(".col-b").forEach(b => { if (scrolls[b.dataset.col]) b.scrollTop = scrolls[b.dataset.col]; });
+  highlightMissingDependencies();
 }
 function columnEl(col) {
   const tasks = colTasks(col.id).filter(t => inFlow(t) && matches(t));
@@ -798,6 +800,7 @@ function refreshCard(t) {
   if (boardView === "pipeline") { renderPipeline(); return; }
   const old = document.querySelector(`.card[data-id="${CSS.escape(t.id)}"]`);
   if (old) old.replaceWith(cardEl(t));
+  highlightMissingDependencies();
 }
 
 // MARK: drag and drop
@@ -1193,6 +1196,7 @@ function openPanel(id) {
   $("#panel").hidden = $("#resizer").hidden = false;
   document.querySelectorAll(".card,.pipeline-node").forEach(c => c.classList.toggle("sel", c.dataset.id === id));
   updatePanel();
+  highlightMissingDependencies();
 }
 function closePanel() {
   highlightDependency(null);
@@ -1204,6 +1208,7 @@ function closePanel() {
   $("#panel").replaceChildren();
   history.replaceState(null, "", location.pathname + location.search);
   document.querySelectorAll(".card.sel,.pipeline-node.sel").forEach(c => c.classList.remove("sel"));
+  highlightMissingDependencies();
 }
 // Text field bound to a task property: saved on blur, never overwritten by snapshots while focused or unsaved.
 function boundField(el, key, opts = {}) {
@@ -1397,6 +1402,17 @@ function dependencyMenu(t) {
     .map(x => ({ label: `${taskNumber(x.id)} ${x.title}`, action: () => act("PATCH", tpath(t.id), { dependsOn: [...t.dependsOn, x.id] }).catch(() => {}) }));
   return items.length ? items : [{ header: "No other open task" }];
 }
+function highlightMissingDependencies() {
+  const missing = new Set((findTask(openId)?.dependsOn || []).filter(id => findTask(id)?.column !== "done"));
+  document.querySelectorAll("#board .card,#board .pipeline-node").forEach(node => {
+    node.classList.toggle("missing-dependency", missing.has(node.dataset.id));
+  });
+  if (boardView === "pipeline" && pipeline.root) {
+    for (const edge of pipeline.edges.values()) {
+      edge.group.classList.toggle("missing-dependency", edge.to === openId && missing.has(edge.from));
+    }
+  }
+}
 function highlightDependency(id, reveal = false) {
   highlightedDependency = id;
   let target = null;
@@ -1405,16 +1421,7 @@ function highlightDependency(id, reveal = false) {
     node.classList.toggle("dep-highlight", highlighted);
     if (highlighted) target = node;
   });
-  if (!reveal || !target) return;
-  if (boardView === "pipeline") {
-    const bounds = pipeline.root.getBoundingClientRect(), rect = target.getBoundingClientRect();
-    if (rect.left < bounds.left || rect.right > bounds.right || rect.top < bounds.top || rect.bottom > bounds.bottom) {
-      const p = pipeline.positions.get(id);
-      pipeline.x = pipeline.root.clientWidth / 2 - (p.x + 130) * pipeline.zoom;
-      pipeline.y = pipeline.root.clientHeight / 2 - (p.y + 65) * pipeline.zoom;
-      pipelineTransform();
-    }
-  } else target.scrollIntoView({ block: "nearest", inline: "nearest" });
+  if (reveal && target && boardView !== "pipeline") target.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 function dependencyHighlightChanged(e) {
   const entering = e.type === "mouseenter" || e.type === "focus";
