@@ -6,13 +6,13 @@ const clipText = (s, n) => (s.length > n ? s.slice(0, n) + "…" : s);
 const nativeValue = v => (v == null ? "" : typeof v === "string" ? v : JSON.stringify(v, null, 1));
 const byId = (a, b) => a.id.localeCompare(b.id, undefined, { numeric: true });
 function nativeOpenTask(id) {
-  if (!findTask(id)) { toast(`${id} isn't on this board`, true); return; }
+  if (!findTask(id)) { toast(`${taskNumber(id)} isn't on this board`, true); return; }
   while (modals.length) closeModal();
   openPanel(id);
 }
 function nativeTaskChip(id, extra) {
   const t = findTask(id);
-  return h("button", { class: "chip mono", title: t ? t.title : "Not on this board", "aria-label": `Open ${id}`, onclick: () => nativeOpenTask(id) }, id, extra || null);
+  return h("button", { class: "chip mono", title: t ? t.title : "Not on this board", "aria-label": `Open ${taskNumber(id)}`, onclick: () => nativeOpenTask(id) }, taskNumber(id), extra || null);
 }
 function nativeStatus(text, error = false, retry = null) {
   return h("div", { class: "nv-state" + (error ? " error" : ""), role: error ? "alert" : "status" },
@@ -90,7 +90,7 @@ function nativeParentItems(childId, flowId, current, choose) {
   const list = board.tasks.filter(eligible).sort(byId);
   const items = [{ icon: "x", label: "No parent", checked: !current, action: () => choose(null) }];
   if (list.length) items.push("-", { header: flowId ? "Same flow" : "Any flow · the child joins its parent's flow" });
-  for (const x of list) items.push({ label: `${x.id} ${x.title}`, sub: flowId ? colTitle(x.column) : (flowOf(x) || {}).name, checked: x.id === current, action: () => choose(x.id) });
+  for (const x of list) items.push({ label: `${taskNumber(x.id)} ${x.title}`, sub: flowId ? colTitle(x.column) : (flowOf(x) || {}).name, checked: x.id === current, action: () => choose(x.id) });
   if (!list.length) items.push({ header: "No eligible open task" });
   return items;
 }
@@ -98,9 +98,9 @@ function nativeParentPicker(initial, flowId) {
   const state = { value: initial || null };
   const el = h("button", { class: "prop-chip", type: "button" });
   const render = () => {
-    el.replaceChildren(I("link", 13), state.value ? `Parent ${state.value}` : "No parent", I("chevronDown", 11));
-    el.setAttribute("aria-label", state.value ? `Parent: ${state.value}` : "Parent: none");
-    el.title = state.value ? `Child of ${state.value}: inherits its repository, base and blockers` : "Choose a parent task";
+    el.replaceChildren(I("link", 13), state.value ? `Parent ${taskNumber(state.value)}` : "No parent", I("chevronDown", 11));
+    el.setAttribute("aria-label", state.value ? `Parent: ${taskNumber(state.value)}` : "Parent: none");
+    el.title = state.value ? `Child of ${taskNumber(state.value)}: inherits its repository, base and blockers` : "Choose a parent task";
   };
   el.onclick = () => openMenu(el, nativeParentItems(null, flowId, state.value, v => { state.value = v; render(); }));
   render();
@@ -147,7 +147,7 @@ function nativePanel(props, taskPane) {
 function nativePanelUpdate(t) {
   const N = P && P.native;
   if (!N || N.id !== t.id) return;
-  const parentRemove = t.parent ? h("span", { class: "x", title: "Clear the parent", role: "button", "aria-label": `Clear parent ${t.parent}`,
+  const parentRemove = t.parent ? h("span", { class: "x", title: "Clear the parent", role: "button", "aria-label": `Clear parent ${taskNumber(t.parent)}`,
     onclick: e => { e.stopPropagation(); nativeSetParent(N, t, null); } }, I("x", 10)) : null;
   N.parent.replaceChildren(...(t.parent ? [nativeTaskChip(t.parent, parentRemove)] : [h("span", { class: "nv-none" }, "None")]), N.parentPick);
   N.children.replaceChildren(...(t.children || []).slice().sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map(id => nativeTaskChip(id)), N.childAdd);
@@ -159,7 +159,7 @@ function nativeSetParent(N, t, value) {
     N.busy = true;
     nativePanelUpdate(t);
     try {
-      const r = await act("PATCH", tpath(t.id), { parent: value }, value ? `${t.id} is now under ${value}` : `${t.id} has no parent`);
+      const r = await act("PATCH", tpath(t.id), { parent: value }, value ? `${taskNumber(t.id)} is now under ${taskNumber(value)}` : `${taskNumber(t.id)} has no parent`);
       const cur = findTask(t.id);
       if (cur && r && r.id) Object.assign(cur, r);
       renderBoard();
@@ -169,8 +169,8 @@ function nativeSetParent(N, t, value) {
     }
   };
   if (t.column === "backlog" && !t.worktree) { go(); return; }
-  confirmModal(value ? `Move ${t.id} under ${value}?` : `Clear ${t.id}'s parent?`,
-    `${t.id} ${value ? "inherits the blockers of " + value + "'s tree" : "stops inheriting its parent tree's blockers"}, which may change when the queue starts or resumes it.`,
+  confirmModal(value ? `Move ${taskNumber(t.id)} under ${taskNumber(value)}?` : `Clear ${taskNumber(t.id)}'s parent?`,
+    `${taskNumber(t.id)} ${value ? "inherits the blockers of " + taskNumber(value) + "'s tree" : "stops inheriting its parent tree's blockers"}, which may change when the queue starts or resumes it.`,
     value ? "Reparent" : "Clear parent", go, { cls: "primary" });
 }
 async function nativeLoadContext(N) {
@@ -184,7 +184,7 @@ async function nativeLoadContext(N) {
   }
 }
 function nativeRenderContext(N, r) {
-  N.meta.textContent = r.updatedAt ? `${r.beadId || ""} · updated ${ago(r.updatedAt)}` : r.beadId || "";
+  N.meta.textContent = r.updatedAt ? `${taskNumber(r.beadId || "")} · updated ${ago(r.updatedAt)}` : taskNumber(r.beadId || "");
   const entries = (r.entries || []).slice().reverse();
   N.list.replaceChildren(...(entries.length ? entries.map(e => h("article", { class: "nv-item" },
     h("div", { class: "nv-item-h" }, h("span", { class: "chip" + (e.kind === "outcome" ? " nv-outcome" : "") }, e.kind || "note"),
@@ -205,7 +205,7 @@ async function nativePublish(N) {
   try {
     const r = await api("POST", tpath(id, "/context"), { kind: N.kind.value, text });
     drafts.delete(`${id}:context`);
-    toast(`${N.kind.value === "outcome" ? "Outcome" : "Finding"} published on ${id}`);
+    toast(`${N.kind.value === "outcome" ? "Outcome" : "Finding"} published on ${taskNumber(id)}`);
     if (P && P.native === N) { N.text.value = ""; N.counter.sync(); if (seq === N.seq) nativeRenderContext(N, r); else nativeLoadContext(N); }
   } catch (e) {
     if (P && P.native === N) fail(e.message); else toast(e.message, true);
@@ -222,7 +222,7 @@ function showReadiness({ flow = null, id = null } = {}) {
   const body = h("div", { class: "m-body nv-scroll" });
   const refresh = h("button", { class: "btn ghost" }, I("refresh", 12), "Refresh");
   const box = openModal([
-    h("div", { class: "m-body nv-head" }, h("h2", {}, id ? `Readiness · ${id}` : `Readiness · ${f ? `${f.name} · ${f.base}` : "All flows"}`),
+    h("div", { class: "m-body nv-head" }, h("h2", {}, id ? `Readiness · ${taskNumber(id)}` : `Readiness · ${f ? `${f.name} · ${f.base}` : "All flows"}`),
       h("p", { class: "m-text" }, "Why Beads and the board's queue would or wouldn't start each task now. Nothing is started.")),
     body,
     h("div", { class: "m-foot" }, refresh, h("span", { class: "spacer" }), h("button", { class: "btn", onclick: closeModal }, "Close"))], "nv-wide");
@@ -268,7 +268,7 @@ function showHistory(id) {
   const limit = h("select", { class: "field nv-kind", "aria-label": "How many entries" },
     ...[10, 25, 50].map(n => h("option", { value: String(n) }, `Last ${n}`)));
   const box = openModal([
-    h("div", { class: "m-body nv-head" }, h("h2", {}, `History · ${id}`),
+    h("div", { class: "m-body nv-head" }, h("h2", {}, `History · ${taskNumber(id)}`),
       h("div", { class: "nv-form-bar" }, mode, limit, h("span", { class: "spacer" }), h("span", { class: "m-note" }, "Newest first"))),
     body,
     h("div", { class: "m-foot" }, h("button", { class: "btn", onclick: closeModal }, "Close"))], "nv-wide");

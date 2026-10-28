@@ -19,7 +19,7 @@ const RECONNECT_MS = 3000;
 const MODE_FILE = "kanboard";
 const STEP_MS = 2000;
 const CLEANUP_ENTRY = "kanboard.cleanup";
-const USAGE = "Kanboard: /kanban on | off | status | open | start KB-n…|all | done [KB-n]";
+const USAGE = "Kanboard: /kanban on | off | status | open | start #n…|all | done [#n]";
 const KANBAN_COMMANDS: AutocompleteItem[] = [
 	{ label: "on", value: "on", description: "Enable Kanban mode for this checkout" },
 	{ label: "off", value: "off", description: "Disable Kanban mode for this checkout" },
@@ -221,7 +221,7 @@ async function withLegacyConfirm<T>(ctx: ExtensionContext, id: string, call: (co
 		if (confirmed || !(e instanceof BoardError) || e.requiresConfirmation !== "legacySession") throw e;
 		if (!ctx.hasUI) throw new Error(`${e.message}. Ask the user to confirm that the omp in ${id}'s old terminal has exited, then retry with confirmLegacy: true.`);
 		const sure = await ctx.ui.confirm(
-			`Has ${id}'s old omp exited?`,
+			`Has ${taskNumber(id)}'s old omp exited?`,
 			`${e.message}.\n\nConfirm only once the omp that ran in its old terminal has exited: the board can't see that terminal.`,
 		);
 		if (!sure) throw new Error(`${id} unchanged: its old omp may still be running`);
@@ -233,12 +233,15 @@ const tilde = (path: string) => (path.startsWith(homedir()) ? `~${path.slice(hom
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const reply = (text: string, isError = false) => ({ content: [{ type: "text" as const, text }], isError });
 
-/** A card id from user or agent input: "kb-12", "12" mean KB-12 and "kb-12.1", "12.1" mean KB-12.1; other ids (Beads' native KB-a3f8.1) stay as given. */
+/** A card id from user or agent input: "#12", "kb-12", "12" mean KB-12 and "#12.1", "kb-12.1", "12.1" mean KB-12.1; other ids (Beads' native KB-a3f8.1) stay as given. */
 function taskId(raw: string): string {
-	const id = raw.trim();
+	const id = raw.trim().replace(/^#(?=\d)/, "");
 	if (/^\d+(\.\d+)*$/.test(id)) return `KB-${id}`;
 	return /^kb-\d+(\.\d+)*$/i.test(id) ? id.toUpperCase() : id;
 }
+
+/** A card id as people read it: KB-12.1 shows as #12.1; other ids stay as given. */
+const taskNumber = (id: string) => (/^KB-\d+(\.\d+)*$/i.test(id) ? `#${id.slice(3)}` : id);
 
 // --- board server -------------------------------------------------------------------------------------------------
 
@@ -765,7 +768,7 @@ function widgetLines(p: Paint, board: Board | null, scope: { flow: string } | { 
 	const icon = p.fg("accent", BOARD_GLYPH[p.getSymbolPreset()] ?? BOARD_GLYPH.unicode);
 	const sep = p.fg("dim", " \u00b7 ");
 	if ("task" in scope) {
-		const head = ` ${icon} ${p.bold(p.fg("accent", scope.task))}`;
+		const head = ` ${icon} ${p.bold(p.fg("accent", taskNumber(scope.task)))}`;
 		const t = board?.tasks.find((x) => x.id === scope.task);
 		if (!t) return [head];
 		const commits = t.git?.commits ?? 0;
@@ -789,7 +792,7 @@ function widgetLines(p: Paint, board: Board | null, scope: { flow: string } | { 
 	const listed = open.filter((t) => t.column in LISTED_RANK).sort((a, b) => LISTED_RANK[a.column] - LISTED_RANK[b.column]);
 	const lines = listed.slice(0, MAX_LISTED).map((t) => {
 		const [glyph, tone, state] = cardLook(t);
-		return `   ${p.fg(tone, p.symbol(glyph))} ${p.bold(t.id)} ${t.title.replace(CONTROL, " ")}${sep}${p.fg(tone, state)}`;
+		return `   ${p.fg(tone, p.symbol(glyph))} ${p.bold(taskNumber(t.id))} ${t.title.replace(CONTROL, " ")}${sep}${p.fg(tone, state)}`;
 	});
 	if (listed.length > MAX_LISTED) lines.push(`   ${p.fg("dim", `+${listed.length - MAX_LISTED} more on the board`)}`);
 	return [`${head}${sep}${counts.length ? counts.join(sep) : p.fg("dim", "no open cards")}`, ...lines];
@@ -985,21 +988,21 @@ export default function kanboard(pi: ExtensionAPI) {
 			next.set(t.id, !t.agent && before?.agent ? { ...t, agent: before.agent } : t);
 			if (!before) continue;
 			if (t.spawn.state === "failed" && before.spawn.state !== "failed") {
-				ctx.ui.notify(`${t.id} didn't start: ${t.spawn.error ?? "unknown error"}`, "error");
+				ctx.ui.notify(`${taskNumber(t.id)} didn't start: ${t.spawn.error ?? "unknown error"}`, "error");
 			}
 			if (t.agent?.state === "needs_input" && before.agent?.state !== "needs_input") {
-				ctx.ui.notify(`${t.id} needs your input ${presentationText(t)}`, "warning");
+				ctx.ui.notify(`${taskNumber(t.id)} needs your input ${presentationText(t)}`, "warning");
 			}
 			if (t.agent?.state === "plan_ready" && before.agent?.state !== "plan_ready") {
-				ctx.ui.notify(`${t.id}'s plan is ready: review it on the board or ${presentationText(t)}`, "warning");
+				ctx.ui.notify(`${taskNumber(t.id)}'s plan is ready: review it on the board or ${presentationText(t)}`, "warning");
 			}
 			if (t.column === "review" && before.column !== "review" && t.merge === "local" && !t.pr) {
-				ctx.ui.notify(`${t.id} is ready to merge: /kanban done ${t.id}`, "info");
+				ctx.ui.notify(`${taskNumber(t.id)} is ready to merge: /kanban done ${taskNumber(t.id)}`, "info");
 			}
 			if (t.pr?.state === "merged" && before.pr?.state !== "merged") {
-				ctx.ui.notify(`${t.id}: its pull request was merged into ${t.base}`, "info");
+				ctx.ui.notify(`${taskNumber(t.id)}: its pull request was merged into ${t.base}`, "info");
 			} else if (t.merged && !before.merged) {
-				ctx.ui.notify(`${t.id} merged into ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info");
+				ctx.ui.notify(`${taskNumber(t.id)} merged into ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info");
 			}
 		}
 		seen = next;
@@ -1022,7 +1025,7 @@ export default function kanboard(pi: ExtensionAPI) {
 				if (running) ctx.abort();
 				void report(ctx, review ? "plan_ready" : "idle");
 				message = running ? "Interrupted its turn" : "It was idle";
-				ctx.ui.notify(`Kanboard paused ${c.task}; moving its card back to In Progress resumes it`, "warning");
+				ctx.ui.notify(`Kanboard paused ${taskNumber(c.task)}; moving its card back to In Progress resumes it`, "warning");
 			} else if (c.action === "resume") {
 				if (review) message = "Its plan is waiting for review";
 				else if (!ctx.isIdle()) message = "It was already working";
@@ -1030,7 +1033,7 @@ export default function kanboard(pi: ExtensionAPI) {
 					pi.sendUserMessage(c.text ?? "");
 					message = "Resumed";
 				}
-				ctx.ui.notify(`Kanboard resumed ${c.task}`, "info");
+				ctx.ui.notify(`Kanboard resumed ${taskNumber(c.task)}`, "info");
 			} else if (c.action === "message") {
 				if (review) {
 					ok = false;
@@ -1086,7 +1089,7 @@ export default function kanboard(pi: ExtensionAPI) {
 			} else if (e.event === "discuss" && data && typeof data === "object" && "id" in data && typeof data.id === "string") {
 				const id = taskId(data.id);
 				if (ctx.hasUI) ctx.ui.pasteToEditor(`${id} `);
-				ctx.ui.notify(`${id}: say what to change; omp updates the card`, "info");
+				ctx.ui.notify(`${taskNumber(id)}: say what to change; omp updates the card`, "info");
 			} else if (e.event === "control" && isControl(data) && data.task === task) {
 				void runControl(ctx, data);
 			}
@@ -1223,7 +1226,7 @@ export default function kanboard(pi: ExtensionAPI) {
 			ids = board.tasks.filter((t) => t.column === "backlog" && t.flow === flow && t.origin?.session === sessionId).map((t) => t.id);
 			if (!ids.length) return "No backlog cards from this session to start";
 		}
-		if (!ids.length) throw new Error("Name the cards to start (KB-n…, or all)");
+		if (!ids.length) throw new Error("Name the cards to start (#n…, or all)");
 		const lines: string[] = [];
 		for (const id of ids) {
 			try {
@@ -1257,7 +1260,7 @@ export default function kanboard(pi: ExtensionAPI) {
 		const board = await api<Board>("GET", "/api/state");
 		const own = task ? board.tasks.find((t) => t.id === task) : worktreeTask(board, ctx.cwd);
 		const id = named ?? own?.id;
-		if (!id) throw new Error("This directory isn't a Kanboard task worktree: name the task to merge (/kanban done KB-n)");
+		if (!id) throw new Error("This directory isn't a Kanboard task worktree: name the task to merge (/kanban done #n)");
 		const t = findTask(board, id);
 		if (t.merge !== "local") throw new Error(`${id} merges via a pull request: push the branch and open one`);
 		if (t.merged) throw new Error(`${id} is already merged into ${t.merged.into}`);
@@ -1267,7 +1270,7 @@ export default function kanboard(pi: ExtensionAPI) {
 			cleanup = true;
 		} else {
 			const options = lastCleanup ? [MERGE_REMOVE, MERGE_KEEP, CANCEL] : [MERGE_KEEP, MERGE_REMOVE, CANCEL];
-			const pick = await ctx.ui.select(`Merge ${t.id} into ${t.base}? ${mergeSummary(t)}`, options);
+			const pick = await ctx.ui.select(`Merge ${taskNumber(t.id)} into ${t.base}? ${mergeSummary(t)}`, options);
 			if (pick !== MERGE_REMOVE && pick !== MERGE_KEEP) return "Merge cancelled";
 			cleanup = pick === MERGE_REMOVE;
 			if (cleanup !== lastCleanup) {
@@ -1295,7 +1298,7 @@ export default function kanboard(pi: ExtensionAPI) {
 		if (t.worktree) {
 			const working = t.moveRequiresConfirmation ? " It may still be working: keeping the worktree leaves its omp running." : "";
 			const pick = await ctx.ui.select(
-				`Delete ${id}? ${t.title} (${column}). Removing its worktree ${tilde(t.worktree)} also deletes the branch ${t.branch} and ends its omp and terminal.${working}${unlinks}`,
+				`Delete ${taskNumber(id)}? ${t.title} (${column}). Removing its worktree ${tilde(t.worktree)} also deletes the branch ${t.branch} and ends its omp and terminal.${working}${unlinks}`,
 				[DELETE_REMOVE, DELETE_KEEP, CANCEL],
 			);
 			if (pick !== DELETE_REMOVE && pick !== DELETE_KEEP) return `${id} kept`;
@@ -1304,7 +1307,7 @@ export default function kanboard(pi: ExtensionAPI) {
 			const detail = t.moveRequiresConfirmation
 				? `It may still be working. Deleting it removes board tracking, but omp, its worktree and branch keep running.`
 				: "Its plan is deleted with it.";
-			if (!(await ctx.ui.confirm(`Delete ${id}?`, `${t.title} (${column})\n\n${detail}${unlinks}`))) return `${id} kept`;
+			if (!(await ctx.ui.confirm(`Delete ${taskNumber(id)}?`, `${t.title} (${column})\n\n${detail}${unlinks}`))) return `${id} kept`;
 		}
 		const r = await withLegacyConfirm(ctx, id, (confirmLegacy) =>
 			api<{ output?: string }>("DELETE", `/api/tasks/${id}`, { confirmWorking: t.moveRequiresConfirmation, cleanup, confirmLegacy }),
@@ -1349,7 +1352,7 @@ export default function kanboard(pi: ExtensionAPI) {
 		const t = findTask(await api<Board>("GET", "/api/state"), id);
 		if (!t.worktree) throw new Error(`${id} has no worktree`);
 		const sure = await ctx.ui.confirm(
-			`Remove ${id}'s worktree?`,
+			`Remove ${taskNumber(id)}'s worktree?`,
 			`Deletes ${tilde(t.worktree)} and the branch ${t.branch}, ending its omp and terminal. The card stays.`,
 		);
 		if (!sure) return `${id}'s worktree kept`;
@@ -1432,7 +1435,7 @@ export default function kanboard(pi: ExtensionAPI) {
 				} else if (arg === "status") {
 					const parts = [`Kanban mode is ${on ? "on" : "off"} for this checkout`];
 					if (flowId) parts.push(`flow ${flowId}`);
-					if (task) parts.push(`task ${task}`);
+					if (task) parts.push(`task ${taskNumber(task)}`);
 					ctx.ui.notify(parts.join(" · "), "info");
 				} else if (arg === "open") {
 					await refreshBoard();
@@ -1474,7 +1477,7 @@ export default function kanboard(pi: ExtensionAPI) {
 		const id = task;
 		void report(ctx, "plan_ready");
 		void api("PATCH", `/api/tasks/${id}`, { plan: event.planContent }, false).catch((e) =>
-			ctx.ui.notify(`${id}: the plan didn't reach the board: ${errorText(e)}`, "warning"),
+			ctx.ui.notify(`${taskNumber(id)}: the plan didn't reach the board: ${errorText(e)}`, "warning"),
 		);
 	});
 

@@ -65,6 +65,7 @@ RESUME_TEXT = "Kanboard moved {id} back to In Progress: continue where you stopp
 PLANNING_MODES = {"auto", "plan", "fast"}
 SPAWN_LOG_LIMIT = 6000
 PRESENTATION_INTERVAL = 30.0
+LEGACY_PROBE_INTERVAL = 30.0
 MESSAGE_LIMIT = 2000
 TERMINAL_LIMIT = 4096
 DIFF_LIMIT = 500_000
@@ -108,6 +109,20 @@ def initial_context() -> Dict[str, str]:
 
 def flow_id(repo: str, base: str) -> str:
     return f"{os.path.basename(repo)}@{base}"
+
+
+def checkout_exists(path: Optional[str]) -> bool:
+    """Whether `path` is still a git checkout: a repository, or a linked worktree whose git directory remains."""
+    if not path:
+        return False
+    dot_git = Path(path) / ".git"
+    if dot_git.is_dir():
+        return True
+    try:
+        text = dot_git.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return text.startswith("gitdir:") and (Path(path) / text[len("gitdir:"):].strip()).is_dir()
 
 
 CONFIG_FILE = HOME / "config.json"
@@ -763,7 +778,8 @@ class Store:
         }
 
     def flow_list(self) -> List[Dict[str, Any]]:
-        """Registered flows whose checkout still exists, plus every flow that has tasks; the registered checkout wins."""
+        """Registered flows and flows that have tasks, while their checkout is still a git checkout or an omp session
+        streams for them; the registered checkout wins. A flow whose checkout was deleted drops out, its tasks stay."""
         flows: Dict[str, Dict[str, Any]] = {}
 
         def entry(repo: str, base: str, checkout: Optional[str],
@@ -775,11 +791,23 @@ class Store:
                               "concurrencyLimit": concurrency_limit}
             return flows[fid]
 
+        checked: Dict[Tuple[str, Optional[str]], bool] = {}
+
+        def active(repo: str, base: str, checkout: Optional[str]) -> bool:
+            fid = flow_id(repo, base)
+            if (fid, checkout) not in checked:
+                checked[(fid, checkout)] = checkout_exists(checkout) or hub.flow_live(fid)
+            return checked[(fid, checkout)]
+
         for f in self.flows:
-            if Path(f["checkout"]).is_dir():
+            if active(f["repo"], f["base"], f["checkout"]):
                 entry(f["repo"], f["base"], f["checkout"], f.get("concurrencyLimit"))
+        shown = {flow_id(t["repo"], t["base"]) for t in self.tasks.values()
+                 if active(t["repo"], t["base"], t.get("checkout"))}
         for t in self.tasks.values():
-            entry(t["repo"], t["base"], t.get("checkout"))["counts"][t["column"]] += 1
+            fid = flow_id(t["repo"], t["base"])
+            if fid in flows or fid in shown:
+                entry(t["repo"], t["base"], t.get("checkout"))["counts"][t["column"]] += 1
         try:
             config = read_config()
         except ApiError:
@@ -848,6 +876,39 @@ def legacy_unknown(t: Dict[str, Any]) -> bool:
     """A pre-host agent in a terminal the board doesn't own, neither connected nor seen to exit: it may still run."""
     ex = t.get("execution") or {}
     return ex.get("kind") == "legacy" and not ex.get("stopped") and not hub.task_live(t["id"])
+
+
+def process_cwds() -> Optional[List[str]]:
+    """The working directory of every running process that runs as this user, whatever its program (omp, a wrapper, a
+    shell); None unless every one was read."""
+    uid = str(os.geteuid())
+    code, listed, _ = run(["ps", "-A", "-o", "pid=,uid=,stat="], timeout=10)
+    if code != 0:
+        return None
+    _, out, _ = run([which("lsof") or "/usr/sbin/lsof", "-n", "-P", "-w", "-a", "-u", uid, "-d", "cwd", "-Fpn"],
+                    timeout=20)
+    cwds: Dict[str, str] = {}
+    pid = None
+    for line in out.splitlines():
+        if line.startswith("p"):
+            pid = line[1:]
+        elif line.startswith("n") and pid:
+            cwds[pid] = line[1:]
+    if any(not os.path.isabs(c) or c.endswith(")") for c in cwds.values()):
+        return None
+    for fields in (line.split() for line in listed.splitlines()):
+        if len(fields) != 3:
+            return None
+        if fields[1] != uid or fields[0] in cwds or fields[2].startswith("Z"):
+            continue
+        try:
+            os.kill(int(fields[0]), 0)
+        except ProcessLookupError:
+            continue
+        except (OSError, ValueError):
+            pass
+        return None
+    return list(cwds.values())
 
 
 def agent_live(t: Dict[str, Any]) -> bool:
@@ -2623,6 +2684,7 @@ class Poller:
         self.last_git = 0.0
         self.last_pr = 0.0
         self.last_presentation = 0.0
+        self.last_legacy = 0.0
 
     def kick(self, full: bool = False) -> None:
         self.forced = self.forced or full
@@ -2698,7 +2760,8 @@ class Poller:
 
     def check_agents(self, tracked: List[Dict[str, Any]]) -> bool:
         """Agent state from each task's own omp session (its stream and reports) and its managed host; terminals are only
-        asked now and then whether they are still open, which never decides the agent's state."""
+        asked now and then whether they are still open, which never decides the agent's state. A legacy agent that isn't
+        connected counts as stopped once a complete scan finds no process of this user working in its worktree."""
         hosts = {s["id"]: agent_host.status(d) for s in tracked for d in [host_dir(s)] if d}
         opened: Dict[str, bool] = {}
         now = time.time()
@@ -2706,6 +2769,10 @@ class Poller:
             self.last_presentation = now
             opened = {s["id"]: terminals.alive(s["presentation"]) for s in tracked
                       if (s.get("presentation") or {}).get("kind") in ("cmux", "tmux")}
+        cwds: Optional[List[str]] = None
+        if now - self.last_legacy >= LEGACY_PROBE_INTERVAL and any(legacy_unknown(s) for s in tracked):
+            self.last_legacy = now
+            cwds = process_cwds()
         changed = False
         with store.lock:
             for snapshot in tracked:
@@ -2730,6 +2797,11 @@ class Poller:
                 elif connected and ex.get("kind") == "legacy" and ex.get("stopped"):
                     ex["stopped"] = False
                     persist = True
+                elif cwds is not None and legacy_unknown(t) and not any(within(c, t["worktree"]) for c in cwds):
+                    ex["stopped"] = True
+                    persist = True
+                    print(f"kanboard: {task_id}'s legacy agent is gone: no process works in {t['worktree']}",
+                          file=sys.stderr)
                 activity = store.activity.get(task_id)
                 if not connected and activity and activity.get("state"):
                     # A lost session's last report says nothing about whatever runs next.

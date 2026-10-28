@@ -7,7 +7,7 @@ interface LayoutTask {
 
 function layoutTaskGraph(tasks: LayoutTask[]): Map<string, { x: number; y: number }> {
   const graph = new graphlib.Graph();
-  graph.setGraph({ rankdir: "LR", nodesep: 40, ranksep: 80 });
+  graph.setGraph({ rankdir: "LR", nodesep: 80, ranksep: 140 });
   graph.setDefaultEdgeLabel(() => ({}));
   const ordered = [...tasks].sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
   for (const task of ordered) graph.setNode(task.id, { width: 260, height: 130 });

@@ -128,6 +128,7 @@ button.ctx:hover{color:var(--fg)}
 .card{position:relative;display:flex;flex:none;flex-direction:column;gap:6px;min-width:0;padding:9px 11px 10px;border:1px solid var(--line);border-radius:8px;background:var(--raised);box-shadow:0 1px 2px rgb(0 0 0 / .12);cursor:pointer;transition:border-color .12s,box-shadow .12s}
 .card:hover{border-color:var(--line-strong)}
 .card.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.card.dep-highlight,.pipeline-node.dep-highlight{outline:2px solid var(--accent);outline-offset:4px}
 .card.dragging{opacity:.35}
 .card.needs{border-color:color-mix(in srgb,var(--warning) 55%,var(--line))}
 .card.needs::before{content:"";position:absolute;top:9px;bottom:9px;left:-1px;width:3px;border-radius:0 3px 3px 0;background:var(--warning)}
@@ -500,6 +501,7 @@ let board = null;
 let dragging = null;
 let pendingRender = false;
 let openId = null;
+let highlightedDependency = null;
 let filter = "";
 let flowSel = new URLSearchParams(location.search).get("flow") || LS.get("flow") || null;
 let themeHref = "/appearance.css";
@@ -507,20 +509,27 @@ const tabFor = {};
 const drafts = new Map();
 const sessionConnected = t => t.session?.connected === true;
 const findTask = id => board && board.tasks.find(t => t.id === id);
+const taskNumber = id => /^KB-\d+(?:\.\d+)*$/i.test(id) ? "#" + id.slice(3) : id;
+const taskNumbers = ids => ids.map(taskNumber).join(", ");
+const taskRef = raw => { const v = raw.trim().replace(/^#(?=\d)/, ""); return /^\d+(?:\.\d+)*$/.test(v) ? "KB-" + v : /^kb-\d+(?:\.\d+)*$/i.test(v) ? v.toUpperCase() : v; };
 const flows = () => (board && board.flows) || [];
 const selectedFlow = () => flows().find(f => f.id === flowSel) || null;
 const inFlow = t => { const f = selectedFlow(); return !f || t.flow === f.id; };
 const colTasks = col => board.tasks.filter(t => t.column === col).sort((a, b) => a.order - b.order);
 const colTitle = id => (board.columns.find(c => c.id === id) || { title: id }).title;
-const matches = t => !filter || `${t.id} ${t.title} ${t.ticket || ""} ${t.branch}`.toLowerCase().includes(filter);
+const matches = t => !filter || `${t.id} ${taskNumber(t.id)} ${t.title} ${t.ticket || ""} ${t.branch}`.toLowerCase().includes(filter);
 
 function setBoard(b) {
   board = b;
-  applyTheme();
-  renderContext();
-  renderBoard();
+  if (flowSel && !flows().some(f => f.id === flowSel)) {
+    setFlow(null);
+  } else {
+    applyTheme();
+    renderContext();
+    renderBoard();
+  }
   if (openId) { if (findTask(openId)) updatePanel(); else closePanel(); }
-  const waiting = b.tasks.filter(t => t.agent && ["needs_input", "plan_ready", "disconnected"].includes(t.agent.state)).length;
+  const waiting = b.tasks.filter(needsAttention).length;
   document.title = waiting ? `${waiting} waiting · Kanboard` : "Kanboard";
 }
 function renderContext() {
@@ -659,13 +668,13 @@ const hasStarted = t => !!t.worktree || t.spawn.state === "running" || t.spawn.s
 function statusOf(t) {
   if (t.spawn.state === "running") return { tone: "busy", spin: true, text: "Creating worktree" };
   if (t.spawn.state === "failed") return { tone: "err", icon: "alert", text: "Start failed" };
-  if (t.column === "done" && t.merged) return { tone: "ok", icon: "merge", text: "Merged into " + t.base };
+  if (t.column === "done") return { tone: "ok", icon: t.merged ? "merge" : "check", text: t.merged ? "Merged into " + t.base : "Done" };
   if (t.paused) {
-    if (t.column === "todo" && t.blockedBy.length) return { tone: "faint", icon: "pause", text: "Resumes after blockers clear: " + t.blockedBy.join(", ") };
+    if (t.column === "todo" && t.blockedBy.length) return { tone: "faint", icon: "pause", text: "Resumes after blockers clear: " + taskNumbers(t.blockedBy) };
     if (t.column === "todo" && t.waitingForSlot) return { tone: "faint", icon: "pause", text: "Paused · waiting for task slot" };
     return { tone: "faint", icon: "pause", text: t.column === "todo" ? "Resuming" : "Paused" };
   }
-  if (!t.worktree && t.column === "todo" && t.spawn.state === "none" && t.blockedBy.length) return { tone: "faint", icon: "link", text: "Starts after blockers clear: " + t.blockedBy.join(", ") };
+  if (!t.worktree && t.column === "todo" && t.spawn.state === "none" && t.blockedBy.length) return { tone: "faint", icon: "link", text: "Starts after blockers clear: " + taskNumbers(t.blockedBy) };
   if (!t.worktree && t.column === "todo" && t.spawn.state === "none" && t.waitingForSlot) return { tone: "faint", icon: "play", text: "Waiting for task slot" };
   if (t.agent) {
     const s = t.agent.state;
@@ -689,7 +698,10 @@ function stateEl(info) {
   if (info.since) el.append(h("span", { class: "t", "data-elapsed": info.since }, elapsed(info.since)));
   return el;
 }
+function needsAttention(t) { return statusOf(t)?.tone === "needs"; }
 function agentTone(t) {
+  if (t.paused) return "var(--faint)";
+  if (t.column === "done") return "var(--add)";
   if (!t.agent) return null;
   const s = t.agent.state;
   if (s === "needs_input" || s === "plan_ready") return "var(--warning)";
@@ -746,15 +758,15 @@ function columnEl(col) {
   } }, head, body);
 }
 function cardEl(t) {
-  const top = h("div", { class: "c-top" }, h("span", { class: "c-id" }, t.id));
+  const top = h("div", { class: "c-top" }, h("span", { class: "c-id" }, taskNumber(t.id)));
   if (t.ticket) top.append(h("span", { class: "chip mono" }, t.ticket));
   top.append(planningBadge(t));
-  if (t.dependsOn.length) top.append(h("span", { class: "chip", title: "Depends on " + t.dependsOn.join(", ") }, I("link", 10), t.dependsOn.join(" ")));
+  if (t.dependsOn.length) top.append(h("span", { class: "chip", title: "Depends on " + taskNumbers(t.dependsOn) }, I("link", 10), t.dependsOn.map(taskNumber).join(" ")));
   if (!selectedFlow() && board.repo && t.base !== board.repo.base) top.append(h("span", { class: "chip", title: `Merges into ${t.base} ${t.merge === "local" ? "locally" : "via a pull request"}` }, I("arrowRight", 10), t.base));
   top.append(h("span", { class: "spacer" }));
   if (t.pr) top.append(prChip(t.pr));
-  const needs = !!(t.agent && ["needs_input", "plan_ready", "disconnected"].includes(t.agent.state));
-  const el = h("div", { class: "card" + (t.id === openId ? " sel" : "") + (needs ? " needs" : ""), draggable: "true", "data-id": t.id, onclick: () => openPanel(t.id) },
+  const needs = needsAttention(t);
+  const el = h("div", { class: "card" + (t.id === openId ? " sel" : "") + (t.id === highlightedDependency ? " dep-highlight" : "") + (needs ? " needs" : ""), draggable: "true", "data-id": t.id, onclick: () => openPanel(t.id) },
     top, h("div", { class: "c-title" }, t.title || "Untitled"));
   const info = statusOf(t);
   if (info) el.append(h("div", { class: "c-line" }, stateEl(info)));
@@ -844,7 +856,7 @@ async function doMove(t, col, order, force, confirmedWorking = false, confirmedL
   if (confirmedLegacy) body.confirmLegacy = true;
   try {
     const r = await act("POST", tpath(t.id, "/move"), body);
-    if (r && r.note) toast(`${t.id} paused · ${r.note}`);
+    if (r && r.note) toast(`${taskNumber(t.id)} paused · ${r.note}`);
     if (r && r.id) { delete r.note; Object.assign(t, r); }
   }
   catch (e) {
@@ -928,17 +940,17 @@ function confirmWorkingMove(t, col, order) {
   const frees = t.column === "doing" && col !== "doing";
   const capacity = frees ? " It also frees this flow's task slot, so another queued task may start." : "";
   const resumes = col === "todo" ? "Todo resumes it once it's first in line with its dependencies done and a task slot free." : "Backlog keeps it paused until you move it back.";
-  confirmModal(pauses ? `Pause ${t.id}?` : `Move working ${t.id} to ${colTitle(col)}?`,
+  confirmModal(pauses ? `Pause ${taskNumber(t.id)}?` : `Move working ${taskNumber(t.id)} to ${colTitle(col)}?`,
     pauses ? `Its agent stops what it's doing; the worktree and omp session stay. ${resumes}${capacity}`
       : `Moving the card only changes Kanboard status; it does not stop omp or remove the worktree.${capacity}`,
     pauses ? "Pause" : "Move anyway", () => doMove(t, col, order, false, true));
 }
 function confirmStop(t) {
   const where = t.column === "review" ? "The card stays in Review" : "The card parks in Backlog";
-  confirmModal(`Stop ${t.id}'s agent?`,
+  confirmModal(`Stop ${taskNumber(t.id)}'s agent?`,
     `Its omp session exits; the worktree, branch and saved session stay. ${where}; moving it to Todo or In Progress resumes it. Closing only its terminal attachment does not stop a managed agent.`,
     "Stop agent", async () => {
-      try { const r = await act("POST", tpath(t.id, "/stop"), {}, `${t.id} stopped`); if (r && r.note) toast(r.note, true); } catch {}
+      try { const r = await act("POST", tpath(t.id, "/stop"), {}, `${taskNumber(t.id)} stopped`); if (r && r.note) toast(r.note, true); } catch {}
     });
 }
 function showStartModal(t, col, order, force) {
@@ -957,13 +969,13 @@ function showStartModal(t, col, order, force) {
   input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } });
   openModal([
     h("div", { class: "m-body" },
-      h("h2", {}, `Start ${t.id}`),
+      h("h2", {}, `Start ${taskNumber(t.id)}`),
       h("p", { class: "m-text" }, t.plan
         ? "omp starts in plan mode in a new git worktree: it updates the draft plan to the code and waits for your approval."
         : "omp starts in plan mode in a new git worktree: it plans from the title and description and waits for your approval."),
       h("label", { class: "m-label" }, "Branch"), input,
       h("div", { class: "m-note" }, I("branch", 12), "From", h("span", { class: "mono" }, t.base), t.merge === "local" ? "· merges back locally into" : "· pull request into", h("span", { class: "mono" }, t.base)),
-      t.blockedBy.length && !force ? h("div", { class: "m-note" }, I("link", 12), `Waits in Todo until its blockers clear: ${t.blockedBy.join(", ")}`) : null),
+      t.blockedBy.length && !force ? h("div", { class: "m-note" }, I("link", 12), `Waits in Todo until its blockers clear: ${taskNumbers(t.blockedBy)}`) : null),
     h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), start)]);
   setTimeout(() => { input.focus(); input.select(); }, 0);
 }
@@ -971,7 +983,7 @@ function confirmDelete(t) {
   const text = t.moveRequiresConfirmation
     ? "This task may still be working. Deleting it removes board tracking, but omp, its terminal attachment, worktree and branch stay."
     : t.worktree ? "The board forgets this task. Its worktree, branch and terminal attachment stay." : "The task and its plan are deleted.";
-  confirmModal(`Delete ${t.id}?`, text, "Delete task", async () => {
+  confirmModal(`Delete ${taskNumber(t.id)}?`, text, "Delete task", async () => {
     try { await act("DELETE", tpath(t.id), { confirmWorking: t.moveRequiresConfirmation === true }); board.tasks = board.tasks.filter(x => x.id !== t.id); closePanel(); renderBoard(); } catch {}
   });
 }
@@ -990,7 +1002,7 @@ function confirmCleanup(t, confirmedLegacy = false) {
 function showMergeModal(t) {
   const cleanup = h("input", { type: "checkbox" });
   cleanup.checked = LS.get("mergeCleanup") !== "0";
-  confirmModal(`Merge ${t.id} into ${t.base}?`,
+  confirmModal(`Merge ${taskNumber(t.id)} into ${t.base}?`,
     `${plural(t.git.commits, "commit")} on ${t.branch} (+${t.git.added} \u2212${t.git.removed} in ${plural(t.git.files, "file")}). Runs git merge --no-ff in the checkout of ${t.base}.`,
     "Merge", async () => {
       LS.set("mergeCleanup", cleanup.checked ? "1" : "0");
@@ -1028,7 +1040,7 @@ function openTaskPrompt({ column = "backlog", task = null, relation = null } = {
     }
   };
   send.onclick = submit;
-  const detail = task ? (relation === "after" ? `Depends on ${task.id}` : `Prerequisite for ${task.id}`) : `Requested column: ${colTitle(column)}`;
+  const detail = task ? (relation === "after" ? `Depends on ${taskNumber(task.id)}` : `Prerequisite for ${taskNumber(task.id)}`) : `Requested column: ${colTitle(column)}`;
   const box = openModal([
     h("div", { class: "nt-head" }, I("message", 13), "New task request"),
     h("div", { class: "m-body" }, flow, h("p", { class: "m-text" }, detail)),
@@ -1127,7 +1139,7 @@ function showPlanReview(t) {
   approve.onclick = () => submit("approve");
   refine.onclick = () => submit("refine");
   approve.disabled = refine.disabled = !sessionConnected(t);
-  openModal([h("div", { class: "m-body nv-scroll" }, h("h2", {}, `Review ${t.id}`),
+  openModal([h("div", { class: "m-body nv-scroll" }, h("h2", {}, `Review ${taskNumber(t.id)}`),
     h("div", { class: "md", html: md(t.plan) }), feedback,
     !sessionConnected(t) ? h("p", { class: "m-note" }, "The omp session must reconnect before it can receive this review.") : null),
     h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), refine, approve)], "nv-wide");
@@ -1176,13 +1188,14 @@ function currentTab(t) {
 function setTab(tab) { tabFor[openId] = tab; updatePanel(); }
 function openPanel(id) {
   if (!findTask(id)) return;
-  if (openId !== id) { openId = id; buildPanel(); }
+  if (openId !== id) { highlightDependency(null); openId = id; buildPanel(); }
   if (location.hash !== "#" + id) history.replaceState(null, "", "#" + id);
   $("#panel").hidden = $("#resizer").hidden = false;
   document.querySelectorAll(".card,.pipeline-node").forEach(c => c.classList.toggle("sel", c.dataset.id === id));
   updatePanel();
 }
 function closePanel() {
+  highlightDependency(null);
   if (P && P.cmode) drafts.set(`${openId}:${P.cmode}`, P.ta.value);
   openId = null;
   P = null;
@@ -1381,30 +1394,56 @@ function moreMenu(t) {
 function dependencyMenu(t) {
   const tree = new Set([...nativeAncestors(t.id), ...nativeDescendants(t.id)]);
   const items = board.tasks.filter(x => x.id !== t.id && x.flow === t.flow && !tree.has(x.id) && !t.dependsOn.includes(x.id) && x.column !== "done")
-    .map(x => ({ label: `${x.id} ${x.title}`, action: () => act("PATCH", tpath(t.id), { dependsOn: [...t.dependsOn, x.id] }).catch(() => {}) }));
+    .map(x => ({ label: `${taskNumber(x.id)} ${x.title}`, action: () => act("PATCH", tpath(t.id), { dependsOn: [...t.dependsOn, x.id] }).catch(() => {}) }));
   return items.length ? items : [{ header: "No other open task" }];
+}
+function highlightDependency(id, reveal = false) {
+  highlightedDependency = id;
+  let target = null;
+  document.querySelectorAll("#board .card,#board .pipeline-node").forEach(node => {
+    const highlighted = node.dataset.id === id;
+    node.classList.toggle("dep-highlight", highlighted);
+    if (highlighted) target = node;
+  });
+  if (!reveal || !target) return;
+  if (boardView === "pipeline") {
+    const bounds = pipeline.root.getBoundingClientRect(), rect = target.getBoundingClientRect();
+    if (rect.left < bounds.left || rect.right > bounds.right || rect.top < bounds.top || rect.bottom > bounds.bottom) {
+      const p = pipeline.positions.get(id);
+      pipeline.x = pipeline.root.clientWidth / 2 - (p.x + 130) * pipeline.zoom;
+      pipeline.y = pipeline.root.clientHeight / 2 - (p.y + 65) * pipeline.zoom;
+      pipelineTransform();
+    }
+  } else target.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+function dependencyHighlightChanged(e) {
+  const entering = e.type === "mouseenter" || e.type === "focus";
+  const fallback = P?.deps.querySelector(e.type === "mouseleave" ? "[data-dependency]:focus" : "[data-dependency]:hover");
+  highlightDependency(entering ? e.currentTarget.dataset.dependency : fallback?.dataset.dependency || null, entering);
 }
 function dependencyChip(t, id) {
   const dep = findTask(id);
   const remove = h("span", { class: "x", title: "Remove the dependency", onclick: e => { e.stopPropagation(); act("PATCH", tpath(t.id), { dependsOn: t.dependsOn.filter(d => d !== id) }).catch(() => {}); } }, I("x", 10));
-  return h("button", { class: "chip mono", title: dep ? dep.title : "deleted", onclick: () => openPanel(id) }, id, remove);
+  return h("button", { class: "chip mono", "data-dependency": id, title: dep ? dep.title : "deleted",
+    onmouseenter: dependencyHighlightChanged, onmouseleave: dependencyHighlightChanged,
+    onfocus: dependencyHighlightChanged, onblur: dependencyHighlightChanged, onclick: () => openPanel(id) }, taskNumber(id), remove);
 }
 
 function updatePanel() {
   const t = findTask(openId);
   if (!t || !P) return;
   const fixed = hasStarted(t);
-  P.id.textContent = t.id;
+  P.id.textContent = taskNumber(t.id);
   P.status.replaceChildren(frag(colIcon(t.column)), h("span", {}, colTitle(t.column)), I("chevronDown", 12, "chev"));
   P.primary.replaceChildren();
   const queued = t.column === "todo" && t.spawn.state === "none" && (t.blockedBy.length > 0 || t.waitingForSlot);
   if (!t.worktree && !queued && (t.spawn.state === "none" || t.spawn.state === "failed")) {
-    const after = t.blockedBy.join(", ");
+    const after = taskNumbers(t.blockedBy);
     const waits = t.blockedBy.length ? `Queues the task; it starts on its own once its blockers clear: ${after}. Readiness explains each one.` : "Create the worktree and start omp on this task";
     P.primary.append(h("button", { class: "btn sm primary", title: waits, onclick: () => requestMove(t.id, "todo") },
       I("play", 11), t.spawn.state === "failed" ? "Retry start" : t.blockedBy.length ? "Start after blockers" : "Start"));
   } else if (t.paused) {
-    const after = t.blockedBy.join(", ");
+    const after = taskNumbers(t.blockedBy);
     const waits = t.blockedBy.length ? `Waits in Todo until its blockers clear: ${after}. Readiness explains each one.` : "Moves it to In Progress; its agent continues where it stopped";
     P.primary.append(h("button", { class: "btn sm primary", title: waits, onclick: () => requestMove(t.id, "doing") },
       I("play", 11), t.blockedBy.length ? "Resume after blockers" : "Resume"));
@@ -1428,7 +1467,15 @@ function updatePanel() {
   P.planningChip.disabled = fixed;
   P.planningChip.title = fixed ? "Fixed once the task starts" : planning.sub;
   setField(P.repo, t.repo);
-  P.deps.replaceChildren(...t.dependsOn.map(id => dependencyChip(t, id)), P.depsAdd);
+  const depsKey = JSON.stringify(t.dependsOn);
+  if (P.deps.dataset.key !== depsKey) {
+    highlightDependency(null);
+    P.deps.dataset.key = depsKey;
+    P.deps.replaceChildren(...t.dependsOn.map(id => dependencyChip(t, id)), P.depsAdd);
+  }
+  P.deps.querySelectorAll("[data-dependency]").forEach(chip => {
+    chip.title = findTask(chip.dataset.dependency)?.title || "deleted";
+  });
   nativePanelUpdate(t);
   P.branch.disabled = P.base.disabled = P.repo.disabled = fixed;
   P.title.disabled = P.desc.disabled = t.column === "done" || !!t.merged;
@@ -1466,7 +1513,7 @@ function updatePlan(t) {
   P.editBtn.hidden = P.copyBtn.hidden = !has || P.editing;
   P.discussTip.hidden = !!t.worktree || P.editing || !P.planEmpty.hidden;
   const on = canDiscuss(t);
-  const tip = on ? `Bring the flow's omp session to the front with ${t.id} in its prompt` : discussOff(t);
+  const tip = on ? "Bring the flow's omp session to the front with this task in its prompt" : discussOff(t);
   for (const [b, w] of [[P.discussBtn, P.discussTip], [P.emptyDiscuss, P.emptyDiscussTip]]) {
     b.disabled = !on;
     b.title = w.title = tip;
@@ -1713,7 +1760,7 @@ document.addEventListener("keydown", e => {
   else if (e.key === "/") { e.preventDefault(); $("#filter").focus(); }
 });
 window.addEventListener("hashchange", () => {
-  const id = decodeURIComponent(location.hash.slice(1));
+  const id = taskRef(decodeURIComponent(location.hash.slice(1)));
   if (id && findTask(id)) openPanel(id);
   else if (!id && openId) closePanel();
 });
@@ -1725,7 +1772,7 @@ setInterval(() => {
 (async () => {
   await loadState();
   if (selectedFlow() && new URLSearchParams(location.search).get("flow") !== flowSel) setFlow(flowSel);
-  const id = decodeURIComponent(location.hash.slice(1));
+  const id = taskRef(decodeURIComponent(location.hash.slice(1)));
   if (id && findTask(id)) openPanel(id);
   connect();
 })();

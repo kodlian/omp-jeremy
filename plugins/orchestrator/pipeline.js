@@ -21,7 +21,7 @@ function pipelineLayout(tasks) {
   for (const t of missing) {
     const p = positions.get(t.id);
     while ([...pipeline.positions.values()].some(other =>
-      Math.abs(other.x - p.x) < 300 && Math.abs(other.y - p.y) < 170)) p.y += 170;
+      Math.abs(other.x - p.x) < 340 && Math.abs(other.y - p.y) < 210)) p.y += 210;
     pipeline.positions.set(t.id, p);
   }
 }
@@ -47,9 +47,18 @@ function pipelineFit() {
   pipeline.y = 80 - minY * pipeline.zoom;
   pipelineTransform();
 }
+function pipelineAnimateConnection(edge) {
+  if (!edge || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const length = edge.path.getTotalLength();
+  edge.path.animate([
+    { strokeDasharray: `${length} ${length}`, strokeDashoffset: length },
+    { strokeDasharray: `${length} ${length}`, strokeDashoffset: 0 },
+  ], { duration: 550, easing: "ease-out" });
+}
 async function pipelineChange(from, to, previous = null) {
   const task = findTask(to);
   if (!task || from === to || (previous && previous.from === from && previous.to === to)) return;
+  if (!previous && task.dependsOn.includes(from)) return;
   if (previous && previous.to !== to) { toast("Reconnect the prerequisite end, or remove this connection first", true); return; }
   const deps = task.dependsOn.filter(id => !previous || id !== previous.from);
   if (from) deps.push(from);
@@ -57,7 +66,14 @@ async function pipelineChange(from, to, previous = null) {
   const warning = removedBlocker && task.column === "todo" ? "This may start or resume the queued task immediately. " : "";
   const running = task.column === "doing" ? "Changing dependencies does not pause an already running task. " : "";
   if ((warning || running) && !confirm(warning + running + "Change this dependency?")) return;
-  try { await act("PATCH", tpath(to), { dependsOn: [...new Set(deps)] }); pipeline.selected = null; }
+  try {
+    const updated = await act("PATCH", tpath(to), { dependsOn: [...new Set(deps)] });
+    const current = findTask(to);
+    if (current && updated?.id === to) Object.assign(current, updated);
+    pipeline.selected = null;
+    renderPipeline();
+    if (from) pipelineAnimateConnection(pipeline.edges.get(from + ":" + to));
+  }
   catch {}
 }
 function pipelineInit() {
@@ -165,25 +181,30 @@ function renderPipeline() {
     if (node.dataset.content !== content) {
       node.dataset.content = content;
       const info = statusOf(t), line = cardLine(t);
-      node.replaceChildren(h("div", { class: "pipeline-node-head" }, t.id, h("span", {}, colTitle(t.column))), h("strong", { class: "pipeline-title" }, t.title), info ? stateEl(info) : h("span", {}, colTitle(t.column)), h("div", { class: "pipeline-step", title: line?.text || "" }, line?.text || ""));
+      node.replaceChildren(h("div", { class: "pipeline-node-head" }, taskNumber(t.id), h("span", {}, colTitle(t.column))), h("strong", { class: "pipeline-title" }, t.title), info ? stateEl(info) : h("span", {}, colTitle(t.column)), h("div", { class: "pipeline-step", title: line?.text || "" }, line?.text || ""));
       for (const port of ["in", "out"]) node.append(h("button", { class: "pipeline-port " + port, "data-port": port, title: port === "in" ? "Drag to choose a prerequisite" : "Drag to a dependent task", "aria-label": port === "in" ? "Prerequisite connection" : "Dependent connection" }));
     }
+    node.dataset.column = t.column;
+    node.classList.toggle("running", t.column === "doing" && !t.paused && (sessionConnected(t) || t.execution?.state === "running"));
     node.querySelector(".pipeline-port.in").classList.toggle("connected", t.dependsOn.length > 0);
     node.querySelector(".pipeline-port.out").classList.toggle("connected", prerequisites.has(t.id));
     node.classList.toggle("busy", t.column === "doing" && !!t.agent && !!AGENT_LABEL[t.agent.state]);
     node.classList.toggle("done", t.column === "done");
     node.classList.toggle("blocked", t.blockedBy.length > 0 && t.column === "todo");
-    node.classList.toggle("needs", !!t.agent && ["needs_input", "plan_ready", "disconnected"].includes(t.agent.state));
+    node.classList.toggle("needs", needsAttention(t));
     node.classList.toggle("sel", t.id === openId);
+    node.classList.toggle("dep-highlight", t.id === highlightedDependency);
     const p = pipeline.positions.get(t.id); node.style.transform = `translate(${p.x}px,${p.y}px)`;
   }
   const keys = new Set();
+  const activeTargets = new Set(tasks.filter(t => t.column === "doing" && !t.paused && sessionConnected(t) &&
+    !needsAttention(t) && t.dependsOn.every(id => findTask(id)?.column === "done")).map(t => t.id));
   for (const t of tasks) for (const from of t.dependsOn) {
     if (!ids.has(from)) continue;
     const key = from + ":" + t.id; keys.add(key);
     let edge = pipeline.edges.get(key);
     if (!edge) {
-      const group = pipelineSVG("g", { class: "pipeline-edge" }), path = pipelineSVG("path", { class: "edge-line" }), hit = pipelineSVG("path", { class: "edge-hit", tabindex: "0", role: "button", "aria-label": `${from} must finish before ${t.id}` });
+      const group = pipelineSVG("g", { class: "pipeline-edge" }), path = pipelineSVG("path", { class: "edge-line" }), hit = pipelineSVG("path", { class: "edge-hit", tabindex: "0", role: "button", "aria-label": `${taskNumber(from)} must finish before ${taskNumber(t.id)}` });
       const select = () => { pipeline.selected = key; pipeline.remove.hidden = false; pipelineDrawEdges(); };
       hit.onclick = select; hit.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(); } };
       group.append(path, hit); pipeline.svg.append(group);
@@ -195,7 +216,8 @@ function renderPipeline() {
     edge.group.classList.toggle("active", active);
     edge.group.classList.toggle("complete", complete);
     edge.group.classList.toggle("history", t.column === "done");
-    edge.hit.setAttribute("aria-label", `${from} must finish before ${t.id} · ${complete ? "Ready" : active ? "Working" : "Waiting"}`);
+    edge.group.classList.toggle("active-path", activeTargets.has(t.id));
+    edge.hit.setAttribute("aria-label", `${taskNumber(from)} must finish before ${taskNumber(t.id)} · ${complete ? "Prerequisite complete" : active ? "Prerequisite working" : "Waiting"}${activeTargets.has(t.id) ? " · Active path" : ""}`);
   }
   for (const [key, edge] of pipeline.edges) if (!keys.has(key)) { edge.group.remove(); pipeline.edges.delete(key); }
   pipeline.remove.hidden = !pipeline.edges.has(pipeline.selected);
