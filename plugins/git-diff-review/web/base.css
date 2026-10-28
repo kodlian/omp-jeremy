@@ -26,7 +26,6 @@
   --badge: light-dark(#0969da, #6cb6ff);
   --add: light-dark(#1a7f37, #30d158);
   --remove: light-dark(#cf222e, #ff453a);
-  --hunk: light-dark(#8250df, #bf5af2);
   --warning: #d29922;
   --syn-comment: light-dark(#59636e, #8b949e);
   --syn-keyword: light-dark(#cf222e, #ff7b72);
@@ -43,7 +42,7 @@
   --font-size-sm: calc(var(--font-size) * 11 / 12);
   --font-size-xs: calc(var(--font-size) * 5 / 6);
   --font-size-lg: calc(var(--font-size) * 13 / 12);
-  --row-h: round(var(--font-size) * 5 / 3, 1px);
+  --row-h: calc(var(--font-size) * var(--terminal-line-height, 1.666666667));
   --mono: var(--terminal-font, "Fira Code"), ui-monospace, "SF Mono", Menlo, monospace;
   --ui: var(--terminal-font, -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif);
 }
@@ -59,7 +58,9 @@ body {
   overflow: hidden;
   background: var(--bg);
   color: var(--fg);
-  font: var(--font-size)/1.45 var(--ui);
+  font-family: var(--ui);
+  font-size: var(--font-size);
+  line-height: var(--terminal-line-height, 1.45);
 }
 
 button,
@@ -185,33 +186,6 @@ button {
   border-bottom-left-radius: 0;
 }
 
-.segmented {
-  display: flex;
-  flex-wrap: wrap;
-  padding: 2px;
-  border-radius: 6px;
-  background: var(--hover);
-}
-
-.segmented button {
-  flex: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  height: 1.833em;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--muted);
-  font-weight: 500;
-}
-
-.segmented button.active {
-  background: var(--bg);
-  color: var(--fg);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.2);
-}
 
 .chip {
   display: inline-flex;

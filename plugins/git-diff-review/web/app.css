@@ -10,7 +10,7 @@
   width: var(--sidebar-w, 300px);
   min-width: 200px;
   max-width: 60vw;
-  border-right: 1px solid var(--line);
+  border-left: 1px solid var(--line);
   background: var(--surface);
 }
 
@@ -20,6 +20,8 @@
   margin: 0 -3px;
   z-index: 6;
   cursor: col-resize;
+  touch-action: none;
+  user-select: none;
 }
 
 .resizer:hover,
@@ -32,7 +34,7 @@
   display: none;
 }
 
-.no-repo .segmented,
+.no-repo .comparison-mode,
 .no-repo .compare-context {
   display: none;
 }
@@ -46,6 +48,8 @@
 }
 
 .repo {
+  font-size: var(--font-size-sm);
+  color: var(--muted);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -53,39 +57,29 @@
   white-space: nowrap;
 }
 
-.repo strong {
-  flex: 0 0 auto;
-  max-width: 60%;
+.repo-name {
+  max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.repo .session {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
 .sidebar {
   overflow: hidden;
 }
 
-.sidebar .compare-context .chip {
+.review-context .compare-context .chip {
   min-width: 0;
   flex: 0 1 auto;
 }
 
-.sidebar .chip-label,
-.sidebar .btn-label {
+.review-context .chip-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.sidebar .split-button .btn:first-child {
-  min-width: 0;
-}
 
 .banner {
   padding: 6px 10px;
@@ -103,6 +97,24 @@
   gap: 6px;
   padding: 8px 8px 6px;
   border-bottom: 1px solid var(--line);
+}
+
+.review-context {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--font-size-sm);
+}
+
+.review-context .compare-context {
+  flex: 1 1 220px;
+}
+
+.comparison-mode {
+  flex: none;
 }
 
 .compare-context {
@@ -198,6 +210,7 @@
   min-height: 0;
   overflow: hidden auto;
   padding-bottom: 8px;
+  font-size: var(--font-size-sm);
 }
 
 .dir-row,
@@ -278,26 +291,8 @@
   color: var(--add);
 }
 
-/* MARK: review footer */
-
-.review {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px;
-  border-top: 1px solid var(--line);
-  background: var(--surface);
-}
-
-.review-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.review-hint {
-  color: var(--muted);
+.review-actions {
+  margin-left: 8px;
   font-size: var(--font-size-sm);
 }
 
@@ -306,11 +301,14 @@
   display: flex;
   align-items: center;
   gap: 2px;
-  height: var(--header-h);
+  min-height: var(--header-h);
+  flex-wrap: wrap;
   padding: 0 8px 0 10px;
   border-bottom: 1px solid var(--line);
   white-space: nowrap;
+  flex-shrink: 0;
 }
+
 
 .totals {
   margin-left: 2px;
@@ -361,6 +359,7 @@
   align-items: center;
   gap: 6px;
   height: 2.833em;
+  font-size: var(--font-size-sm);
   padding: 0 6px 0 8px;
   border-radius: 7px 7px 0 0;
   background: var(--surface-solid);
@@ -522,7 +521,7 @@
   display: block;
   padding: 2px 0 2px calc(2 * var(--num-col) + 18px);
   color: var(--muted);
-  background: color-mix(in srgb, var(--hunk) 10%, transparent);
+  background: var(--surface-solid);
   font-size: var(--font-size-sm);
 }
 
@@ -553,7 +552,7 @@
   place-items: center;
   border: 0;
   padding: 0;
-  background: color-mix(in srgb, var(--hunk) 14%, transparent);
+  background: var(--hover);
   color: var(--muted);
   cursor: pointer;
 }
@@ -624,12 +623,12 @@
 
 .row.addition,
 .rows.split .addition {
-  background: color-mix(in srgb, var(--add) 13%, transparent);
+  background: color-mix(in srgb, var(--add) 5%, transparent);
 }
 
 .row.deletion,
 .rows.split .deletion {
-  background: color-mix(in srgb, var(--remove) 13%, transparent);
+  background: color-mix(in srgb, var(--remove) 5%, transparent);
 }
 
 .row.addition .num,
@@ -656,14 +655,14 @@
 
 .row.addition mark,
 .rows.split .addition mark {
-  background: color-mix(in srgb, var(--add) 32%, transparent);
+  background: color-mix(in srgb, var(--add) 16%, transparent);
   color: inherit;
   border-radius: 2px;
 }
 
 .row.deletion mark,
 .rows.split .deletion mark {
-  background: color-mix(in srgb, var(--remove) 32%, transparent);
+  background: color-mix(in srgb, var(--remove) 16%, transparent);
   color: inherit;
   border-radius: 2px;
 }

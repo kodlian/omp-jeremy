@@ -54,6 +54,25 @@ export async function detectTerminalContext(options: TerminalOptions = {}): Prom
 	return JSON.parse(await helper(["detect"], options)) as TerminalContext;
 }
 
+export async function terminalCellHeight(options: TerminalOptions = {}): Promise<number | undefined> {
+	try {
+		const context = await detectTerminalContext(options);
+		const cmux = context.cmux;
+		const surface = cmux?.surface;
+		if (!cmux || !surface) return undefined;
+		const proc = Bun.spawn([cmux.cli, "--socket", cmux.socket, "list-panes", "--workspace", cmux.workspace, "--json"], {
+			env: (options.env ?? process.env) as Record<string, string>, stdout: "pipe", stderr: "ignore", timeout: 2000,
+		});
+		const data = await new Response(proc.stdout).json();
+		if (await proc.exited !== 0) return undefined;
+		const pane = data.panes?.find((pane: { surface_ids?: string[] }) => pane.surface_ids?.includes(surface));
+		const height = pane?.cell_height_points;
+		return typeof height === "number" && Number.isFinite(height) && height > 0 ? height : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** Opens `url` in the context's cmux workspace (reusing a panel already on its origin), else the default browser; rejects when nothing opens it. */
 export async function openBoard(url: string, options: OpenBoardOptions = {}): Promise<void> {
 	const args = ["board", url, options.focus ? "--focus" : "--no-focus"];

@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { LocalFont } from "./fonts";
 import { terminalFont } from "./fonts";
+import { terminalCellHeight } from "./terminal";
 
 export type Scheme = "dark" | "light";
 
@@ -17,6 +18,7 @@ export interface TerminalConfig {
 	background?: string;
 	foreground?: string;
 	fontSize?: number;
+	cellHeight?: number;
 	fontFamilies?: string[];
 	font?: LocalFont;
 }
@@ -79,7 +81,8 @@ export async function terminalConfig(resources = process.env.GHOSTTY_RESOURCES_D
 		const bundle = process.env.CMUX_BUNDLE_ID;
 		const cmux = bundle ? await Bun.file(join(homedir(), "Library/Application Support", bundle, "config.ghostty")).text().catch(() => "") : "";
 		const config = parseGhosttyConfig(`${out}\n${cmux}`);
-		return { ...config, fontSize: config.fontSize ?? GHOSTTY_FONT_SIZE, font: (await terminalFont(config.fontFamilies ?? [])) ?? undefined };
+		return { ...config, fontSize: config.fontSize ?? GHOSTTY_FONT_SIZE, cellHeight: await terminalCellHeight(),
+			font: (await terminalFont(config.fontFamilies ?? [])) ?? undefined };
 	} catch {
 		return null;
 	}

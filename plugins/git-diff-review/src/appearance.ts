@@ -14,7 +14,6 @@ const TOKEN_VARS: Record<string, string> = {
 	"--badge": "mdLink",
 	"--add": "toolDiffAdded",
 	"--remove": "toolDiffRemoved",
-	"--hunk": "borderAccent",
 	"--warning": "warning",
 	"--syn-comment": "syntaxComment",
 	"--syn-keyword": "syntaxKeyword",
@@ -44,6 +43,7 @@ export function toAppearance(palette: ThemePalette, current: string, terminal: T
 		vars["--accent-soft"] = `color-mix(in srgb, ${accent} ${scheme === "light" ? 12 : 18}%, transparent)`;
 	}
 	if (terminal?.fontSize) vars["--terminal-font-size"] = `${terminal.fontSize}px`;
+	if (terminal?.fontSize && terminal.cellHeight) vars["--terminal-line-height"] = String(terminal.cellHeight / terminal.fontSize);
 	return { scheme, vars, font: terminal?.font };
 }
 

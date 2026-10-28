@@ -99,28 +99,16 @@ function syncUrl() {
 
 const app = document.getElementById("app");
 app.innerHTML = `
-  <aside class="sidebar">
-    <div class="top">
-      <div class="repo">${icon("repo", 14)}<strong class="repo-name">…</strong><span class="muted session"></span></div>
-      <div class="segmented" role="tablist">
-        <button data-kind="uncommitted" title="Working tree vs HEAD, including untracked files">Uncommitted</button>
-        <button data-kind="branch" title="Everything since this branch forked: commits plus uncommitted and untracked changes">Branch</button>
-        <button data-kind="commit" title="A single commit">Commit</button>
-      </div>
-      <div class="compare-context"></div>
-      <div class="search">${icon("search", 13)}<input class="filter" type="search" placeholder="Filter files" spellcheck="false" />
-        <button class="tool-button" data-act="tree" title="Group by folder">${icon("tree")}</button></div>
-    </div>
-    <div class="progress"></div>
-    <div class="list" tabindex="0"></div>
-    <footer class="review"></footer>
-  </aside>
-  <div class="resizer" title="Drag to resize"></div>
   <section class="main">
     <div class="banner" hidden></div>
+    <header class="review-context">
+      <div class="repo">${icon("repo", 13)}<span class="repo-name">…</span></div>
+      <button class="chip comparison-mode" data-act="compare" title="Choose comparison"></button>
+      <div class="compare-context"></div>
+    </header>
     <header class="toolbar">
-      <button class="tool-button" data-act="sidebar" title="Toggle sidebar (b or ⌘\\)">${icon("sidebar")}</button>
       <span class="totals stats"></span>
+      <div class="review-actions" hidden></div>
       <span class="spacer"></span>
       <div class="findbar" hidden>
         ${icon("search", 13)}<input class="find-input" type="text" placeholder="Find in diff" spellcheck="false" />
@@ -130,17 +118,12 @@ app.innerHTML = `
         <button class="tool-button" data-act="find-close" title="Close (Esc)">${icon("close", 13)}</button>
       </div>
       <button class="tool-button" data-act="find" title="Find in diff (⌘F)">${icon("search")}</button>
-      <span class="toolbar-divider"></span>
-      <button class="tool-button" data-act="prev-file" title="Previous file (k)">${icon("arrowUp")}</button>
-      <button class="tool-button" data-act="next-file" title="Next file (j)">${icon("arrowDown")}</button>
-      <span class="toolbar-divider"></span>
       <button class="tool-button" data-act="prev-change" title="Previous change ([)">${icon("chevronUp")}</button>
       <button class="tool-button" data-act="next-change" title="Next change (])">${icon("chevronDown")}</button>
       <span class="toolbar-divider"></span>
       <button class="tool-button" data-act="layout"></button>
-      <button class="tool-button" data-act="wrap" title="Wrap long lines">${icon("wrap")}</button>
-      <button class="tool-button" data-act="whitespace" title="Ignore whitespace changes">${icon("whitespace")}</button>
-      <button class="tool-button" data-act="font-size" title="Text size">${icon("textSize")}</button>
+      <button class="tool-button" data-act="view-options" title="View options" aria-label="View options">${icon("settings")}</button>
+      <button class="tool-button" data-act="sidebar" title="Toggle file list (b or ⌘\\)" aria-label="Toggle file list" aria-controls="file-sidebar">${icon("sidebar")}</button>
     </header>
     <div class="scroller" tabindex="-1">
       <div class="files"></div>
@@ -150,7 +133,16 @@ app.innerHTML = `
         <button data-act="copy-selection" title="Copy reference (⌘C)">${icon("copy", 13)}</button>
       </div>
     </div>
-  </section>`;
+  </section>
+  <div class="resizer" role="separator" aria-label="Resize file list" aria-orientation="vertical" title="Drag to resize file list"></div>
+  <aside class="sidebar" id="file-sidebar" aria-label="Changed files">
+    <div class="top">
+      <div class="search">${icon("search", 13)}<input class="filter" type="search" placeholder="Filter files" spellcheck="false" />
+        <button class="tool-button" data-act="tree" title="Group by folder">${icon("tree")}</button></div>
+    </div>
+    <div class="progress"></div>
+    <div class="list" tabindex="0"></div>
+  </aside>`;
 
 const list = app.querySelector(".list");
 const scroller = app.querySelector(".scroller");
@@ -159,10 +151,12 @@ const selToolbar = app.querySelector(".sel-toolbar");
 const filterInput = app.querySelector(".filter");
 app.style.setProperty("--sidebar-w", `${state.sidebarWidth}px`);
 app.classList.toggle("sidebar-hidden", state.sidebarHidden);
+app.querySelector('[data-act="sidebar"]').setAttribute("aria-expanded", String(!state.sidebarHidden));
 
 function toggleSidebar() {
   state.sidebarHidden = !state.sidebarHidden;
   app.classList.toggle("sidebar-hidden", state.sidebarHidden);
+  app.querySelector('[data-act="sidebar"]').setAttribute("aria-expanded", String(!state.sidebarHidden));
   savePrefs();
   updateSelectionUi();
 }
@@ -209,8 +203,7 @@ function onSocket(msg) {
     state.pins = msg.pins;
     state.viewed = msg.viewed;
     app.querySelector(".repo-name").textContent = msg.name;
-    app.querySelector(".repo").title = msg.root;
-    app.querySelector(".session").textContent = msg.session ? `· ${msg.session}` : "";
+    app.querySelector(".repo").title = msg.session ? `${msg.root}\nSession: ${msg.session}` : msg.root;
     document.title = `Review · ${msg.name}`;
     if (moved) {
       state.selected = null;
@@ -448,14 +441,14 @@ function contextRow() {
   const refresh = `<button class="tool-button" data-act="refresh" title="Refresh (r)">${icon("refresh")}</button>`;
   if (c.kind === "branch") {
     const base = c.base ?? state.base?.ref ?? (fresh ? "choose a base" : "…");
-    return `${branch}<span class="muted">vs</span><button class="chip" data-act="base" title="Change the comparison base: ${esc(base)}"><span class="chip-label">${esc(base)}${c.base ? "" : ` <span class="muted">auto</span>`}</span>${icon("chevronDown", 12)}</button><span class="spacer"></span>${refresh}`;
+    return `${branch}<span class="muted">→</span><button class="chip" data-act="base" title="Change the comparison base: ${esc(base)}"><span class="chip-label">${esc(base)}</span>${icon("chevronDown", 12)}</button><span class="spacer"></span>${refresh}`;
   }
   if (c.kind === "commit") {
     const commit = state.commit;
     const label = commit ? `<span class="mono">${esc(commit.short)}</span> ${esc(commit.subject)}` : fresh ? "No commits" : "…";
     return `<button class="chip commit-chip" data-act="commit" title="Choose another commit">${icon("commit", 13)}<span class="chip-label">${label}</span>${icon("chevronDown", 12)}</button><span class="spacer"></span>${refresh}`;
   }
-  return `${branch}<span class="muted">working tree vs HEAD</span><span class="spacer"></span>${refresh}`;
+  return `${branch}<span class="muted">→ HEAD</span><span class="spacer"></span>${refresh}`;
 }
 
 function fileRow(file, depth) {
@@ -507,28 +500,30 @@ function renderList() {
   if (key) list.querySelector(`[data-path="${CSS.escape(key)}"], [data-dir="${CSS.escape(key)}"]`)?.focus();
 }
 
-function footerHtml() {
-  const pins = state.pins;
-  return `<div class="review-head">${icon("comment", 13)}<strong>${pins.length ? `${pins.length} comment${pins.length > 1 ? "s" : ""}` : "Review"}</strong></div>
-    ${pins.length ? "" : `<div class="review-hint">Select lines in the diff to comment, then send them all to the agent at once.</div>`}
-    <div class="split-button">
-      <button class="btn primary" data-act="send-review" title="Send review to ${esc(state.session ?? "omp")}" ${pins.length ? "" : "disabled"}>${icon("send", 13)}<span class="btn-label">Send review to ${esc(state.session ?? "omp")}</span></button>
-      <button class="btn primary" data-act="review-menu" title="More" ${pins.length ? "" : "disabled"}>${icon("chevronDown", 13)}</button>
-    </div>`;
+function renderReviewActions() {
+  const draft = composer && !composer.editing && filesEl.querySelector(".composer textarea")?.value.trim() ? 1 : 0;
+  const count = state.pins.length + draft;
+  const actions = app.querySelector(".review-actions");
+  actions.hidden = count === 0;
+  actions.innerHTML = count ? `<div class="split-button">
+      <button class="btn primary" data-act="send-review" title="Send review to ${esc(state.session ?? "omp")}">${icon("send", 13)}<span class="btn-label">Send review (${count})</span></button>
+      <button class="btn primary" data-act="review-menu" title="Review actions">${icon("chevronDown", 13)}</button>
+    </div>` : "";
 }
 
 function renderSidebar() {
-  for (const b of app.querySelectorAll("[data-kind]")) b.classList.toggle("active", b.dataset.kind === state.compare.kind);
+  const labels = { uncommitted: "Working tree", branch: "Branch", commit: "Commit" };
+  app.querySelector('[data-act="compare"]').innerHTML = `${labels[state.compare.kind]} ${icon("chevronDown", 12)}`;
   app.querySelector(".compare-context").innerHTML = contextRow();
   app.querySelector('[data-act="tree"]').classList.toggle("active", state.tree);
   renderList();
-  app.querySelector(".review").innerHTML = footerHtml();
   renderToolbar();
 }
 
 // MARK: main
 
 function renderToolbar() {
+  renderReviewActions();
   const adds = state.files.reduce((n, f) => n + (f.additions ?? 0), 0);
   const dels = state.files.reduce((n, f) => n + (f.deletions ?? 0), 0);
   const viewed = state.files.filter((f) => state.viewed[viewedKey(f.path)]).length;
@@ -538,8 +533,6 @@ function renderToolbar() {
   const layoutBtn = app.querySelector('[data-act="layout"]');
   layoutBtn.innerHTML = icon(state.layout === "split" ? "unified" : "split");
   layoutBtn.title = state.layout === "split" ? "Unified view" : "Side by side";
-  app.querySelector('[data-act="wrap"]').classList.toggle("active", state.wrap);
-  app.querySelector('[data-act="whitespace"]').classList.toggle("active", state.ignoreWhitespace);
   scroller.classList.toggle("wrap", state.wrap);
 }
 
@@ -982,12 +975,14 @@ function openComposer({ editing = null } = {}) {
   selToolbar.hidden = true;
   const fs = ensureRendered(composer.path);
   if (fs) renderBody(fs);
+  renderReviewActions();
 }
 
 function renderComposerFile(path) {
   const fs = path && fileStates.get(path);
   if (fs?.rendered) renderBody(fs);
   updateSelectionUi();
+  renderReviewActions();
 }
 
 function closeComposer() {
@@ -1163,6 +1158,27 @@ function pickFontSize(anchor) {
     state.fontSize = id === "terminal" ? null : Number(id);
     savePrefs();
     syncFontSize();
+  });
+}
+
+function pickViewOptions(anchor) {
+  openMenu(anchor, [
+    { id: "wrap", label: "Wrap long lines", icon: state.wrap ? icon("check", 13) : icon("wrap", 13) },
+    { id: "whitespace", label: "Ignore whitespace", icon: state.ignoreWhitespace ? icon("check", 13) : icon("whitespace", 13) },
+    { id: "font-size", label: "Text size", icon: icon("textSize", 13) },
+    { id: "prev-file", label: "Previous file", subtitle: "k" },
+    { id: "next-file", label: "Next file", subtitle: "j" },
+  ], (id) => {
+    if (id === "font-size") pickFontSize(anchor);
+    else if (id === "prev-file" || id === "next-file") stepFile(id === "prev-file" ? -1 : 1);
+    else {
+      if (id === "wrap") state.wrap = !state.wrap;
+      else state.ignoreWhitespace = !state.ignoreWhitespace;
+      savePrefs();
+      renderToolbar();
+      updateSelectionUi();
+      if (id === "whitespace") refresh();
+    }
   });
 }
 
@@ -1372,12 +1388,6 @@ async function openInMenu(anchor, path) {
 // MARK: events
 
 app.addEventListener("click", async (e) => {
-  const kindBtn = e.target.closest("[data-kind]");
-  if (kindBtn) {
-    const kind = kindBtn.dataset.kind;
-    if (kind !== state.compare.kind) setCompare(kind === "branch" ? { kind, base: null } : kind === "commit" ? { kind, sha: null } : { kind });
-    return;
-  }
   const dirRow = e.target.closest(".dir-row");
   if (dirRow) {
     const dir = dirRow.dataset.dir;
@@ -1402,6 +1412,15 @@ app.addEventListener("click", async (e) => {
   const path = actEl.closest(".file")?.dataset.path;
   const pinId = actEl.closest("[data-pin]")?.dataset.pin;
   switch (act) {
+    case "compare":
+      openMenu(actEl, [
+        { id: "uncommitted", label: "Working tree", subtitle: "Uncommitted changes" },
+        { id: "branch", label: "Branch", subtitle: "All changes since branching" },
+        { id: "commit", label: "Commit", subtitle: "One commit" },
+      ], (kind) => {
+        if (kind !== state.compare.kind) setCompare(kind === "branch" ? { kind, base: null } : kind === "commit" ? { kind, sha: null } : { kind });
+      });
+      break;
     case "git-init":
       send({ type: "init" });
       break;
@@ -1423,12 +1442,6 @@ app.addEventListener("click", async (e) => {
     case "commit":
       pickCommit(actEl);
       break;
-    case "prev-file":
-      stepFile(-1);
-      break;
-    case "next-file":
-      stepFile(1);
-      break;
     case "prev-change":
       jumpChange(-1);
       break;
@@ -1449,20 +1462,8 @@ app.addEventListener("click", async (e) => {
       updateSelectionUi();
       refreshFind();
       break;
-    case "wrap":
-      state.wrap = !state.wrap;
-      savePrefs();
-      renderToolbar();
-      updateSelectionUi();
-      break;
-    case "whitespace":
-      state.ignoreWhitespace = !state.ignoreWhitespace;
-      savePrefs();
-      renderToolbar();
-      refresh();
-      break;
-    case "font-size":
-      pickFontSize(actEl);
+    case "view-options":
+      pickViewOptions(actEl);
       break;
     case "load-diff":
       if (path) {
@@ -1529,8 +1530,9 @@ app.addEventListener("click", async (e) => {
       sendReview();
       break;
     case "review-menu":
+      commitDraft();
       openMenu(
-        actEl,
+        app.querySelector('.review-actions [data-act="review-menu"]'),
         [
           { id: "paste", label: "Add review to prompt", icon: icon("arrowRight", 13) },
           { id: "copy", label: "Copy review", icon: icon("copy", 13) },
@@ -1545,6 +1547,10 @@ app.addEventListener("click", async (e) => {
       );
       break;
   }
+});
+
+app.addEventListener("input", (e) => {
+  if (e.target.matches(".composer textarea")) renderReviewActions();
 });
 
 app.addEventListener("change", (e) => {
@@ -1643,6 +1649,7 @@ document.addEventListener("keydown", (e) => {
     refresh();
   } else if (e.key === "/") {
     e.preventDefault();
+    if (state.sidebarHidden) toggleSidebar();
     filterInput.focus();
   } else if (e.key === "Escape" && clearSelection()) {
     e.preventDefault();
@@ -1659,22 +1666,26 @@ document.addEventListener("copy", (e) => {
 });
 
 const resizer = app.querySelector(".resizer");
-resizer.addEventListener("mousedown", (e) => {
+resizer.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0) return;
   e.preventDefault();
+  const startX = e.clientX;
+  const startWidth = app.querySelector(".sidebar").getBoundingClientRect().width;
+  resizer.setPointerCapture(e.pointerId);
   resizer.classList.add("dragging");
   const move = (ev) => {
-    state.sidebarWidth = Math.max(200, Math.min(window.innerWidth * 0.6, ev.clientX));
+    state.sidebarWidth = Math.max(200, Math.min(window.innerWidth * 0.6, startWidth + startX - ev.clientX));
     app.style.setProperty("--sidebar-w", `${state.sidebarWidth}px`);
     updateSelectionUi();
   };
-  const up = () => {
+  const finish = () => {
     resizer.classList.remove("dragging");
-    document.removeEventListener("mousemove", move);
-    document.removeEventListener("mouseup", up);
+    resizer.removeEventListener("pointermove", move);
+    resizer.removeEventListener("lostpointercapture", finish);
     savePrefs();
   };
-  document.addEventListener("mousemove", move);
-  document.addEventListener("mouseup", up);
+  resizer.addEventListener("pointermove", move);
+  resizer.addEventListener("lostpointercapture", finish);
 });
 
 document.addEventListener("visibilitychange", () => {

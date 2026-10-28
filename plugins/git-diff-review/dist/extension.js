@@ -23,6 +23,32 @@ async function helper(args, options) {
     clearTimeout(timer);
   }
 }
+async function detectTerminalContext(options = {}) {
+  return JSON.parse(await helper(["detect"], options));
+}
+async function terminalCellHeight(options = {}) {
+  try {
+    const context = await detectTerminalContext(options);
+    const cmux = context.cmux;
+    const surface = cmux?.surface;
+    if (!cmux || !surface)
+      return;
+    const proc = Bun.spawn([cmux.cli, "--socket", cmux.socket, "list-panes", "--workspace", cmux.workspace, "--json"], {
+      env: options.env ?? process.env,
+      stdout: "pipe",
+      stderr: "ignore",
+      timeout: 2000
+    });
+    const data = await new Response(proc.stdout).json();
+    if (await proc.exited !== 0)
+      return;
+    const pane = data.panes?.find((pane2) => pane2.surface_ids?.includes(surface));
+    const height = pane?.cell_height_points;
+    return typeof height === "number" && Number.isFinite(height) && height > 0 ? height : undefined;
+  } catch {
+    return;
+  }
+}
 async function openBoard(url, options = {}) {
   const args = ["board", url, options.focus ? "--focus" : "--no-focus"];
   if (options.context)
@@ -169,7 +195,12 @@ async function terminalConfig(resources = process.env.GHOSTTY_RESOURCES_DIR) {
     const cmux = bundle ? await Bun.file(join(homedir(), "Library/Application Support", bundle, "config.ghostty")).text().catch(() => "") : "";
     const config = parseGhosttyConfig(`${out}
 ${cmux}`);
-    return { ...config, fontSize: config.fontSize ?? GHOSTTY_FONT_SIZE, font: await terminalFont(config.fontFamilies ?? []) ?? undefined };
+    return {
+      ...config,
+      fontSize: config.fontSize ?? GHOSTTY_FONT_SIZE,
+      cellHeight: await terminalCellHeight(),
+      font: await terminalFont(config.fontFamilies ?? []) ?? undefined
+    };
   } catch {
     return null;
   }
@@ -182,7 +213,6 @@ var TOKEN_VARS = {
   "--badge": "mdLink",
   "--add": "toolDiffAdded",
   "--remove": "toolDiffRemoved",
-  "--hunk": "borderAccent",
   "--warning": "warning",
   "--syn-comment": "syntaxComment",
   "--syn-keyword": "syntaxKeyword",
@@ -216,6 +246,8 @@ function toAppearance(palette, current, terminal) {
   }
   if (terminal?.fontSize)
     vars["--terminal-font-size"] = `${terminal.fontSize}px`;
+  if (terminal?.fontSize && terminal.cellHeight)
+    vars["--terminal-line-height"] = String(terminal.cellHeight / terminal.fontSize);
   return { scheme, vars, font: terminal?.font };
 }
 function appearanceCss({ scheme, vars, font }, fontUrl) {
