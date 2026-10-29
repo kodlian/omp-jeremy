@@ -11,8 +11,7 @@
 .wb-empty strong{display:flex;align-items:center;gap:7px;color:var(--fg);font-size:13px}
 .wb-empty strong .icon{color:var(--accent)}
 .wb-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:16px;align-items:stretch}
-.wb-grid:has(>:only-child){grid-template-columns:minmax(0,560px)}
-.workbench-tile{position:relative;display:flex;flex-direction:column;gap:10px;min-width:0;padding:12px 14px;border:1px solid transparent;border-radius:12px;background:var(--raised);cursor:pointer;transition:background-color .12s}
+.workbench-tile{position:relative;display:flex;flex-direction:column;gap:10px;width:100%;max-width:560px;min-width:0;padding:12px 14px;border:1px solid transparent;border-radius:12px;background:var(--raised);cursor:pointer;transition:background-color .12s}
 .workbench-tile:hover{background:var(--hover)}
 .workbench-tile:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .workbench-tile[data-kind="handoff"]{background:color-mix(in srgb,var(--add) 4%,var(--raised))}
