@@ -2717,6 +2717,10 @@ def merge_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
             output += "\n" + cleanup_task(task_id, {})["output"]
         except ApiError as e:
             return {"ok": True, "output": output, "merged": merged, "cleanupError": e.message}
+    else:
+        note = stop_agent(task_id)
+        if note:
+            output += "\n" + note
     return {"ok": True, "output": output, "merged": merged}
 
 

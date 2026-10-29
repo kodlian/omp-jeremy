@@ -49,6 +49,8 @@ The attach command runs `agent_host.py attach <host directory>`; **Ctrl-\\** det
 | Review | The card moves here when the branch has an open pull request. A task that merges locally moves here when its agent is idle (or stopped) with committed work and a clean worktree ("Ready to merge"). |
 | Done | The card moves here when the pull request is merged, or when **Merge into &lt;base&gt;** or `/orchestrator done` merged the branch; you can also drag it here. Its title and description are then fixed—create a new card for more work. **Remove worktree** stops its agent, closes its terminal and deletes the worktree and the branch, without unlocking its branch, repository, base, merge mode or planning mode. |
 
+Successful local merges stop the task agent and close its terminal even when keeping the worktree. The cleanup choice controls deletion of the worktree and branch, not whether a completed task's workspace stays open.
+
 The board takes its background and monospace font from the terminal's Ghostty configuration (`ghostty +show-config`, under Ghostty or cmux) and its colors from omp: the page shows its flow in the omp theme of that flow's orchestrator sessions, and follows theme changes. When the terminal's font is a Nerd Font, the agent's screen shows its icons too.
 
 Selecting a card or graph node keeps its details docked on the right, including in narrow panes. Below 560px, double-clicking the task explicitly opens details full-width; a single click never takes over the board. At larger widths, double-clicking also stays docked.
