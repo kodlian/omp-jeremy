@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# kanboard — run the orchestrator server and open its board.
-#   kanboard           start the server when it isn't running (restarting it after server.py changed), then open the board
-#   kanboard serve     run the server in the foreground
-#   kanboard stop | restart | status | logs
+# orchestrator — run the orchestrator server and open its board.
+#   orchestrator       start the server when it isn't running (restarting it after server.py changed), then open the board
+#   orchestrator serve run the server in the foreground
+#   orchestrator stop | restart | status | logs
 set -euo pipefail
 
 # The project root, following symlinks to this script (e.g. one in ~/.local/bin).
@@ -27,7 +27,7 @@ json_field() { "$python" -c 'import json, sys; print(json.load(sys.stdin)[sys.ar
 
 require_beads() {
   if ! command -v bd >/dev/null 2>&1; then
-    echo "kanboard: Beads is required; install it with 'brew install beads'." >&2
+    echo "orchestrator: Beads is required; install it with 'brew install beads'." >&2
     exit 1
   fi
 }
@@ -43,7 +43,7 @@ start() {
     if health >/dev/null; then return 0; fi
     sleep 0.1
   done
-  echo "kanboard: the server did not start; last log lines:" >&2
+  echo "orchestrator: the server did not start; last log lines:" >&2
   tail -n 20 "$log" >&2
   exit 1
 }
@@ -62,16 +62,20 @@ stop() {
 }
 
 open_board() {
-  "$python" -c 'import sys; sys.path.insert(0, sys.argv[1]); from integrations import terminals; raise SystemExit(terminals.main(sys.argv[2:]))' "$root" --override-env KANBOARD_TERMINAL --override-env OMP_TERMINAL board "$url"
+  "$python" -c 'import sys; sys.path.insert(0, sys.argv[1]); from integrations import terminals; raise SystemExit(terminals.main(sys.argv[2:]))' "$root" --override-env KANBOARD_TERMINAL --override-env OMP_TERMINAL board "$board_url"
 }
 
-# The checkout kanboard starts from becomes the board's context: new tasks branch from its branch and merge back into it.
+# The checkout orchestrator starts from becomes the board's context and its registered flow, which the board opens on: new tasks branch from its branch and merge back into it.
+board_url=$url
 set_context() {
   git -C "$PWD" rev-parse --show-toplevel >/dev/null 2>&1 || return 0
-  local body context
+  local body context flow
   body=$("$python" -c 'import json, os; print(json.dumps({"path": os.getcwd()}))')
   context=$(curl -fsS --max-time 10 -H 'Content-Type: application/json' -d "$body" "$url/api/context")
-  echo "kanboard: new tasks branch from $(json_field base <<<"$context") ($(json_field path <<<"$context"))"
+  echo "orchestrator: new tasks branch from $(json_field base <<<"$context") ($(json_field path <<<"$context"))"
+  flow=$(curl -fsS --max-time 10 -H 'Content-Type: application/json' -d "$body" "$url/api/flows" |
+    "$python" -c 'import json, sys, urllib.parse; print(urllib.parse.quote(json.load(sys.stdin)["flow"]["id"], safe=""))')
+  board_url="$url/?flow=$flow"
 }
 
 case "${1:-open}" in
@@ -97,10 +101,10 @@ case "${1:-open}" in
     exec "$python" "$root/server.py"
     ;;
   stop) stop ;;
-  restart) stop; start; echo "kanboard: $url" ;;
+  restart) stop; start; echo "orchestrator: $url" ;;
   status)
-    if status=$(health); then echo "kanboard: running at $url (pid $(json_field pid <<<"$status"))"; else echo "kanboard: not running"; exit 1; fi
+    if status=$(health); then echo "orchestrator: running at $url (pid $(json_field pid <<<"$status"))"; else echo "orchestrator: not running"; exit 1; fi
     ;;
   logs) exec tail -n 100 -f "$log" ;;
-  *) echo "usage: kanboard [open|serve|stop|restart|status|logs]" >&2; exit 2 ;;
+  *) echo "usage: orchestrator [open|serve|stop|restart|status|logs]" >&2; exit 2 ;;
 esac

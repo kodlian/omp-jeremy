@@ -1,4 +1,4 @@
-"""Beads task persistence and legacy migration; execution state stays local to Kanboard."""
+"""Beads task persistence and legacy migration; execution state stays local to Orchestrator."""
 from __future__ import annotations
 
 import json
@@ -146,7 +146,7 @@ class Workspace:
 
     def require_binary(self) -> str:
         if not self.binary:
-            raise BeadsError("Kanboard needs Beads (bd), which isn't installed: run brew install beads")
+            raise BeadsError("Orchestrator needs Beads (bd), which isn't installed: run brew install beads")
         return self.binary
 
     def call(self, args: List[str], stdin: Optional[str] = None, timeout: float = BD_TIMEOUT,
@@ -293,7 +293,7 @@ class Workspace:
         self.call(["config", "set", "issue_id_mode", "counter"], json_out=False)
         mode = self.call(["config", "get", "issue_id_mode"], json_out=False).strip()
         if mode != "counter":
-            raise BeadsError(f"bd kept issue_id_mode {mode!r}; Kanboard needs sequential KB-<n> ids (counter)")
+            raise BeadsError(f"bd kept issue_id_mode {mode!r}; Orchestrator needs sequential KB-<n> ids (counter)")
 
     def import_rows(self, rows: List[Dict[str, Any]]) -> Any:
         return self.call(["import", "-"], stdin="".join(json.dumps(r) + "\n" for r in rows), timeout=IMPORT_TIMEOUT)
@@ -364,7 +364,7 @@ def reserve_ids(workspace: Workspace, floor: int, log: Callable[[str], None]) ->
     if top >= floor and not leftovers:
         return
     floor = max(floor, top)
-    log(f"kanboard: reserving ids up to {PREFIX}-{floor}")
+    log(f"orchestrator: reserving ids up to {PREFIX}-{floor}")
     reserved = list(leftovers)
     marker = json.dumps({RESERVED_KEY: True})
     if f"{PREFIX}-{floor}" not in {b["id"] for b in found}:
@@ -386,17 +386,17 @@ def prepare(home: Path, base_env: Dict[str, str], default_base: Callable[[str], 
     workspace.require_binary()
     tasks_dir = home / "tasks"
     if workspace.prepared():
-        log(f"kanboard: {workspace.root} is ready")
+        log(f"orchestrator: {workspace.root} is ready")
         return
     if not workspace.initialized():
-        log(f"kanboard: creating the Beads workspace {workspace.root}")
+        log(f"orchestrator: creating the Beads workspace {workspace.root}")
         workspace.init()
     workspace.configure()
     legacy = legacy_tasks(tasks_dir)
     backup = None
     if legacy:
         backup = home / f"legacy-backup-{time.strftime('%Y%m%d-%H%M%S')}"
-        log(f"kanboard: backing up {len(legacy)} legacy tasks to {backup}")
+        log(f"orchestrator: backing up {len(legacy)} legacy tasks to {backup}")
         for task_dir, _, _ in legacy:
             for name in LEGACY_FILES:
                 if (task_dir / name).is_file():
@@ -408,7 +408,7 @@ def prepare(home: Path, base_env: Dict[str, str], default_base: Callable[[str], 
         ids = {t["id"] for _, t, _ in legacy}
         known = ids | {b["id"] for b in workspace.list_all()}
         rows = [legacy_row(t, plan, known, default_base) for _, t, plan in legacy]
-        log(f"kanboard: importing {len(rows)} tasks into Beads")
+        log(f"orchestrator: importing {len(rows)} tasks into Beads")
         workspace.import_rows(rows)
         present = {b["id"] for b in workspace.list_all()}
         missing = sorted(ids - present, key=lambda i: (len(i), i))
@@ -426,4 +426,4 @@ def prepare(home: Path, base_env: Dict[str, str], default_base: Callable[[str], 
     reserve_ids(workspace, next_id - 1, log)
     write_atomic(workspace.marker, json.dumps({"preparedAt": now_iso(), "imported": [t["id"] for _, t, _ in legacy],
                                                "backup": str(backup) if backup else None}, indent=2))
-    log(f"kanboard: {workspace.root} is ready" + (f" ({len(legacy)} tasks imported)" if legacy else ""))
+    log(f"orchestrator: {workspace.root} is ready" + (f" ({len(legacy)} tasks imported)" if legacy else ""))

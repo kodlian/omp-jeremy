@@ -102,7 +102,6 @@ app.innerHTML = `
   <section class="main">
     <div class="banner" hidden></div>
     <header class="review-context">
-      <div class="repo">${icon("repo", 13)}<span class="repo-name">…</span></div>
       <button class="chip comparison-mode" data-act="compare" title="Choose comparison"></button>
       <div class="compare-context"></div>
     </header>
@@ -202,8 +201,7 @@ function onSocket(msg) {
     state.session = msg.session;
     state.pins = msg.pins;
     state.viewed = msg.viewed;
-    app.querySelector(".repo-name").textContent = msg.name;
-    app.querySelector(".repo").title = msg.session ? `${msg.root}\nSession: ${msg.session}` : msg.root;
+    app.querySelector(".review-context").title = msg.session ? `${msg.root}\nSession: ${msg.session}` : msg.root;
     document.title = `Review · ${msg.name}`;
     if (moved) {
       state.selected = null;

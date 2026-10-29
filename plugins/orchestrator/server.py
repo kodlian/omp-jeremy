@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Kanboard server: a local board whose tasks are triaged, optionally planned and implemented by omp in worktrees."""
+"""Orchestrator server: a local board whose tasks are triaged, optionally planned and implemented by omp in worktrees."""
 from __future__ import annotations
 
 import copy
@@ -61,7 +61,7 @@ PAUSED_COLUMNS = ("todo", "backlog")
 CONTROL_TIMEOUT = 10.0
 STOP_TIMEOUT = 8.0
 RESUME_GRACE = 180.0
-RESUME_TEXT = "Kanboard moved {id} back to In Progress: continue where you stopped."
+RESUME_TEXT = "Orchestrator moved {id} back to In Progress: continue where you stopped."
 PLANNING_MODES = {"auto", "plan", "fast"}
 SPAWN_LOG_LIMIT = 6000
 PRESENTATION_INTERVAL = 30.0
@@ -287,7 +287,7 @@ class Hub:
             q = self.task_stream(task_id)
             if q is None:
                 raise ApiError(409, f"{task_id}'s omp session isn't connected to the board; restart it to load the "
-                                    "current Kanboard plugin")
+                                    "current Orchestrator plugin")
             self.answers[cid] = answer
             q.put_nowait(sse("control", {"id": cid, "task": task_id, "action": action, **(payload or {})}))
         try:
@@ -364,7 +364,7 @@ def beads_api_error(e: beads.BeadsError) -> ApiError:
 class Store:
     """Tasks in Beads (beads_store) plus their runtime record (tasks/<id>/execution.json) and live status.
 
-    The board's context is the checkout `kanboard` was started from: new tasks branch from its branch (`base`)
+    The board's context is the checkout `orchestrator` was started from: new tasks branch from its branch (`base`)
     and their pull requests target it.
     """
 
@@ -467,14 +467,14 @@ class Store:
         try:
             self.fresh_blocked()
         except ApiError as e:
-            print(f"kanboard: couldn't re-read Beads' blockers: {e.message}", file=sys.stderr)
+            print(f"orchestrator: couldn't re-read Beads' blockers: {e.message}", file=sys.stderr)
 
     def reconcile(self, found: List[Dict[str, Any]]) -> bool:
         """Brings the cards in line with the listed beads (call under self.lock)."""
         listed = {b["id"]: b for b in found if b.get("id")}
         changed = False
         for task_id in [i for i in self.tasks if i not in listed]:
-            print(f"kanboard: {task_id} was deleted in Beads; its card is gone, any worktree stays", file=sys.stderr)
+            print(f"orchestrator: {task_id} was deleted in Beads; its card is gone, any worktree stays", file=sys.stderr)
             self.forget(task_id)
             changed = True
         for task_id, bead in listed.items():
@@ -568,7 +568,7 @@ class Store:
             titles = dict(COLUMNS)
             what = ", ".join(f"column ({titles[t['column']]}, Beads says {f['status']})" if k == "column" else k
                              for k in kept)
-            print(f"kanboard: {task_id} keeps its board {what}: starting or changing a started task happens on the board",
+            print(f"orchestrator: {task_id} keeps its board {what}: starting or changing a started task happens on the board",
                   file=sys.stderr)
         if not (kept or moved or plan_changed or any(beads.differs(k, t.get(k), f.get(k)) for k in beads.FIELDS)):
             return True
@@ -577,7 +577,7 @@ class Store:
         except ApiError as e:
             t.update(kept)
             self.synced = None
-            print(f"kanboard: couldn't write {task_id}'s board values to Beads, retrying: {e.message}", file=sys.stderr)
+            print(f"orchestrator: couldn't write {task_id}'s board values to Beads, retrying: {e.message}", file=sys.stderr)
             return False
         return True
 
@@ -1509,10 +1509,10 @@ def write_brief(t: Dict[str, Any], name: str, handoffs: List[Dict[str, Any]]) ->
                 " · parent of this task" if o["id"] == t.get("parent") else \
                 " · child of this task" if o.get("parent") == t["id"] else ""
             lines.append(f"- {o['id']} ({titles[o['column']]}): {o['title']}{relation}")
-        lines += ["", "Read a sibling's description and plan with kanban_plan when your work touches it; don't do its part."]
+        lines += ["", "Read a sibling's description and plan with orchestrator_plan when your work touches it; don't do its part."]
     if handoffs:
         lines += ["", "## Dependency handoffs", "",
-                  "What the tasks this one depends on recorded, at the revision shown. Read the latest with kanban_context."]
+                  "What the tasks this one depends on recorded, at the revision shown. Read the latest with orchestrator_context."]
         for h in handoffs:
             lines += ["", handoff_text(h)]
     lines += ["", "## Description", "", t.get("description") or "(none)", ""]
@@ -1601,7 +1601,7 @@ def handoff_text(h: Dict[str, Any]) -> str:
     title = store.tasks[h["id"]]["title"] if h["id"] in store.tasks else ""
     head = f"### {h['id']}: {title}" if title else f"### {h['id']}"
     if "error" in h:
-        return f"{head}\nNot readable when this brief was written ({h['error']}); try kanban_context {h['id']}."
+        return f"{head}\nNot readable when this brief was written ({h['error']}); try orchestrator_context {h['id']}."
     entries = h["entries"]
     if not entries:
         return f"{head} (revision {h['revision']})\nNothing recorded."
@@ -1617,7 +1617,7 @@ def handoff_text(h: Dict[str, Any]) -> str:
     more = f", {omitted} older not shown" if omitted else ""
     text = f"{head} (bead {h['beadId']}, revision {h['revision']}{more})\n\n" + "\n\n".join(blocks)
     if len(text) > HANDOFF_LIMIT:
-        text = text[:HANDOFF_LIMIT].rstrip() + f"\n\n[cut; kanban_context {h['id']} has all of it]"
+        text = text[:HANDOFF_LIMIT].rstrip() + f"\n\n[cut; orchestrator_context {h['id']} has all of it]"
     return text
 
 
@@ -1625,7 +1625,7 @@ def start_args(t: Dict[str, Any], brief: Path, config: Path) -> List[str]:
     """omp's arguments for a task's first start: its config, its brief and the prompt for its planning mode."""
     if t["merge"] == "local":
         finish = ("When the work is complete and verified, tell me; do not push or open a pull request: "
-                  f"/kanban done stages and commits pending changes, then the board merges this branch into {t['base']}. ")
+                  f"/orchestrator done stages and commits pending changes, then the board merges this branch into {t['base']}. ")
     else:
         pr = f" for ticket {t['ticket']}" if t.get("ticket") else ""
         finish = ("When the work is complete and verified, "
@@ -2019,6 +2019,27 @@ def open_task(task_id: str) -> Dict[str, Any]:
     raise ApiError(409, f"{task_id}'s agent is stopped: move it to In Progress to resume it")
 
 
+def open_worktree(task_id: str) -> Dict[str, Any]:
+    """Shows a started task's worktree in a terminal: one already there (its agent's, or any surface in it), else a new
+    shell; never starts, resumes or closes anything. Plain opens nothing and returns the path to cd to."""
+    with store.lock:
+        t = store.get(task_id)
+        path = require_spawned(t)
+        context, name, presentation = presentation_context(t), t["branch"], t.get("presentation")
+    if not Path(path).is_dir():
+        raise ApiError(409, f"The worktree {path} no longer exists")
+    cd = f"cd {shlex.quote(path)}"
+    try:
+        found = presentation if presentation and terminals.alive(presentation) else terminals.find_terminal(context, path)
+        terminal = found or terminals.open_terminal(context, name, path, 'exec "${SHELL:-/bin/sh}" -l')
+        if terminal["kind"] != "plain":
+            terminals.focus(terminal)
+    except (RuntimeError, OSError, KeyError, ValueError) as e:
+        raise ApiError(500, f"Couldn't open {path} in a terminal ({e}); run: {cd}")
+    return {"ok": True, "worktree": path, "cd": cd, "kind": terminal["kind"], "reused": bool(found),
+            "opened": terminal["kind"] != "plain"}
+
+
 def prompt_task(body: Dict[str, Any]) -> Dict[str, Any]:
     text = body.get("text")
     if not isinstance(text, str) or not text.strip():
@@ -2035,7 +2056,7 @@ def prompt_task(body: Dict[str, Any]) -> Dict[str, Any]:
         flow = next((f for f in store.flow_list() if f["id"] == body.get("flow")), None)
         if not flow:
             raise ApiError(400, "Select a flow")
-        context = [f"Task request from Kanboard for {flow['name']} ({flow['base']}).",
+        context = [f"Task request from Orchestrator for {flow['name']} ({flow['base']}).",
                    f"Requested column: {dict(COLUMNS)[column]}. This is placement intent, not evidence of completed work."]
         if relation:
             anchor = store.get(body.get("task"))
@@ -2045,7 +2066,7 @@ def prompt_task(body: Dict[str, Any]) -> Dict[str, Any]:
                            f"Create a prerequisite for {anchor['id']} and make {anchor['id']} depend on the new task.")
     target = hub.flow_session(flow["id"], None)
     if not target:
-        raise ApiError(409, f"No main omp session is connected: run /kanban in {flow['checkout'] or flow['repo']}")
+        raise ApiError(409, f"No main omp session is connected: run /orchestrator in {flow['checkout'] or flow['repo']}")
     cid = uuid.uuid4().hex
     answer: Dict[str, Any] = {"done": threading.Event()}
     with hub.lock:
@@ -2055,7 +2076,7 @@ def prompt_task(body: Dict[str, Any]) -> Dict[str, Any]:
                            session=target["session"]):
             raise ApiError(409, "The main omp session disconnected")
         if not answer["done"].wait(CONTROL_TIMEOUT):
-            raise ApiError(504, "The main omp session did not acknowledge the prompt; reload its Kanboard plugin")
+            raise ApiError(504, "The main omp session did not acknowledge the prompt; reload its Orchestrator plugin")
         if not answer["ok"]:
             raise ApiError(409, answer["message"])
         return {"ok": True, "message": answer["message"]}
@@ -2065,7 +2086,7 @@ def prompt_task(body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def discuss_task(task_id: str) -> Dict[str, Any]:
-    """Brings the flow's kanban omp session to the front to discuss a not-started task."""
+    """Brings the flow's orchestrator omp session to the front to discuss a not-started task."""
     with store.lock:
         t = store.get(task_id)
         if spawned(t):
@@ -2075,7 +2096,7 @@ def discuss_task(task_id: str) -> Dict[str, Any]:
         origin = t.get("origin")
     target = hub.flow_session(flow, origin["session"] if origin else None)
     if not target:
-        raise ApiError(409, f"No omp session has kanban mode on in {flow}: run /kanban in {checkout_path}")
+        raise ApiError(409, f"No omp session has orchestrator mode on in {flow}: run /orchestrator in {checkout_path}")
     hub.publish("discuss", {"id": task_id}, session=target["session"])
     context = target.get("terminal")
     if context and terminals.capabilities(context)["focus"]:
@@ -2157,7 +2178,7 @@ def resume_task(task_id: str) -> None:
     try:
         restarted = ensure_agent(snapshot)
     except ApiError as e:
-        print(f"kanboard: {task_id} couldn't resume: {e.message}", file=sys.stderr)
+        print(f"orchestrator: {task_id} couldn't resume: {e.message}", file=sys.stderr)
         with store.lock:
             store.resuming.pop(task_id, None)
             t = store.tasks.get(task_id)
@@ -2170,7 +2191,7 @@ def resume_task(task_id: str) -> None:
         try:
             present(task_id, focus=False)
         except ApiError as e:
-            print(f"kanboard: {task_id}'s terminal didn't open: {e.message}", file=sys.stderr)
+            print(f"orchestrator: {task_id}'s terminal didn't open: {e.message}", file=sys.stderr)
     hub.queue_control(task_id, "resume", {"text": text}, lambda ok, message: resumed(task_id, ok, message, update))
 
 
@@ -2181,7 +2202,7 @@ def resumed(task_id: str, ok: bool, message: str, update: Optional[Dict[str, str
         t = store.tasks.get(task_id)
         if not ok:
             store.resuming.pop(task_id, None)
-            print(f"kanboard: {task_id} didn't resume: {message}", file=sys.stderr)
+            print(f"orchestrator: {task_id} didn't resume: {message}", file=sys.stderr)
         elif t and update:
             t["briefed"] = update
             store.save(t)
@@ -2294,7 +2315,7 @@ def amend_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
             return {"id": task_id, "delivered": False, "held": held, "reopened": False}
         if t["spawn"]["state"] == "running":
             raise ApiError(409, f"{task_id} is still starting; add this once its agent is running")
-    message_agent(task_id, {"text": f"Addition to {task_id} from the Kanboard flow session: {text}"})
+    message_agent(task_id, {"text": f"Addition to {task_id} from the Orchestrator flow session: {text}"})
     with store.lock:
         t = store.get(task_id)
         t["description"] = amended_description(t["description"], text)
@@ -2407,43 +2428,6 @@ def present_diff(task_id: str) -> Dict[str, Any]:
     return {"ok": True}
 
 
-def open_xcode(task_id: str) -> Dict[str, Any]:
-    """Opens the worktree's Xcode project: the openXcode hook when configured, else the shallowest project found."""
-    with store.lock:
-        path = require_spawned(store.get(task_id))
-    command = hook("openXcode")
-    if command:
-        code, _, error = run_hook("openXcode", command, path, 30, {"KANBOARD_TASK": task_id, "KANBOARD_WORKTREE": path})
-        if code != 0:
-            raise ApiError(409, error)
-        return {"ok": True}
-    project = find_xcode_project(path)
-    if not project:
-        raise ApiError(409, "No Xcode project in the worktree")
-    run(["open", project], timeout=15)
-    return {"ok": True}
-
-
-def find_xcode_project(root: str, max_depth: int = 4) -> Optional[str]:
-    """The shallowest .xcworkspace (else .xcodeproj) under root, skipping hidden and dependency folders."""
-    found: Dict[str, List[Tuple[int, str]]] = {".xcworkspace": [], ".xcodeproj": []}
-    for dirpath, dirnames, _ in os.walk(root):
-        depth = dirpath[len(root):].count(os.sep)
-        for name in dirnames:
-            suffix = os.path.splitext(name)[1]
-            if suffix in found:
-                found[suffix].append((depth, os.path.join(dirpath, name)))
-        dirnames[:] = [] if depth >= max_depth else [
-            d for d in dirnames
-            if not d.startswith(".") and os.path.splitext(d)[1] not in found
-            and d not in ("node_modules", "Pods", "DerivedData", "build", ".build")
-        ]
-    for suffix in (".xcworkspace", ".xcodeproj"):
-        if found[suffix]:
-            return min(found[suffix])[1]
-    return None
-
-
 def cleanup_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     """Removes a started task's worktree and branch, stopping its agent first so nothing works in a deleted tree."""
     with store.lock:
@@ -2523,7 +2507,7 @@ def commit_task_changes(path: str, branch: str, task_id: str, title: str) -> Opt
         raise ApiError(409, "The worktree has changes Git cannot commit", {"output": status})
     if code != 1:
         raise ApiError(409, "Could not inspect the staged task changes", {"output": (out + error).strip()})
-    subject = f"{task_id}: {' '.join(plain(title).splitlines()).strip() or 'Kanboard task'}"
+    subject = f"{task_id}: {' '.join(plain(title).splitlines()).strip() or 'Orchestrator task'}"
     code, out, error = run(["git", "-C", path, "commit", "-m", subject], timeout=120)
     if code != 0:
         raise ApiError(409, "Could not commit the task changes", {"output": (out + error).strip()})
@@ -2562,7 +2546,7 @@ def merge_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         _, ahead, _ = run(["git", "-C", target, "rev-list", "--count", f"{base}..{branch}"], timeout=15)
         already = None
         if not ahead.strip().isdigit() or int(ahead) == 0:
-            # A merge that landed without being recorded (an interrupted /kanban done) finishes the task instead of failing.
+            # A merge that landed without being recorded (an interrupted /orchestrator done) finishes the task instead of failing.
             _, already, _ = run(["git", "-C", target, "log", "-1", "--format=%H", "--fixed-strings",
                                  f"--grep=Merge {branch} ({task_id}:", base], timeout=15)
             if not already.strip():
@@ -2598,7 +2582,7 @@ def merge_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
                     )
                 names = ", ".join(rebase_conflicts)
                 instruction = (
-                    f"`/kanban done` found a merge conflict and started `git rebase {base}`. "
+                    f"`/orchestrator done` found a merge conflict and started `git rebase {base}`. "
                     f"The rebase is paused on {names}. Resolve every conflict in this task worktree, "
                     "stage the resolved files, and continue the rebase until it completes. "
                     "Do not merge the base branch; report when the rebased task is ready."
@@ -2613,7 +2597,7 @@ def merge_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
                 if notified:
                     message += "; the task agent was asked to resolve them"
                 else:
-                    message += "; resolve them in the task worktree, then retry /kanban done"
+                    message += "; resolve them in the task worktree, then retry /orchestrator done"
                 details = "\n".join(
                     part for part in ((out + err).strip(), (rebase_out + rebase_err).strip()) if part
                 )
@@ -2698,7 +2682,7 @@ class Poller:
             try:
                 self.tick(forced)
             except Exception as e:  # keep polling through transient failures
-                print(f"kanboard: poll failed: {e!r}", file=sys.stderr)
+                print(f"orchestrator: poll failed: {e!r}", file=sys.stderr)
 
     def tick(self, forced: bool) -> None:
         changed = self.check_beads()
@@ -2723,7 +2707,7 @@ class Poller:
         try:
             return store.sync()
         except ApiError as e:
-            print(f"kanboard: reading Beads failed: {e.message}", file=sys.stderr)
+            print(f"orchestrator: reading Beads failed: {e.message}", file=sys.stderr)
             return False
 
     def check_queue(self) -> bool:
@@ -2734,7 +2718,7 @@ class Poller:
                 try:
                     refreshed = store.fresh_blocked()
                 except ApiError as e:
-                    print(f"kanboard: reading Beads blockers failed, starting nothing: {e.message}", file=sys.stderr)
+                    print(f"orchestrator: reading Beads blockers failed, starting nothing: {e.message}", file=sys.stderr)
                     return False
             queued = sorted((t for t in store.tasks.values() if t["column"] == "todo" and not blocked_by(t) and (
                 (paused(t) and not legacy_unknown(t))
@@ -2800,7 +2784,7 @@ class Poller:
                 elif cwds is not None and legacy_unknown(t) and not any(within(c, t["worktree"]) for c in cwds):
                     ex["stopped"] = True
                     persist = True
-                    print(f"kanboard: {task_id}'s legacy agent is gone: no process works in {t['worktree']}",
+                    print(f"orchestrator: {task_id}'s legacy agent is gone: no process works in {t['worktree']}",
                           file=sys.stderr)
                 activity = store.activity.get(task_id)
                 if not connected and activity and activity.get("state"):
@@ -3151,6 +3135,7 @@ ROUTES = [
     ("POST", r"/api/tasks/([\w.-]+)/move", lambda m, b: move_task(m[1], b)),
     ("POST", r"/api/tasks/([\w.-]+)/reorder", lambda m, b: reorder_task(m[1], b)),
     ("POST", r"/api/tasks/([\w.-]+)/open", lambda m, b: open_task(m[1])),
+    ("POST", r"/api/tasks/([\w.-]+)/worktree/open", lambda m, b: open_worktree(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/message", lambda m, b: message_agent(m[1], b)),
     ("POST", r"/api/tasks/([\w.-]+)/review", lambda m, b: review_plan(m[1], b)),
     ("POST", r"/api/tasks/([\w.-]+)/stop", lambda m, b: stop_task(m[1])),
@@ -3161,7 +3146,6 @@ ROUTES = [
     ("POST", r"/api/tasks/([\w.-]+)/diff/open", lambda m, b: present_diff(m[1])),
     ("GET", r"/api/tasks/([\w.-]+)/context", lambda m, b: task_context(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/context", lambda m, b: publish_context(m[1], b)),
-    ("POST", r"/api/tasks/([\w.-]+)/xcode", lambda m, b: open_xcode(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/merge", lambda m, b: merge_task(m[1], b)),
     ("POST", r"/api/tasks/([\w.-]+)/discuss", lambda m, b: discuss_task(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/cleanup", lambda m, b: cleanup_task(m[1], b)),
@@ -3182,7 +3166,7 @@ ROUTES = [
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "kanboard"
+    server_version = "orchestrator"
 
     def log_message(self, format: str, *args: Any) -> None:
         pass
@@ -3254,7 +3238,7 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as e:
-            print(f"kanboard: {self.command} {self.path} failed: {e!r}", file=sys.stderr)
+            print(f"orchestrator: {self.command} {self.path} failed: {e!r}", file=sys.stderr)
             try:
                 self.send_json(500, {"error": f"Internal error: {e}"})
             except OSError:
@@ -3322,7 +3306,7 @@ def prepare() -> None:
     try:
         beads.prepare(HOME, child_env(), default_branch, lambda line: print(line, file=sys.stderr, flush=True))
     except beads.BeadsError as e:
-        print(f"kanboard: {e}", file=sys.stderr, flush=True)
+        print(f"orchestrator: {e}", file=sys.stderr, flush=True)
         sys.exit(1)
 
 
@@ -3337,12 +3321,12 @@ def main() -> None:
     try:
         store.load()
     except (beads.BeadsError, ApiError) as e:
-        print(f"kanboard: {e.message if isinstance(e, ApiError) else e}", file=sys.stderr, flush=True)
+        print(f"orchestrator: {e.message if isinstance(e, ApiError) else e}", file=sys.stderr, flush=True)
         sys.exit(1)
     threading.Thread(target=hub.run_snapshots, daemon=True).start()
     threading.Thread(target=poller.run, daemon=True).start()
     server = Server((HOST, PORT), Handler)
-    print(f"kanboard: http://{HOST}:{PORT} (data in {HOME}; new tasks branch from "
+    print(f"orchestrator: http://{HOST}:{PORT} (data in {HOME}; new tasks branch from "
           f"{store.context['base']} in {store.context['checkout']})", file=sys.stderr, flush=True)
     signal.signal(signal.SIGTERM, stop)
     try:

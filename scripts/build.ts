@@ -2,7 +2,7 @@ import { copyFile, mkdir, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
-for (const [name, entry] of [["orchestrator", "omp/kanboard.ts"], ["git-diff-review", "src/extension.ts"]]) {
+for (const [name, entry] of [["orchestrator", "omp/orchestrator.ts"], ["git-diff-review", "src/extension.ts"]]) {
   const dir = resolve(root, "plugins", name);
   const result = await Bun.build({
     entrypoints: [resolve(dir, entry)],

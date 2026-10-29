@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kanboard</title>
+<title>Orchestrator</title>
 <style>
 :root{
   color-scheme:dark light;
@@ -336,7 +336,7 @@ button.ctx:hover{color:var(--fg)}
 <header class="toolbar">
   <div class="view-switch" role="group" aria-label="Task view">
     <button class="tool-button" id="boardViewBtn" title="Board view" aria-label="Board view"></button>
-    <button class="tool-button" id="pipelineViewBtn" title="Pipeline view" aria-label="Pipeline view"></button>
+    <button class="tool-button" id="pipelineViewBtn" title="Graph view" aria-label="Graph view"></button>
   </div>
   <span class="brand" id="brand"></span>
   <button class="ctx" id="ctx"></button>
@@ -380,7 +380,6 @@ const LUCIDE = {
   openIn:'<path d="M21 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h6"/><path d="m21 3-9 9"/><path d="M15 3h6v6"/>',
   diff:'<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M9 10h6"/><path d="M12 13V7"/><path d="M9 17h6"/>',
   compare:'<circle cx="5" cy="6" r="3"/><path d="M12 6h5a2 2 0 0 1 2 2v7"/><path d="m15 9-3-3 3-3"/><circle cx="19" cy="18" r="3"/><path d="M12 18H7a2 2 0 0 1-2-2V9"/><path d="m9 15 3 3-3 3"/>',
-  hammer:'<path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/><path d="m18 15 4-4"/><path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/>',
   play:'<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/>',
   pause:'<rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/>',
   stop:'<rect width="18" height="18" x="3" y="3" rx="2"/>',
@@ -508,7 +507,7 @@ let pendingRender = false;
 let openId = null;
 let highlightedDependency = null;
 let filter = "";
-let flowSel = new URLSearchParams(location.search).get("flow") || LS.get("flow") || null;
+let flowSel = new URLSearchParams(location.search).get("flow") || null;
 let themeHref = "/appearance.css";
 const tabFor = {};
 const drafts = new Map();
@@ -519,23 +518,28 @@ const taskNumbers = ids => ids.map(taskNumber).join(", ");
 const taskRef = raw => { const v = raw.trim().replace(/^#(?=\d)/, ""); return /^\d+(?:\.\d+)*$/.test(v) ? "KB-" + v : /^kb-\d+(?:\.\d+)*$/i.test(v) ? v.toUpperCase() : v; };
 const flows = () => (board && board.flows) || [];
 const selectedFlow = () => flows().find(f => f.id === flowSel) || null;
-const inFlow = t => { const f = selectedFlow(); return !f || t.flow === f.id; };
+const inFlow = t => !!selectedFlow() && t.flow === flowSel;
 const colTasks = col => board.tasks.filter(t => t.column === col).sort((a, b) => a.order - b.order);
 const colTitle = id => (board.columns.find(c => c.id === id) || { title: id }).title;
 const matches = t => !filter || `${t.id} ${taskNumber(t.id)} ${t.title} ${t.ticket || ""} ${t.branch}`.toLowerCase().includes(filter);
 
 function setBoard(b) {
   board = b;
-  if (flowSel && !flows().some(f => f.id === flowSel)) {
-    setFlow(null);
-  } else {
-    applyTheme();
-    renderContext();
-    renderBoard();
-  }
-  if (openId) { if (findTask(openId)) updatePanel(); else closePanel(); }
-  const waiting = b.tasks.filter(needsAttention).length;
-  document.title = waiting ? `${waiting} waiting · Kanboard` : "Kanboard";
+  if (!flowSel) lockFlow();
+  applyTheme();
+  renderContext();
+  renderBoard();
+  if (openId) { const t = findTask(openId); if (t && inFlow(t)) updatePanel(); else closePanel(); }
+  const waiting = b.tasks.filter(t => inFlow(t) && needsAttention(t)).length;
+  document.title = waiting ? `${waiting} waiting · Orchestrator` : "Orchestrator";
+}
+/** Fixes the page's flow once: the URL's, else the linked task's, else the board's context; it never changes after. */
+function lockFlow() {
+  flowSel = findTask(taskRef(decodeURIComponent(location.hash.slice(1))))?.flow || board.repo?.flow || null;
+  if (!flowSel) return;
+  const q = new URLSearchParams(location.search);
+  q.set("flow", flowSel);
+  history.replaceState(null, "", location.pathname + "?" + q + location.hash);
 }
 function renderContext() {
   const c = $("#ctx"), f = selectedFlow();
@@ -544,26 +548,23 @@ function renderContext() {
     if (f.concurrencyLimit != null) parts.push(h("span", { class: "chip" }, `${f.concurrencyLimit} at once`));
     parts.push(I("chevronDown", 12));
     c.replaceChildren(...parts);
-    c.title = `New tasks branch from ${f.base} and merge back into it (${f.checkout})`;
+    c.title = `New tasks branch from ${f.base} and merge back into it (${f.checkout}). Flow settings`;
   } else {
-    c.replaceChildren(I("kanban", 13), h("strong", {}, "All flows"), I("chevronDown", 12));
-    c.title = "Show the tasks of one flow";
+    c.replaceChildren(I("branch", 13), h("strong", {}, "Flow unavailable"), I("chevronDown", 12));
+    c.title = "This page's flow has no checkout or connected omp session; run /orchestrator in its checkout";
   }
   c.onclick = () => openMenu(c, flowMenu());
 }
 function flowMenu() {
-  const total = f => Object.values(f.counts || {}).reduce((a, b) => a + b, 0);
   const cur = selectedFlow();
-  const items = [{ icon: "kanban", label: "All flows", sub: String(board.tasks.length), checked: !cur, action: () => setFlow(null) },
-    ...flows().map(f => ({ icon: "branch", label: `${f.name} · ${f.base}`, sub: String(total(f)), checked: !!cur && cur.id === f.id, action: () => setFlow(f.id) }))];
-  if (cur) items.push("-", { header: "Flow settings" },
+  if (!cur) return [{ header: "Flow unavailable: run /orchestrator in its checkout" }];
+  return [{ header: "Flow settings" },
     { icon: "wrench", label: "Concurrent tasks", sub: cur.concurrencyLimit == null ? "Unlimited" : String(cur.concurrencyLimit), action: () => showConcurrencyModal(cur) },
     { icon: "play", label: "Setup script", sub: scriptName(cur.setupScript), action: () => showScriptsModal(cur) },
-    { icon: "trash", label: "Teardown script", sub: scriptName(cur.teardownScript), action: () => showScriptsModal(cur) });
-  items.push("-", { header: "Beads" },
-    { icon: "link", label: "Readiness…", sub: cur ? cur.name : "All flows", action: () => showReadiness({ flow: cur ? cur.id : null }) },
-    { icon: "file", label: "Shared memories…", sub: cur ? cur.name : "Choose repository", action: () => showMemories() });
-  return items;
+    { icon: "trash", label: "Teardown script", sub: scriptName(cur.teardownScript), action: () => showScriptsModal(cur) },
+    "-", { header: "Beads" },
+    { icon: "link", label: "Readiness…", sub: cur.name, action: () => showReadiness({ flow: cur.id }) },
+    { icon: "file", label: "Shared memories…", sub: cur.name, action: () => showMemories() }];
 }
 function showConcurrencyModal(flow) {
   const input = h("input", { class: "field mono", type: "number", min: "1", step: "1", inputmode: "numeric",
@@ -628,17 +629,6 @@ function showScriptsModal(flow) {
       h("div", { class: "m-note" }, "Paths may start with ~. Leave a field empty for none; a value equal to the default in config.json keeps following it.")),
     h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), save)]);
   setTimeout(() => { setup.focus(); setup.select(); }, 0);
-}
-function setFlow(id) {
-  flowSel = id;
-  applyTheme();
-  LS.set("flow", id || "");
-  const q = new URLSearchParams(location.search);
-  if (id) q.set("flow", id); else q.delete("flow");
-  const s = q.toString();
-  history.replaceState(null, "", location.pathname + (s ? "?" + s : "") + location.hash);
-  renderContext();
-  renderBoard();
 }
 /** Loads the selected flow's omp colors without flashing the previous theme. */
 function applyTheme() {
@@ -768,7 +758,6 @@ function cardEl(t) {
   if (t.ticket) top.append(h("span", { class: "chip mono" }, t.ticket));
   top.append(planningBadge(t));
   if (t.dependsOn.length) top.append(h("span", { class: "chip", title: "Depends on " + taskNumbers(t.dependsOn) }, I("link", 10), t.dependsOn.map(taskNumber).join(" ")));
-  if (!selectedFlow() && board.repo && t.base !== board.repo.base) top.append(h("span", { class: "chip", title: `Merges into ${t.base} ${t.merge === "local" ? "locally" : "via a pull request"}` }, I("arrowRight", 10), t.base));
   top.append(h("span", { class: "spacer" }));
   if (t.pr) top.append(prChip(t.pr));
   const needs = needsAttention(t);
@@ -949,7 +938,7 @@ function confirmWorkingMove(t, col, order) {
   const resumes = col === "todo" ? "Todo resumes it once it's first in line with its dependencies done and a task slot free." : "Backlog keeps it paused until you move it back.";
   confirmModal(pauses ? `Pause ${taskNumber(t.id)}?` : `Move working ${taskNumber(t.id)} to ${colTitle(col)}?`,
     pauses ? `Its agent stops what it's doing; the worktree and omp session stay. ${resumes}${capacity}`
-      : `Moving the card only changes Kanboard status; it does not stop omp or remove the worktree.${capacity}`,
+      : `Moving the card only changes Orchestrator status; it does not stop omp or remove the worktree.${capacity}`,
     pauses ? "Pause" : "Move anyway", () => doMove(t, col, order, false, true));
 }
 function confirmStop(t) {
@@ -1020,11 +1009,9 @@ function showMergeModal(t) {
 // MARK: new task
 function openTaskPrompt({ column = "backlog", task = null, relation = null } = {}) {
   if (modals.length || !board) return;
+  const f = selectedFlow();
+  if (!f) { toast("This flow is unavailable: run /orchestrator in its checkout", true); return; }
   const prompt = h("textarea", { class: "nt-desc", rows: "5", placeholder: "Describe the task for the main agent…", "aria-label": "Task prompt" });
-  const flow = h("select", { class: "field", "aria-label": "Task flow" },
-    ...flows().map(f => h("option", { value: f.id }, `${f.name} · ${f.base}${f.live ? "" : " · main agent offline"}`)));
-  flow.value = task?.flow || selectedFlow()?.id || board.repo?.flow || flows()[0]?.id || "";
-  flow.disabled = !!task;
   const send = h("button", { class: "btn primary" }, "Send to main agent", h("kbd", {}, "⌘↩"));
   const cancel = h("button", { class: "btn ghost", onclick: closeModal }, "Cancel");
   let sending = false;
@@ -1036,7 +1023,7 @@ function openTaskPrompt({ column = "backlog", task = null, relation = null } = {
     send.replaceChildren(frag(spinner(12)), "Sending…");
     try {
       await act("POST", "/api/flows/prompt", {
-        text: prompt.value.trim(), flow: flow.value, column,
+        text: prompt.value.trim(), flow: f.id, column,
         ...(task ? { task: task.id, relation } : {}),
       }, "Sent to the main agent");
       if (box.isConnected && modals.at(-1)?.contains(box)) closeModal();
@@ -1050,7 +1037,7 @@ function openTaskPrompt({ column = "backlog", task = null, relation = null } = {
   const detail = task ? (relation === "after" ? `Depends on ${taskNumber(task.id)}` : `Prerequisite for ${taskNumber(task.id)}`) : `Requested column: ${colTitle(column)}`;
   const box = openModal([
     h("div", { class: "nt-head" }, I("message", 13), "New task request"),
-    h("div", { class: "m-body" }, flow, h("p", { class: "m-text" }, detail)),
+    h("div", { class: "m-body" }, h("p", { class: "m-text" }, `${f.name} · ${f.base}${f.live ? "" : " · main agent offline"}`), h("p", { class: "m-text" }, detail)),
     prompt,
     h("div", { class: "nt-foot" }, h("span", { class: "hint" }, "The main agent creates or updates the task."), h("span", { class: "spacer" }), cancel, send),
   ], "nt");
@@ -1062,6 +1049,8 @@ function openTaskPrompt({ column = "backlog", task = null, relation = null } = {
 
 function openComposer({ parent = null } = {}) {
   if (modals.length || !board) return;
+  const flow = selectedFlow();
+  if (!flow && !parent) { toast("This flow is unavailable: run /orchestrator in its checkout", true); return; }
   const title = h("input", { class: "nt-title", placeholder: "Task title", spellcheck: "false" });
   const desc = h("textarea", { class: "nt-desc", placeholder: "What should change, and why? Markdown works.", rows: "4" });
   const ticket = h("input", { placeholder: "Ticket", spellcheck: "false", maxlength: "40" });
@@ -1081,7 +1070,6 @@ function openComposer({ parent = null } = {}) {
     if (!name) { title.focus(); title.classList.remove("shake"); void title.offsetWidth; title.classList.add("shake"); return; }
     create.disabled = true;
     try {
-      const flow = selectedFlow();
       const t = await act("POST", "/api/tasks", { title: name, description: desc.value, ticket: ticket.value.trim() || null, planningMode,
         ...(parentPick.value ? { parent: parentPick.value } : flow ? { repo: flow.checkout } : {}) });
       if (!findTask(t.id)) board.tasks.push(t);
@@ -1092,8 +1080,7 @@ function openComposer({ parent = null } = {}) {
   };
   create.onclick = submit;
   desc.addEventListener("input", () => autosize(desc, innerHeight * 0.45));
-  const flow = selectedFlow();
-  const parentPick = nativeParentPicker(parent, flow ? flow.id : null);
+  const parentPick = nativeParentPicker(parent, flowSel);
   const parentTask = parent && findTask(parent);
   const base = parentTask ? parentTask.base : flow ? flow.base : board.repo ? board.repo.base : "";
   const box = openModal([
@@ -1115,7 +1102,7 @@ function openComposer({ parent = null } = {}) {
 // MARK: discuss
 const flowOf = t => flows().find(f => f.id === t.flow);
 const canDiscuss = t => !!(flowOf(t) || {}).live;
-const discussOff = t => `Run /kanban in ${(flowOf(t) || {}).checkout || t.repo} to discuss cards with omp`;
+const discussOff = t => `Run /orchestrator in ${(flowOf(t) || {}).checkout || t.repo} to discuss cards with omp`;
 const discussInOmp = t => act("POST", tpath(t.id, "/discuss"), {}, "Opened in omp").catch(() => {});
 async function openWorkspace() {
   const id = openId;
@@ -1127,6 +1114,19 @@ async function openWorkspace() {
         h("p", { class: "m-text" }, "Run this command in a terminal. Closing that attachment leaves the managed agent running."), command),
         h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Close"),
           h("button", { class: "btn primary", onclick: () => copyText(r.attachCommand, "Attach command copied") }, "Copy command"))]);
+    }
+  } catch {}
+}
+async function openWorktree() {
+  const id = openId;
+  try {
+    const r = await act("POST", tpath(id, "/worktree/open"), {});
+    if (!r.opened) {
+      const command = h("textarea", { class: "field mono", rows: "2", readonly: true, "aria-label": "Worktree command" }, r.cd);
+      openModal([h("div", { class: "m-body" }, h("h2", {}, `Open ${taskNumber(id)}'s worktree`),
+        h("p", { class: "m-text" }, "Run this in any terminal to work in the task's worktree; its agent is left as it is."), command),
+        h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Close"),
+          h("button", { class: "btn primary", onclick: () => copyText(r.cd, "Command copied") }, "Copy command"))]);
     }
   } catch {}
 }
@@ -1194,7 +1194,7 @@ function currentTab(t) {
 }
 function setTab(tab) { tabFor[openId] = tab; updatePanel(); }
 function openPanel(id, expanded = false) {
-  if (!findTask(id)) return;
+  if (!findTask(id) || !inFlow(findTask(id))) return;
   if (openId !== id) { highlightDependency(null); openId = id; buildPanel(); }
   if (location.hash !== "#" + id) history.replaceState(null, "", "#" + id);
   $("#panel").hidden = $("#resizer").hidden = false;
@@ -1350,7 +1350,7 @@ function buildPanel() {
   const actions = h("div", { class: "actions" },
     h("button", { class: "btn sm", onclick: () => showDiff(findTask(openId)) }, I("diff", 13), "Diff"),
     h("button", { class: "btn sm", "data-presentation-diff": true, title: "Open the presentation's diff viewer", onclick: () => act("POST", tpath(openId, "/diff/open"), {}).catch(() => {}) }, I("compare", 13), "Terminal diff"),
-    h("button", { class: "btn sm", onclick: () => act("POST", tpath(openId, "/xcode"), {}).catch(() => {}) }, I("hammer", 13), "Xcode"));
+    h("button", { class: "btn sm", onclick: openWorktree }, I("openIn", 13), "Open worktree"));
   const cleanupText = h("div", { class: "txt" });
   const cleanup = h("div", { class: "banner" }, I("prMerged", 16), cleanupText,
     h("button", { class: "btn sm danger", onclick: () => confirmCleanup(findTask(openId)) }, "Remove worktree"));
@@ -1390,7 +1390,7 @@ function moreMenu(t) {
   if (t.plan) items.push({ icon: "copy", label: "Copy plan", action: () => copyText(t.plan, "Plan copied") });
   if (t.worktree) {
     items.push("-", { icon: "diff", label: "Show diff", action: () => showDiff(t) },
-      { icon: "hammer", label: "Open in Xcode", action: () => act("POST", tpath(t.id, "/xcode"), {}).catch(() => {}) });
+      { icon: "openIn", label: "Open worktree", action: openWorktree });
     if (t.presentation?.capabilities?.diff) items.push({ icon: "compare", label: "Open terminal diff", action: () => act("POST", tpath(t.id, "/diff/open"), {}).catch(() => {}) });
     if (t.column !== "done" && !t.merged && t.agent?.state !== "stopped") items.push({ icon: "stop", label: "Stop agent…", action: () => confirmStop(t) });
     if (t.column !== "done") items.push({ icon: "trash", label: "Remove worktree…", danger: true, action: () => confirmCleanup(t) });
@@ -1755,7 +1755,7 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
 <script>
 "use strict";
 // MARK: wiring
-$("#brand").append(I("kanban", 16), "Kanboard");
+$("#brand").append(I("kanban", 16), "Orchestrator");
 $("#search").prepend(I("search", 13));
 $("#refreshBtn").append(I("refresh", 14));
 $("#refreshBtn").onclick = () => act("POST", "/api/refresh", {}, "Refreshing agents, git and pull requests").catch(() => {});
@@ -1801,7 +1801,6 @@ setInterval(() => {
 
 (async () => {
   await loadState();
-  if (selectedFlow() && new URLSearchParams(location.search).get("flow") !== flowSel) setFlow(flowSel);
   const id = taskRef(decodeURIComponent(location.hash.slice(1)));
   if (id && findTask(id)) openPanel(id);
   connect();

@@ -257,6 +257,79 @@ def _tmux_alive(att: Dict[str, Any]) -> bool:
     return _tmux_show(part, part["pane"], "#{window_id}") == part["window"]
 
 
+# --- existing terminals
+
+def _within(path: Any, root: str) -> int:
+    """0 when `path` is `root`, 1 when it's inside it, -1 otherwise."""
+    if not isinstance(path, str) or not path:
+        return -1
+    real = os.path.realpath(path)
+    return 0 if real == root else 1 if real.startswith(root.rstrip(os.sep) + os.sep) else -1
+
+
+def _find_cmux(part: Dict[str, str], root: str) -> Optional[Dict[str, Any]]:
+    """A workspace in the context's cmux window whose current directory is `root` or inside it, exact first."""
+    window = part.get("window") or (_cmux_panels(part) or {}).get("window_id")
+    args = ["--json", "--id-format", "uuids", "list-workspaces"] + (["--window", window] if window else [])
+    code, out, _ = _cmux(part, args)
+    if code != 0:
+        return None
+    try:
+        workspaces = json.loads(out).get("workspaces") or []
+    except (ValueError, AttributeError):
+        return None
+    best: Optional[Tuple[int, Dict[str, Any]]] = None
+    for ws in workspaces:
+        rank = _within(ws.get("current_directory"), root) if isinstance(ws, dict) else -1
+        handle = ws.get("id") if rank >= 0 else None
+        if isinstance(handle, str) and CMUX_HANDLE.fullmatch(handle) and (best is None or rank < best[0]):
+            best = (rank, ws)
+    if not best:
+        return None
+    ws = best[1]
+    found = {"cli": part["cli"], "socket": part["socket"], "workspace": ws["id"]}
+    if window:
+        found["window"] = window
+    return _attachment("cmux", str(ws.get("title") or ws["id"]), ws["current_directory"], None, True, cmux=found)
+
+
+def _find_tmux(part: Dict[str, str], root: str) -> Optional[Dict[str, Any]]:
+    """A pane in the context's tmux session whose current path is `root` or inside it, exact first."""
+    session = _tmux_show(part, part["pane"], "#{session_id}")
+    if not session or not TMUX_SESSION.fullmatch(session):
+        return None
+    code, out, _ = _tmux(part, ["list-panes", "-s", "-t", session, "-F", "#{window_id}\t#{pane_id}\t#{window_name}\t#{pane_current_path}"])
+    if code != 0:
+        return None
+    best: Optional[Tuple[int, List[str]]] = None
+    for line in out.splitlines():
+        fields = line.split("\t", 3)
+        if len(fields) != 4 or not (TMUX_WINDOW.fullmatch(fields[0]) and TMUX_PANE.fullmatch(fields[1])):
+            continue
+        rank = _within(fields[3], root)
+        if rank >= 0 and (best is None or rank < best[0]):
+            best = (rank, fields)
+    if not best:
+        return None
+    window, pane, name, path = best[1]
+    tmux = {"socket": part["socket"], "session": session, "window": window, "pane": pane}
+    return _attachment("tmux", name or window, path, None, True, tmux=tmux)
+
+
+def find_terminal(context: Dict[str, Any], cwd: str) -> Optional[Dict[str, Any]]:
+    """An open terminal of the context's presentation already at `cwd` or inside it, for focus(); read-only, None when none or for plain."""
+    root = os.path.realpath(cwd)
+    try:
+        if context.get("kind") == "tmux" and context.get("tmux"):
+            return _find_tmux(context["tmux"], root)
+        if context.get("kind") == "cmux" and context.get("cmux"):
+            return _find_cmux(context["cmux"], root)
+    except (KeyError, TypeError, ValueError):
+        return None
+    return None
+
+
+
 # --- attachments
 
 def open_terminal(context: Dict[str, Any], name: str, cwd: str, command: str) -> Dict[str, Any]:

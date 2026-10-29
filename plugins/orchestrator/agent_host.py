@@ -257,7 +257,7 @@ def ensure(directory: Path, cwd: Optional[str] = None) -> Dict[str, Any]:
                 time.sleep(0.1)
         spec = read_json(directory / SPEC)
         if not isinstance(spec.get("argv"), list) or not spec["argv"]:
-            raise HostError("Kanboard withdrew this agent's start; start the task again from the board")
+            raise HostError("Orchestrator withdrew this agent's start; start the task again from the board")
         if not cwd:
             cwd = spec.get("cwd") or (find_worktree(spec["repo"], spec["branch"])
                                       if spec.get("repo") and spec.get("branch") else None)
@@ -1004,7 +1004,7 @@ class Host:
                 os.chdir(cwd)
                 os.execve(argv[0], argv, env)
             except BaseException as e:
-                os.write(2, f"kanboard: couldn't run the agent: {e}\r\n".encode())
+                os.write(2, f"orchestrator: couldn't run the agent: {e}\r\n".encode())
             os._exit(127)
         self.child, self.master, self.pty_open = pid, fd, True
         os.set_blocking(fd, False)
@@ -1417,7 +1417,7 @@ def attach(directory: Path) -> int:
         sock.close()
         write_all(1, (("\x1b[?1049l" if alt else "") + RESTORE).encode())
     if refused:
-        print(f"\r\nkanboard: {refused}", file=sys.stderr)
+        print(f"\r\norchestrator: {refused}", file=sys.stderr)
         return 1
     if code is not None:
         print(f"\r\n[the agent exited with code {code}]")
@@ -1442,14 +1442,14 @@ def launch(directory: Path) -> int:
     try:
         ensure(directory)
     except HostError as e:
-        print(f"kanboard: {e}", file=sys.stderr)
+        print(f"orchestrator: {e}", file=sys.stderr)
         hold()
         return 1
     return attach(directory)
 
 
 def main(argv: List[str]) -> int:
-    parser = argparse.ArgumentParser(prog="agent_host.py", description="A Kanboard task agent's detached terminal host.")
+    parser = argparse.ArgumentParser(prog="agent_host.py", description="An Orchestrator task agent's detached terminal host.")
     actions = parser.add_subparsers(dest="action", required=True)
     for name, text in (("attach", "show the agent in this terminal; Ctrl-\\ detaches, omp keeps running"),
                        ("launch", "start the agent unless it runs, then attach"),
@@ -1478,7 +1478,7 @@ def main(argv: List[str]) -> int:
     try:
         gone = terminate(directory)
     except HostError as e:
-        print(f"kanboard: {e}", file=sys.stderr)
+        print(f"orchestrator: {e}", file=sys.stderr)
         return 1
     print("stopped" if gone else "still running")
     return 0 if gone else 1

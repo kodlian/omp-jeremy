@@ -1,5 +1,5 @@
 // @bun
-// plugins/orchestrator/omp/kanboard.ts
+// plugins/orchestrator/omp/orchestrator.ts
 import { spawn, spawnSync } from "child_process";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
@@ -61,7 +61,7 @@ function resolveTheme(palette, current, terminal) {
 }
 var GHOSTTY_FONT_SIZE = process.platform === "darwin" ? 13 : 12;
 
-// plugins/orchestrator/omp/kanboard.ts
+// plugins/orchestrator/omp/orchestrator.ts
 var BASE = `http://127.0.0.1:${process.env.KANBOARD_PORT || "4747"}`;
 var HOME = process.env.KANBOARD_HOME || join(homedir(), ".kanboard");
 var PYTHON = process.env.KANBOARD_PYTHON || "python3";
@@ -72,11 +72,11 @@ var RECONNECT_MS = 3000;
 var MODE_FILE = "kanboard";
 var STEP_MS = 2000;
 var CLEANUP_ENTRY = "kanboard.cleanup";
-var USAGE = "Kanboard: /kanban on | off | status | open | start #n\u2026|all | done [#n]";
-var KANBAN_COMMANDS = [
-  { label: "on", value: "on", description: "Enable Kanban mode for this checkout" },
-  { label: "off", value: "off", description: "Disable Kanban mode for this checkout" },
-  { label: "status", value: "status", description: "Show this checkout's Kanban state" },
+var USAGE = "Orchestrator: /orchestrator on | off | status | open | start #n\u2026|all | done [#n]";
+var ORCHESTRATOR_COMMANDS = [
+  { label: "on", value: "on", description: "Enable Orchestrator mode for this checkout" },
+  { label: "off", value: "off", description: "Disable Orchestrator mode for this checkout" },
+  { label: "status", value: "status", description: "Show this checkout's Orchestrator state" },
   { label: "open", value: "open", description: "Open this checkout's board" },
   { label: "start", value: "start", description: "Start cards by ID or start all queued cards" },
   { label: "done", value: "done", description: "Commit pending changes and merge a task" }
@@ -86,25 +86,25 @@ var MERGE_KEEP = "Merge and keep the worktree";
 var DELETE_REMOVE = "Delete and remove the worktree";
 var DELETE_KEEP = "Delete and keep the worktree";
 var CANCEL = "Cancel";
-var KANBAN_CONTEXT = `Kanban mode is on in this checkout: this session manages the Kanboard backlog of its flow. A card is a title and a description. Once started, it runs in its own git worktree branched from this checkout's branch. Auto cards let that task's omp quickly decide whether plan review is useful; Plan requires it and Fast implements directly.
-- Work the board only through the kanban_* tools (kanban_tasks, kanban_plan, kanban_children, kanban_history, kanban_ready, kanban_create, kanban_edit, kanban_amend, kanban_link, kanban_start, kanban_move, kanban_message, kanban_review, kanban_stop, kanban_screen, kanban_diff, kanban_context, kanban_publish, kanban_memory, kanban_cleanup, kanban_done, kanban_delete). Never git merge a task's branch, create or remove its worktree, or call the board's HTTP API or bd by hand.
-- When the user asks for a task (or several), first call kanban_tasks once for that flow. Compare the open card titles and dependencies; read kanban_plan only for a plausible same-subject card or prerequisite, then set dependsOn when that card must land first. Keep this preflight bounded: don't explore the repository and don't turn it into planning.
-- Every card costs a worktree and a build, so group work by subject. An ask on the same subject as an open card (same screen, feature, component or bug area) that fits its branch without changing its direction goes to that card with kanban_amend, even when the card has started; don't create a card for it. If kanban_amend refuses because the card is done or its agent isn't running, create a new card; if the card is still starting, tell the user to retry shortly.
-- Otherwise create cards right away with kanban_create. The card's omp owns implementation decisions when it starts. Read only what the user points you to when the description needs it (a ticket, a design). The description says what to build and why, what the user decided in this conversation, the acceptance and the links (ticket, design, files the user named), not how.
-- After creating cards, or amending a Backlog card, call kanban_start for those card IDs when the user's wording commits to doing the work now. Bug reports, missing behavior and assertive requests to check, fix, add, change or implement something all count. Keep cards in Backlog for ideas, "maybe" or "later" requests, and while the user is still discussing or deciding. Started cards still wait for dependsOn and flow capacity.
+var ORCHESTRATOR_CONTEXT = `Orchestrator mode is on in this checkout: this session manages the Orchestrator backlog of its flow. A card is a title and a description. Once started, it runs in its own git worktree branched from this checkout's branch. Auto cards let that task's omp quickly decide whether plan review is useful; Plan requires it and Fast implements directly.
+- Work the board only through the orchestrator_* tools (orchestrator_tasks, orchestrator_plan, orchestrator_children, orchestrator_history, orchestrator_ready, orchestrator_create, orchestrator_edit, orchestrator_amend, orchestrator_link, orchestrator_start, orchestrator_move, orchestrator_message, orchestrator_review, orchestrator_stop, orchestrator_screen, orchestrator_diff, orchestrator_context, orchestrator_publish, orchestrator_memory, orchestrator_cleanup, orchestrator_done, orchestrator_delete). Never git merge a task's branch, create or remove its worktree, or call the board's HTTP API or bd by hand.
+- When the user asks for a task (or several), first call orchestrator_tasks once for that flow. Compare the open card titles and dependencies; read orchestrator_plan only for a plausible same-subject card or prerequisite, then set dependsOn when that card must land first. Keep this preflight bounded: don't explore the repository and don't turn it into planning.
+- Every card costs a worktree and a build, so group work by subject. An ask on the same subject as an open card (same screen, feature, component or bug area) that fits its branch without changing its direction goes to that card with orchestrator_amend, even when the card has started; don't create a card for it. If orchestrator_amend refuses because the card is done or its agent isn't running, create a new card; if the card is still starting, tell the user to retry shortly.
+- Otherwise create cards right away with orchestrator_create. The card's omp owns implementation decisions when it starts. Read only what the user points you to when the description needs it (a ticket, a design). The description says what to build and why, what the user decided in this conversation, the acceptance and the links (ticket, design, files the user named), not how.
+- After creating cards, or amending a Backlog card, call orchestrator_start for those card IDs when the user's wording commits to doing the work now. Bug reports, missing behavior and assertive requests to check, fix, add, change or implement something all count. Keep cards in Backlog for ideas, "maybe" or "later" requests, and while the user is still discussing or deciding. Started cards still wait for dependsOn and flow capacity.
 - Leave planningMode as auto unless the user explicitly wants mandatory plan review or a fast direct implementation.
 - Keep related asks from one request in one card. Split into several cards only when the parts are large and touch independent areas, when one must land before another, or when the user asks to split; each split card's description starts with the line "Part of: <the overall need in one line>". Set dependsOn for earlier new cards that must land first, as well as existing prerequisites found by the preflight.
 - In the reply, say where each ask went: the card it was added to and whether its agent received it, the cards you created, and which cards you started or left in Backlog.
-- For existing cards, an explicit "start", "do" or "run" KB-n is one trigger for kanban_start (it runs in its own worktree), not a request to implement it in this session unless the user says to do it here. Explicit wording is not required for new or amended cards that meet the intent rule above. "Merge KB-n" means kanban_done; "drop" or "delete KB-n" means kanban_delete; changing a card's title or description means kanban_edit. To replace or remove dependencies, pass the complete desired dependsOn list to kanban_edit; [] clears it.
-- parent groups a card under another card of the same flow (an epic and its parts) when the user asks for that structure; it isn't a prerequisite, so use dependsOn for ordering, but children also inherit their parent's blockers under Beads readiness. Set it with kanban_create or kanban_edit (parent "none" clears it) and read the hierarchy with kanban_children.
-- When the user asks why a card hasn't started or what can run next, call kanban_ready: it compares Beads' dependency readiness with the board's queue, pauses and task slots, and never starts anything. kanban_history shows how a card's title, description, plan and status changed.
-- A started card's agent is yours to steer when the user asks. "Pause" or "hold" KB-n means kanban_move to Backlog, where it stays parked until resumed, or to Todo when it should continue on its own once its dependencies are done, any block inherited from its parent tree clears and a slot frees; "resume" or "continue" KB-n means kanban_move to doing (In Progress); "stop" KB-n means kanban_stop. Telling or asking its agent something means kanban_message; the user's verdict on its plan means kanban_review. Check what an agent shows with kanban_screen and its changes with kanban_diff before reporting on it.
-- kanban_context reads the findings and outcome a card's agent recorded; a card that depends on it gets them in its brief. Record a decision from this conversation that a started card's agent and later cards need with kanban_publish on that card.
-- kanban_memory holds this repository's durable project decisions and conventions, shared by every card. Search it on demand when a decision may already exist, and remember a durable decision the user made; task outcomes go on the card with kanban_publish. Never load all memories each turn, and never store the user's personal omp preferences there. Forgetting one asks the user first.
+- For existing cards, an explicit "start", "do" or "run" KB-n is one trigger for orchestrator_start (it runs in its own worktree), not a request to implement it in this session unless the user says to do it here. Explicit wording is not required for new or amended cards that meet the intent rule above. "Merge KB-n" means orchestrator_done; "drop" or "delete KB-n" means orchestrator_delete; changing a card's title or description means orchestrator_edit. To replace or remove dependencies, pass the complete desired dependsOn list to orchestrator_edit; [] clears it.
+- parent groups a card under another card of the same flow (an epic and its parts) when the user asks for that structure; it isn't a prerequisite, so use dependsOn for ordering, but children also inherit their parent's blockers under Beads readiness. Set it with orchestrator_create or orchestrator_edit (parent "none" clears it) and read the hierarchy with orchestrator_children.
+- When the user asks why a card hasn't started or what can run next, call orchestrator_ready: it compares Beads' dependency readiness with the board's queue, pauses and task slots, and never starts anything. orchestrator_history shows how a card's title, description, plan and status changed.
+- A started card's agent is yours to steer when the user asks. "Pause" or "hold" KB-n means orchestrator_move to Backlog, where it stays parked until resumed, or to Todo when it should continue on its own once its dependencies are done, any block inherited from its parent tree clears and a slot frees; "resume" or "continue" KB-n means orchestrator_move to doing (In Progress); "stop" KB-n means orchestrator_stop. Telling or asking its agent something means orchestrator_message; the user's verdict on its plan means orchestrator_review. Check what an agent shows with orchestrator_screen and its changes with orchestrator_diff before reporting on it.
+- orchestrator_context reads the findings and outcome a card's agent recorded; a card that depends on it gets them in its brief. Record a decision from this conversation that a started card's agent and later cards need with orchestrator_publish on that card.
+- orchestrator_memory holds this repository's durable project decisions and conventions, shared by every card. Search it on demand when a decision may already exist, and remember a durable decision the user made; task outcomes go on the card with orchestrator_publish. Never load all memories each turn, and never store the user's personal omp preferences there. Forgetting one asks the user first.
 - A plan you propose in this session is for work done here; it doesn't become a card.`;
 var APPROVALS = { execute: true, compact: true, keep: true };
 var DIFF_TOOL_LIMIT = 60000;
-var SHARING = "Record a concise finding other tasks need (a decision, contract, gotcha, where something lives) with kanban_publish as you learn it, and your outcome (what changed, where, how dependents use it) once the work is committed, before finishing. Read what a dependency recorded, newer than your brief, with kanban_context. kanban_memory holds this repository's durable project decisions across all tasks: search it when a past decision may apply, and remember one only when it outlives this task; it's not for task outcomes, progress or the user's personal omp preferences, and it's never loaded in full.";
+var SHARING = "Record a concise finding other tasks need (a decision, contract, gotcha, where something lives) with orchestrator_publish as you learn it, and your outcome (what changed, where, how dependents use it) once the work is committed, before finishing. Read what a dependency recorded, newer than your brief, with orchestrator_context. orchestrator_memory holds this repository's durable project decisions across all tasks: search it when a past decision may apply, and remember one only when it outlives this task; it's not for task outcomes, progress or the user's personal omp preferences, and it's never loaded in full.";
 var HISTORY_FIELD_LIMIT = 800;
 var MEMORY_EXCERPT = 300;
 var MEMORY_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
@@ -172,14 +172,14 @@ async function prepare(env) {
   child.on("error", exited.reject);
   child.on("close", exited.resolve);
   const code = await exited.promise.catch((e) => {
-    throw new Error(`Kanboard didn't start: ${errorText(e)}`);
+    throw new Error(`Orchestrator didn't start: ${errorText(e)}`);
   });
   if (output)
     appendFileSync(join(HOME, "server.log"), output);
   if (code !== 0) {
     const reason = stderr.trim().split(`
 `).pop() || `server.py --prepare exited with ${code}`;
-    throw new Error(`Kanboard can't start: ${reason}`);
+    throw new Error(`Orchestrator can't start: ${reason}`);
   }
 }
 async function launch() {
@@ -204,12 +204,12 @@ async function launch() {
   const deadline = Date.now() + START_TIMEOUT_MS;
   while (Date.now() < deadline) {
     if (spawned.error)
-      throw new Error(`Kanboard didn't start: ${spawned.error.message}`);
+      throw new Error(`Orchestrator didn't start: ${spawned.error.message}`);
     if (await health())
       return;
     await Bun.sleep(100);
   }
-  throw new Error(`Kanboard didn't start; see ${tilde(HOME)}/server.log`);
+  throw new Error(`Orchestrator didn't start; see ${tilde(HOME)}/server.log`);
 }
 function exclusive(job) {
   starting ??= job().finally(() => {
@@ -249,12 +249,12 @@ async function api(method, path, body, autostart = true) {
     res = await fetch(BASE + path, init);
   } catch {
     if (!autostart)
-      throw new Error("Kanboard isn't running");
+      throw new Error("Orchestrator isn't running");
     await exclusive(launch);
     try {
       res = await fetch(BASE + path, init);
     } catch {
-      throw new Error(`Kanboard didn't start; see ${tilde(HOME)}/server.log`);
+      throw new Error(`Orchestrator didn't start; see ${tilde(HOME)}/server.log`);
     }
   }
   const data = await res.json().catch(() => null);
@@ -416,11 +416,11 @@ function mergeSummary(t) {
 }
 function taskContext(id, t) {
   if (!t) {
-    return `This session implements Kanboard task ${id}. Follow its planning mode: Auto briefly triages and plans only when a real decision or risk appears, Plan requires review before edits, and Fast acts directly. When the user says to merge, it's done, or ship it, call kanban_done: that request is the approval, so it merges without asking again and commits pending local-task changes. Never call it because you judge the work finished, or when "done" answers a different question you asked. List the other tasks with kanban_tasks and read one's description and plan with kanban_plan when your work touches it; don't do its part. ${SHARING}`;
+    return `This session implements Orchestrator task ${id}. Follow its planning mode: Auto briefly triages and plans only when a real decision or risk appears, Plan requires review before edits, and Fast acts directly. When the user says to merge, it's done, or ship it, call orchestrator_done: that request is the approval, so it merges without asking again and commits pending local-task changes. Never call it because you judge the work finished, or when "done" answers a different question you asked. List the other tasks with orchestrator_tasks and read one's description and plan with orchestrator_plan when your work touches it; don't do its part. ${SHARING}`;
   }
   const approach = t.planningMode === "plan" ? "Plan this task and wait for review before editing." : t.planningMode === "fast" ? "This is a Fast task: implement directly without plan review unless the user asks." : "Briefly triage this Auto task: implement directly when clear, but request plan review for a product decision, unclear acceptance, architecture, migration, or meaningful cross-cutting risk.";
-  const lands = t.merge === "local" ? `it lands in ${t.base} locally. When the user says to merge, "ok merge", it's done, or ship it, call kanban_done: that request is the approval, so it doesn't ask again. It commits pending changes, merges into ${t.base}, removes this worktree and ends this session and its terminal. Never call it because you judge the work finished, or when "done" answers a different question you asked.` : `it lands in ${t.base} via a pull request. When the user says to merge, it's done, or ship it: commit everything, push the branch and open a pull request into ${t.base}.`;
-  return `${approach} Kanboard task ${t.id} is ${t.title} on ${t.branch}; ${lands} Sibling tasks also merge into ${t.base}: list them with kanban_tasks and read one's description and plan with kanban_plan when your work touches it; don't do its part. ${SHARING}`;
+  const lands = t.merge === "local" ? `it lands in ${t.base} locally. When the user says to merge, "ok merge", it's done, or ship it, call orchestrator_done: that request is the approval, so it doesn't ask again. It commits pending changes, merges into ${t.base}, removes this worktree and ends this session and its terminal. Never call it because you judge the work finished, or when "done" answers a different question you asked.` : `it lands in ${t.base} via a pull request. When the user says to merge, it's done, or ship it: commit everything, push the branch and open a pull request into ${t.base}.`;
+  return `${approach} Orchestrator task ${t.id} is ${t.title} on ${t.branch}; ${lands} Sibling tasks also merge into ${t.base}: list them with orchestrator_tasks and read one's description and plan with orchestrator_plan when your work touches it; don't do its part. ${SHARING}`;
 }
 function contextText(c) {
   const head = `${c.id} (bead ${c.beadId}) \xB7 revision ${c.revision}${c.updatedAt ? ` \xB7 updated ${c.updatedAt}` : ""}`;
@@ -585,7 +585,7 @@ function readinessText(board, r) {
 [cut; name one card with id]` : text;
 }
 var themeApi = typeof omp.getNativeThemePalette === "function" && typeof omp.getCurrentThemeName === "function" && typeof omp.getThemeEpoch === "function";
-var WIDGET = "kanboard";
+var WIDGET = "orchestrator";
 var BOARD_GLYPH = { nerd: "\uF502", unicode: "\u25A5", ascii: "[kb]" };
 var COLUMN_TONE = { backlog: "dim", todo: "muted", doing: "accent", review: "success" };
 var LISTED_RANK = { review: 0, doing: 1, todo: 2 };
@@ -640,7 +640,7 @@ function widgetLines(p, board, scope) {
     const state = t.paused ? `${sep}${p.fg("warning", "paused")}` : t.column === "review" ? `${sep}${p.fg("success", t.pr ? "pull request open" : "ready to merge")}` : "";
     return [`${head2} ${t.title.replace(CONTROL, " ")} ${p.fg("muted", `\u2192 ${t.base}`)}${sep}${work}${state}`];
   }
-  const head = ` ${icon} ${p.bold(p.fg("accent", "Kanban"))}`;
+  const head = ` ${icon} ${p.bold(p.fg("accent", "Orchestrator"))}`;
   if (!board)
     return [head];
   const open = board.tasks.filter((t) => t.flow === scope.flow && t.column !== "done");
@@ -672,7 +672,7 @@ function themeAppearance() {
     vars["--accent-fg"] = isLightColor(vars["--accent"]) ? "#000000" : "#ffffff";
   return { scheme: theme.scheme, vars };
 }
-function kanboard(pi) {
+function orchestrator(pi) {
   const z = pi.zod;
   let on = false;
   let flowId = null;
@@ -849,7 +849,7 @@ function kanboard(pi) {
         ctx.ui.notify(`${taskNumber(t.id)}'s plan is ready: review it on the board or ${presentationText(t)}`, "warning");
       }
       if (t.column === "review" && before.column !== "review" && t.merge === "local" && !t.pr) {
-        ctx.ui.notify(`${taskNumber(t.id)} is ready to merge: /kanban done ${taskNumber(t.id)}`, "info");
+        ctx.ui.notify(`${taskNumber(t.id)} is ready to merge: /orchestrator done ${taskNumber(t.id)}`, "info");
       }
       if (t.pr?.state === "merged" && before.pr?.state !== "merged") {
         ctx.ui.notify(`${taskNumber(t.id)}: its pull request was merged into ${t.base}`, "info");
@@ -871,7 +871,7 @@ function kanboard(pi) {
           ctx.abort();
         report(ctx, review ? "plan_ready" : "idle");
         message = running ? "Interrupted its turn" : "It was idle";
-        ctx.ui.notify(`Kanboard paused ${taskNumber(c.task)}; moving its card back to In Progress resumes it`, "warning");
+        ctx.ui.notify(`Orchestrator paused ${taskNumber(c.task)}; moving its card back to In Progress resumes it`, "warning");
       } else if (c.action === "resume") {
         if (review)
           message = "Its plan is waiting for review";
@@ -881,7 +881,7 @@ function kanboard(pi) {
           pi.sendUserMessage(c.text ?? "");
           message = "Resumed";
         }
-        ctx.ui.notify(`Kanboard resumed ${taskNumber(c.task)}`, "info");
+        ctx.ui.notify(`Orchestrator resumed ${taskNumber(c.task)}`, "info");
       } else if (c.action === "message") {
         if (review) {
           ok = false;
@@ -980,7 +980,7 @@ function kanboard(pi) {
             query.set("terminal", JSON.stringify(where.context));
           else if (!terminalWarned) {
             terminalWarned = true;
-            ctx.ui.notify(`Kanboard: ${where.error}`, "warning");
+            ctx.ui.notify(`Orchestrator: ${where.error}`, "warning");
           }
           const res = await fetch(`${BASE}/api/events?${query}`, { signal: ctl.signal });
           if (res.ok && res.body) {
@@ -1099,13 +1099,13 @@ function kanboard(pi) {
   const done = async (ctx, raw) => {
     const named = raw?.trim() ? taskId(raw) : undefined;
     if (!ctx.hasUI)
-      throw new Error(`Merging needs the user's confirmation: ask them to run /kanban done${named ? ` ${named}` : ""}`);
+      throw new Error(`Merging needs the user's confirmation: ask them to run /orchestrator done${named ? ` ${named}` : ""}`);
     await refreshBoard();
     const board = await api("GET", "/api/state");
     const own = task ? board.tasks.find((t2) => t2.id === task) : worktreeTask(board, ctx.cwd);
     const id = named ?? own?.id;
     if (!id)
-      throw new Error("This directory isn't a Kanboard task worktree: name the task to merge (/kanban done #n)");
+      throw new Error("This directory isn't an Orchestrator task worktree: name the task to merge (/orchestrator done #n)");
     const t = findTask(board, id);
     if (t.merge !== "local")
       throw new Error(`${id} merges via a pull request: push the branch and open one`);
@@ -1255,15 +1255,15 @@ Every task in ${tilde(current2.scope)} loses this memory.`);
     const card = own?.flow === flow ? own.id : lastCard ?? undefined;
     await showBoard(`${BASE}/?flow=${encodeURIComponent(flow)}${card ? `#${card}` : ""}`, focus);
   };
-  pi.registerCommand("kanban", {
+  pi.registerCommand("orchestrator", {
     description: USAGE,
     getArgumentCompletions(argumentPrefix) {
       const normalized = argumentPrefix.trimStart().toLowerCase();
       if (/\s/.test(normalized))
         return null;
       if (!normalized)
-        return KANBAN_COMMANDS;
-      const matches = KANBAN_COMMANDS.filter((command) => command.value.startsWith(normalized));
+        return ORCHESTRATOR_COMMANDS;
+      const matches = ORCHESTRATOR_COMMANDS.filter((command) => command.value.startsWith(normalized));
       return matches.length ? matches : null;
     },
     handler: async (args, ctx) => {
@@ -1279,12 +1279,12 @@ Every task in ${tilde(current2.scope)} loses this memory.`);
           flowId = r.flow.id;
           setMode(ctx, true);
           await openBoard2(ctx, false);
-          ctx.ui.notify(`Kanban mode on for ${tilde(r.flow.checkout ?? ctx.cwd)}: cards go to ${flowId}, merging into ${r.flow.base}`, "info");
+          ctx.ui.notify(`Orchestrator mode on for ${tilde(r.flow.checkout ?? ctx.cwd)}: cards go to ${flowId}, merging into ${r.flow.base}`, "info");
         } else if (arg === "off" || !arg) {
           setMode(ctx, false);
-          ctx.ui.notify("Kanban mode off for this checkout", "info");
+          ctx.ui.notify("Orchestrator mode off for this checkout", "info");
         } else if (arg === "status") {
-          const parts = [`Kanban mode is ${on ? "on" : "off"} for this checkout`];
+          const parts = [`Orchestrator mode is ${on ? "on" : "off"} for this checkout`];
           if (flowId)
             parts.push(`flow ${flowId}`);
           if (task)
@@ -1316,7 +1316,7 @@ Every task in ${tilde(current2.scope)} loses this memory.`);
       parts.push(taskContext(id, taskInfo));
     }
     if (on)
-      parts.push(KANBAN_CONTEXT);
+      parts.push(ORCHESTRATOR_CONTEXT);
     if (!parts.length)
       return;
     return { message: { customType: "kanboard.context", content: parts.join(`
@@ -1341,9 +1341,9 @@ Every task in ${tilde(current2.scope)} loses this memory.`);
       report(ctx, "idle");
   });
   pi.registerTool({
-    name: "kanban_tasks",
-    label: "Kanban tasks",
-    description: "List the Kanboard cards of this checkout's flow (in a task session, its sibling tasks first): column, title, branch, base and merge mode, planning route, dependencies, parent and child count, agent state and whether it has a plan. all lists every flow; done cards only with includeDone.",
+    name: "orchestrator_tasks",
+    label: "Orchestrator tasks",
+    description: "List the Orchestrator cards of this checkout's flow (in a task session, its sibling tasks first): column, title, branch, base and merge mode, planning route, dependencies, parent and child count, agent state and whether it has a plan. all lists every flow; done cards only with includeDone.",
     parameters: z.object({ all: z.boolean().optional(), includeDone: z.boolean().optional() }),
     approval: "read",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1356,9 +1356,9 @@ Every task in ${tilde(current2.scope)} loses this memory.`);
     }
   });
   pi.registerTool({
-    name: "kanban_plan",
-    label: "Kanban plan",
-    description: "Read a Kanboard card by id (e.g. KB-3): its description, planning mode, parent and children, and plan when it has one.",
+    name: "orchestrator_plan",
+    label: "Orchestrator plan",
+    description: "Read an Orchestrator card by id (e.g. KB-3): its description, planning mode, parent and children, and plan when it has one.",
     parameters: z.object({ id: z.string() }),
     approval: "read",
     async execute(_toolCallId, params) {
@@ -1380,9 +1380,9 @@ ${plan}`;
     }
   });
   pi.registerTool({
-    name: "kanban_children",
-    label: "Kanban children",
-    description: "Show a Kanboard card's hierarchy: its parent and its direct children, each with column and what it waits on. Parent groups cards; use dependsOn for ordering; children also inherit their parent's blockers under Beads readiness.",
+    name: "orchestrator_children",
+    label: "Orchestrator children",
+    description: "Show an Orchestrator card's hierarchy: its parent and its direct children, each with column and what it waits on. Parent groups cards; use dependsOn for ordering; children also inherit their parent's blockers under Beads readiness.",
     parameters: z.object({ id: z.string() }),
     approval: "read",
     async execute(_toolCallId, params) {
@@ -1393,9 +1393,9 @@ ${plan}`;
     }
   });
   pi.registerTool({
-    name: "kanban_history",
-    label: "Kanban history",
-    description: "Show a Kanboard card's native Beads history, newest first: each recorded change to its title, status, description, plan, shared context or ticket, with long text cut. events shows the audit trail (who changed what, and when) instead of snapshots. limit is 1 to 50 entries (default 10).",
+    name: "orchestrator_history",
+    label: "Orchestrator history",
+    description: "Show an Orchestrator card's native Beads history, newest first: each recorded change to its title, status, description, plan, shared context or ticket, with long text cut. events shows the audit trail (who changed what, and when) instead of snapshots. limit is 1 to 50 entries (default 10).",
     parameters: z.object({ id: z.string(), limit: z.number().int().min(1).max(50).optional(), events: z.boolean().optional() }),
     approval: "read",
     async execute(_toolCallId, params) {
@@ -1407,9 +1407,9 @@ ${plan}`;
     }
   });
   pi.registerTool({
-    name: "kanban_ready",
-    label: "Kanban ready",
-    description: "Explain readiness without changing anything: for this checkout's flow (one card with id, every flow with all), what the board will start and why cards wait (dependencies, pause, task slots, still in Backlog), next to Beads' own dependency readiness. Beads calling a card ready doesn't start or queue it; only kanban_start does.",
+    name: "orchestrator_ready",
+    label: "Orchestrator ready",
+    description: "Explain readiness without changing anything: for this checkout's flow (one card with id, every flow with all), what the board will start and why cards wait (dependencies, pause, task slots, still in Backlog), next to Beads' own dependency readiness. Beads calling a card ready doesn't start or queue it; only orchestrator_start does.",
     parameters: z.object({ id: z.string().optional(), all: z.boolean().optional() }),
     approval: "read",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1423,9 +1423,9 @@ ${plan}`;
     }
   });
   pi.registerTool({
-    name: "kanban_link",
-    label: "Kanban link",
-    description: "Make a Kanboard card wait for other cards: it starts only once every dependsOn card is done.",
+    name: "orchestrator_link",
+    label: "Orchestrator link",
+    description: "Make an Orchestrator card wait for other cards: it starts only once every dependsOn card is done.",
     parameters: z.object({ task: z.string(), dependsOn: z.array(z.string()).min(1) }),
     approval: "read",
     async execute(_toolCallId, params) {
@@ -1434,9 +1434,9 @@ ${plan}`;
     }
   });
   pi.registerTool({
-    name: "kanban_create",
-    label: "Kanban create",
-    description: "Create a Kanboard backlog card after the required bounded preflight, only when no open card covers the same subject (add to that card with kanban_amend instead): a title and a description of what to build and why (what the user decided, the acceptance, links), not a plan. Set dependsOn for open cards that must land first. parent (a card of the same flow) groups it under that card; use dependsOn for ordering, though a child also inherits its parent's blockers. planningMode defaults to auto; plan requires review and fast implements directly. Once started, it runs in its own git worktree branched from this checkout's branch.",
+    name: "orchestrator_create",
+    label: "Orchestrator create",
+    description: "Create an Orchestrator backlog card after the required bounded preflight, only when no open card covers the same subject (add to that card with orchestrator_amend instead): a title and a description of what to build and why (what the user decided, the acceptance, links), not a plan. Set dependsOn for open cards that must land first. parent (a card of the same flow) groups it under that card; use dependsOn for ordering, though a child also inherits its parent's blockers. planningMode defaults to auto; plan requires review and fast implements directly. Once started, it runs in its own git worktree branched from this checkout's branch.",
     parameters: z.object({
       title: z.string(),
       description: z.string(),
@@ -1462,9 +1462,9 @@ ${plan}`;
     }
   });
   pi.registerTool({
-    name: "kanban_edit",
-    label: "Kanban edit",
-    description: `Change a Kanboard card's title, description, ticket or plan text, its planning mode, merge mode, base or branch (fixed once it starts), its parent (a card of the same flow, or "none" to clear it; it groups cards, use dependsOn for ordering, though a child also inherits its parent's blockers), or replace its dependencies (use [] to clear). A started card's running agent also receives a new title or description; when it can't yet (waiting for plan review or an answer, paused, omp disconnected, still starting), the board keeps the edit marked as not sent. Title and description are fixed once done. before or after (a card id in the same column) moves the card next to that card without starting it; Todo cards start from the top, so this sets which starts next.`,
+    name: "orchestrator_edit",
+    label: "Orchestrator edit",
+    description: `Change an Orchestrator card's title, description, ticket or plan text, its planning mode, merge mode, base or branch (fixed once it starts), its parent (a card of the same flow, or "none" to clear it; it groups cards, use dependsOn for ordering, though a child also inherits its parent's blockers), or replace its dependencies (use [] to clear). A started card's running agent also receives a new title or description; when it can't yet (waiting for plan review or an answer, paused, omp disconnected, still starting), the board keeps the edit marked as not sent. Title and description are fixed once done. before or after (a card id in the same column) moves the card next to that card without starting it; Todo cards start from the top, so this sets which starts next.`,
     parameters: z.object({
       id: z.string(),
       title: z.string().optional(),
@@ -1518,9 +1518,9 @@ ${plan}`;
     }
   });
   pi.registerTool({
-    name: "kanban_amend",
-    label: "Kanban amend",
-    description: "Add same-subject work to an open Kanboard card instead of creating a card. A card that hasn't started takes it in its description; a started card's running agent also receives it, and a Review card returns to In Progress. While its agent waits for plan review or an answer, or its card is paused, only the card records it. Refuses done cards, cards still starting, and started cards whose agent isn't running.",
+    name: "orchestrator_amend",
+    label: "Orchestrator amend",
+    description: "Add same-subject work to an open Orchestrator card instead of creating a card. A card that hasn't started takes it in its description; a started card's running agent also receives it, and a Review card returns to In Progress. While its agent waits for plan review or an answer, or its card is paused, only the card records it. Refuses done cards, cards still starting, and started cards whose agent isn't running.",
     parameters: z.object({ id: z.string(), addition: z.string() }),
     approval: "read",
     async execute(_toolCallId, params) {
@@ -1531,9 +1531,9 @@ ${plan}`;
     }
   });
   pi.registerTool({
-    name: "kanban_start",
-    label: "Kanban start",
-    description: `Start Kanboard cards: each moves to Todo and runs in its own worktree once the cards it depends on are done and any block inherited from its parent tree clears; a paused card parked in Backlog moves to Todo and resumes on its turn. ids are card ids, or ["all"] for this session's backlog cards in board order.`,
+    name: "orchestrator_start",
+    label: "Orchestrator start",
+    description: `Start Orchestrator cards: each moves to Todo and runs in its own worktree once the cards it depends on are done and any block inherited from its parent tree clears; a paused card parked in Backlog moves to Todo and resumes on its turn. ids are card ids, or ["all"] for this session's backlog cards in board order.`,
     parameters: z.object({ ids: z.array(z.string()).min(1) }),
     approval: "read",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1541,9 +1541,9 @@ ${plan}`;
     }
   });
   pi.registerTool({
-    name: "kanban_move",
-    label: "Kanban move",
-    description: "Move a Kanboard card to another column (doing is In Progress), as dragging it on the board does. A started card moved to Todo or Backlog pauses: its agent is interrupted, its worktree and omp session stay, and it frees its task slot. Todo resumes it on its own once it's first in line with its dependencies done, no block inherited from its parent tree and a slot free; Backlog keeps it parked. Moving a paused card to doing resumes it now (it waits in Todo while it's blocked unless force). A card that hasn't started starts like kanban_start. Done without merging only records it as done. Use it when the user asks to pause, hold, park, resume or move a card.",
+    name: "orchestrator_move",
+    label: "Orchestrator move",
+    description: "Move an Orchestrator card to another column (doing is In Progress), as dragging it on the board does. A started card moved to Todo or Backlog pauses: its agent is interrupted, its worktree and omp session stay, and it frees its task slot. Todo resumes it on its own once it's first in line with its dependencies done, no block inherited from its parent tree and a slot free; Backlog keeps it parked. Moving a paused card to doing resumes it now (it waits in Todo while it's blocked unless force). A card that hasn't started starts like orchestrator_start. Done without merging only records it as done. Use it when the user asks to pause, hold, park, resume or move a card.",
     parameters: z.object({
       id: z.string(),
       column: z.enum(["backlog", "todo", "doing", "review", "done"]),
@@ -1556,9 +1556,9 @@ ${plan}`;
     }
   });
   pi.registerTool({
-    name: "kanban_stop",
-    label: "Kanban stop",
-    description: "Stop a started Kanboard card's agent when the user asks: its omp session exits and its terminal closes, while its worktree, branch and session stay. The card parks in Backlog (a Review card stays). Moving it to Todo or In Progress later reopens omp on the same session and resumes it. To only pause it, use kanban_move.",
+    name: "orchestrator_stop",
+    label: "Orchestrator stop",
+    description: "Stop a started Orchestrator card's agent when the user asks: its omp session exits and its terminal closes, while its worktree, branch and session stay. The card parks in Backlog (a Review card stays). Moving it to Todo or In Progress later reopens omp on the same session and resumes it. To only pause it, use orchestrator_move.",
     parameters: z.object({ id: z.string() }),
     approval: "read",
     async execute(_toolCallId, params) {
@@ -1567,9 +1567,9 @@ ${plan}`;
     }
   });
   pi.registerTool({
-    name: "kanban_message",
-    label: "Kanban message",
-    description: "Send a message to a started Kanboard card's agent, as if typed in its omp: an idle agent starts a turn with it, a working one gets it at its next step. Use it to tell or ask the agent something; to add work to the card itself, use kanban_amend. Refuses paused cards, disconnected agents, and agents waiting for plan review (answer with kanban_review) or for an answer to their question (the user answers in its terminal; kanban_tasks shows how to reach it).",
+    name: "orchestrator_message",
+    label: "Orchestrator message",
+    description: "Send a message to a started Orchestrator card's agent, as if typed in its omp: an idle agent starts a turn with it, a working one gets it at its next step. Use it to tell or ask the agent something; to add work to the card itself, use orchestrator_amend. Refuses paused cards, disconnected agents, and agents waiting for plan review (answer with orchestrator_review) or for an answer to their question (the user answers in its terminal; orchestrator_tasks shows how to reach it).",
     parameters: z.object({ id: z.string(), text: z.string() }),
     approval: "read",
     async execute(_toolCallId, params) {
@@ -1578,9 +1578,9 @@ ${plan}`;
     }
   });
   pi.registerTool({
-    name: "kanban_review",
-    label: "Kanban review",
-    description: "Answer a started Kanboard card's open plan review with the user's decision, never your own: approve runs the plan as reviewed (read it first with kanban_plan); refine sends the user's feedback for another planning pass.",
+    name: "orchestrator_review",
+    label: "Orchestrator review",
+    description: "Answer a started Orchestrator card's open plan review with the user's decision, never your own: approve runs the plan as reviewed (read it first with orchestrator_plan); refine sends the user's feedback for another planning pass.",
     parameters: z.object({
       id: z.string(),
       decision: z.enum(["approve", "refine"]),
@@ -1596,9 +1596,9 @@ ${plan}`;
     }
   });
   pi.registerTool({
-    name: "kanban_screen",
-    label: "Kanban screen",
-    description: "Read the last lines of a started Kanboard card's agent terminal: what it is doing, asking or showing now.",
+    name: "orchestrator_screen",
+    label: "Orchestrator screen",
+    description: "Read the last lines of a started Orchestrator card's agent terminal: what it is doing, asking or showing now.",
     parameters: z.object({ id: z.string() }),
     approval: "read",
     async execute(_toolCallId, params) {
@@ -1607,9 +1607,9 @@ ${plan}`;
     }
   });
   pi.registerTool({
-    name: "kanban_context",
-    label: "Kanban context",
-    description: "Read the shared context a Kanboard card recorded (its Beads notes): reusable findings and its outcome, each with the source task, branch@commit and time, plus the revision. Without id, this session's own task. Use it for a dependency or sibling whose work yours builds on, or to see what changed since the revision your brief shows.",
+    name: "orchestrator_context",
+    label: "Orchestrator context",
+    description: "Read the shared context an Orchestrator card recorded (its Beads notes): reusable findings and its outcome, each with the source task, branch@commit and time, plus the revision. Without id, this session's own task. Use it for a dependency or sibling whose work yours builds on, or to see what changed since the revision your brief shows.",
     parameters: z.object({ id: z.string().optional() }),
     approval: "read",
     async execute(_toolCallId, params) {
@@ -1620,9 +1620,9 @@ ${plan}`;
     }
   });
   pi.registerTool({
-    name: "kanban_publish",
-    label: "Kanban publish",
-    description: "Record shared context on a Kanboard card (its Beads notes), stamped with the source task, its branch@commit and the time. kind finding: a concise, reusable fact other tasks need (a decision, contract, gotcha, where something lives). kind outcome: what this task delivered, where, and how dependents use it; record it before finishing. Cards that depend on it get the latest outcome and findings in their brief; any task reads them with kanban_context. Not a log: no progress updates, transcripts or diffs. Without id, this session's own task.",
+    name: "orchestrator_publish",
+    label: "Orchestrator publish",
+    description: "Record shared context on an Orchestrator card (its Beads notes), stamped with the source task, its branch@commit and the time. kind finding: a concise, reusable fact other tasks need (a decision, contract, gotcha, where something lives). kind outcome: what this task delivered, where, and how dependents use it; record it before finishing. Cards that depend on it get the latest outcome and findings in their brief; any task reads them with orchestrator_context. Not a log: no progress updates, transcripts or diffs. Without id, this session's own task.",
     parameters: z.object({
       kind: z.enum(["finding", "outcome"]),
       text: z.string().min(1),
@@ -1633,13 +1633,13 @@ ${plan}`;
       const id = params.id ? taskId(params.id) : task;
       if (!id)
         return reply("Name the card to record on: this session has no task of its own", true);
-      return answer(api("POST", `/api/tasks/${id}/context`, { kind: params.kind, text: params.text, source: task ?? "kanban" }).then((c) => `Recorded a ${params.kind} on ${id} (revision ${c.revision}, ${c.entries.length} entr${c.entries.length === 1 ? "y" : "ies"})`));
+      return answer(api("POST", `/api/tasks/${id}/context`, { kind: params.kind, text: params.text, source: task ?? "orchestrator" }).then((c) => `Recorded a ${params.kind} on ${id} (revision ${c.revision}, ${c.entries.length} entr${c.entries.length === 1 ? "y" : "ies"})`));
     }
   });
   pi.registerTool({
-    name: "kanban_memory",
-    label: "Kanban memory",
-    description: "This repository's shared memory of durable project decisions and conventions, kept in Beads and shared by every task of the repository. search (optional query, at most 200 characters) lists matching keys with a short excerpt; read returns one memory by key; remember stores text (at most 4000 characters) under key, replacing a memory with that key; forget removes one after the user confirms. Search on demand only; task outcomes belong on the card (kanban_publish), and the user's personal omp preferences don't belong here.",
+    name: "orchestrator_memory",
+    label: "Orchestrator memory",
+    description: "This repository's shared memory of durable project decisions and conventions, kept in Beads and shared by every task of the repository. search (optional query, at most 200 characters) lists matching keys with a short excerpt; read returns one memory by key; remember stores text (at most 4000 characters) under key, replacing a memory with that key; forget removes one after the user confirms. Search on demand only; task outcomes belong on the card (orchestrator_publish), and the user's personal omp preferences don't belong here.",
     parameters: z.object({
       action: z.enum(["search", "read", "remember", "forget"]),
       query: z.string().optional(),
@@ -1652,9 +1652,9 @@ ${plan}`;
     }
   });
   pi.registerTool({
-    name: "kanban_diff",
-    label: "Kanban diff",
-    description: "Show a started Kanboard card's changes against its base branch: the diffstat, then the diff (long diffs are cut).",
+    name: "orchestrator_diff",
+    label: "Orchestrator diff",
+    description: "Show a started Orchestrator card's changes against its base branch: the diffstat, then the diff (long diffs are cut).",
     parameters: z.object({ id: z.string() }),
     approval: "read",
     async execute(_toolCallId, params) {
@@ -1672,9 +1672,9 @@ ${diff}` : ""}${cut ? `
     }
   });
   pi.registerTool({
-    name: "kanban_cleanup",
-    label: "Kanban cleanup",
-    description: "Remove a started Kanboard card's worktree after the user confirms: deletes the worktree and its branch and ends its omp and terminal; the card stays on the board.",
+    name: "orchestrator_cleanup",
+    label: "Orchestrator cleanup",
+    description: "Remove a started Orchestrator card's worktree after the user confirms: deletes the worktree and its branch and ends its omp and terminal; the card stays on the board.",
     parameters: z.object({ id: z.string() }),
     approval: "read",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1682,9 +1682,9 @@ ${diff}` : ""}${cut ? `
     }
   });
   pi.registerTool({
-    name: "kanban_done",
-    label: "Kanban done",
-    description: "Commit pending changes and merge a local Kanboard task into its parent branch. Call it only when the user asked to merge or said the task is done; that request is the approval. Without id, merges this session's own task without asking again, removes its worktree, and ends this session and its terminal. With another task's id, the user chooses whether to keep its worktree.",
+    name: "orchestrator_done",
+    label: "Orchestrator done",
+    description: "Commit pending changes and merge a local Orchestrator task into its parent branch. Call it only when the user asked to merge or said the task is done; that request is the approval. Without id, merges this session's own task without asking again, removes its worktree, and ends this session and its terminal. With another task's id, the user chooses whether to keep its worktree.",
     parameters: z.object({ id: z.string().optional() }),
     approval: "read",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1692,9 +1692,9 @@ ${diff}` : ""}${cut ? `
     }
   });
   pi.registerTool({
-    name: "kanban_delete",
-    label: "Kanban delete",
-    description: "Delete a Kanboard card after the user confirms; for a started card the user also chooses whether its worktree and branch go with it, through the board's cleanup.",
+    name: "orchestrator_delete",
+    label: "Orchestrator delete",
+    description: "Delete an Orchestrator card after the user confirms; for a started card the user also chooses whether its worktree and branch go with it, through the board's cleanup.",
     parameters: z.object({ id: z.string() }),
     approval: "read",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1703,5 +1703,5 @@ ${diff}` : ""}${cut ? `
   });
 }
 export {
-  kanboard as default
+  orchestrator as default
 };

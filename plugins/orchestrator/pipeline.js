@@ -78,7 +78,7 @@ async function pipelineChange(from, to, previous = null) {
   catch {}
 }
 function pipelineInit() {
-  const root = h("div", { class: "pipeline", tabindex: "0", "aria-label": "Task dependency pipeline" });
+  const root = h("div", { class: "pipeline", tabindex: "0", "aria-label": "Task dependency graph" });
   const world = h("div", { class: "pipeline-world" });
   const svg = pipelineSVG("svg", { class: "pipeline-lines" });
   world.append(svg); root.append(world);
@@ -170,7 +170,7 @@ function renderPipeline() {
   const host = $("#board");
   if (pipeline.root.parentNode !== host) host.replaceChildren(pipeline.root);
   if (pipeline.gesture) return;
-  const scope = flowSel || "all";
+  const scope = flowSel;
   if (pipeline.scope !== scope) { pipeline.positions.clear(); pipeline.scope = scope; pipeline.fit = true; }
   const all = board.tasks.filter(inFlow);
   const tasks = all.filter(t => matches(t) && (!pipeline.hideDone.checked || t.column !== "done"));

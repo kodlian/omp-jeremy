@@ -85,12 +85,12 @@ function nativeReaches(from, target, seen = new Set()) {
 function nativeParentItems(childId, flowId, current, choose) {
   const child = childId && findTask(childId);
   const banned = childId ? nativeDescendants(childId).add(childId) : new Set();
-  const eligible = x => !banned.has(x.id) && (!flowId || x.flow === flowId) &&
+  const eligible = x => !banned.has(x.id) && x.flow === flowId &&
     (!child || (!nativeReaches(x.id, child.id) && ![x.id, ...nativeAncestors(x.id)].some(a => child.dependsOn.includes(a))));
   const list = board.tasks.filter(eligible).sort(byId);
   const items = [{ icon: "x", label: "No parent", checked: !current, action: () => choose(null) }];
-  if (list.length) items.push("-", { header: flowId ? "Same flow" : "Any flow · the child joins its parent's flow" });
-  for (const x of list) items.push({ label: `${taskNumber(x.id)} ${x.title}`, sub: flowId ? colTitle(x.column) : (flowOf(x) || {}).name, checked: x.id === current, action: () => choose(x.id) });
+  if (list.length) items.push("-", { header: "Same flow" });
+  for (const x of list) items.push({ label: `${taskNumber(x.id)} ${x.title}`, sub: colTitle(x.column), checked: x.id === current, action: () => choose(x.id) });
   if (!list.length) items.push({ header: "No eligible open task" });
   return items;
 }
@@ -222,7 +222,7 @@ function showReadiness({ flow = null, id = null } = {}) {
   const body = h("div", { class: "m-body nv-scroll" });
   const refresh = h("button", { class: "btn ghost" }, I("refresh", 12), "Refresh");
   const box = openModal([
-    h("div", { class: "m-body nv-head" }, h("h2", {}, id ? `Readiness · ${taskNumber(id)}` : `Readiness · ${f ? `${f.name} · ${f.base}` : "All flows"}`),
+    h("div", { class: "m-body nv-head" }, h("h2", {}, id ? `Readiness · ${taskNumber(id)}` : `Readiness · ${f ? `${f.name} · ${f.base}` : "this flow"}`),
       h("p", { class: "m-text" }, "Why Beads and the board's queue would or wouldn't start each task now. Nothing is started.")),
     body,
     h("div", { class: "m-foot" }, refresh, h("span", { class: "spacer" }), h("button", { class: "btn", onclick: closeModal }, "Close"))], "nv-wide");
@@ -321,12 +321,11 @@ function nativeEvent(e) {
 // MARK: shared memories
 function showMemories() {
   closeMenu();
-  const repos = [...new Map(flows().map(f => [f.checkout, f])).values()];
   const cur = selectedFlow();
   const S = { gen: 0, search: 0, form: 0, editing: null };
   const repo = h("select", { class: "field", id: "nv-mem-repo" },
-    h("option", { value: "" }, "Choose a repository…"), ...repos.map(f => h("option", { value: f.checkout }, `${f.name} · ${f.checkout}`)));
-  repo.value = cur ? cur.checkout : repos.length === 1 ? repos[0].checkout : "";
+    ...(cur ? [h("option", { value: cur.checkout }, `${cur.name} · ${cur.checkout}`)] : [h("option", { value: "" }, "Flow unavailable")]));
+  repo.value = cur ? cur.checkout : "";
   const scope = h("div", { class: "m-note mono nv-ref" });
   const query = h("input", { class: "field", id: "nv-mem-query", maxlength: "200", placeholder: "Search shared memories", spellcheck: "false", autocomplete: "off" });
   const search = h("button", { class: "btn" }, "Search");

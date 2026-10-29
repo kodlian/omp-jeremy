@@ -1,6 +1,6 @@
 {
   "name": "omp-git-diff-review",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "omp /review: browser diff review with a file tree, line comments sent back to the agent",
