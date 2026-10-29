@@ -66,7 +66,7 @@
 
 .banner {
   padding: 6px 10px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid color-mix(in srgb, var(--remove) 30%, transparent);
   background: color-mix(in srgb, var(--remove) 14%, transparent);
 }
 
@@ -79,7 +79,6 @@
   flex-direction: column;
   gap: 6px;
   padding: 8px 8px 6px;
-  border-bottom: 1px solid var(--line);
 }
 
 .review-context {
@@ -88,7 +87,6 @@
   flex-wrap: nowrap;
   gap: 6px 12px;
   padding: 6px 10px;
-  border-bottom: 1px solid var(--line);
   font-size: var(--font-size-sm);
 }
 
@@ -287,7 +285,7 @@
   min-height: var(--header-h);
   flex-wrap: wrap;
   padding: 0 8px 0 10px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent);
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -316,13 +314,13 @@
 }
 
 .file {
-  margin-bottom: 10px;
-  border: 1px solid var(--line);
+  margin-bottom: 18px;
   border-radius: 7px;
+  background: color-mix(in srgb, var(--surface-solid) 40%, transparent);
 }
 
 .file.collapsed .file-header {
-  border-bottom-color: transparent;
+  box-shadow: none;
   border-radius: 7px;
 }
 
@@ -346,7 +344,7 @@
   padding: 0 6px 0 8px;
   border-radius: 7px 7px 0 0;
   background: var(--surface-solid);
-  border-bottom: 1px solid var(--line);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--line) 55%, transparent);
   color: var(--muted);
   white-space: nowrap;
   cursor: default;
@@ -366,6 +364,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--fg);
+  font-size: var(--font-size);
   direction: rtl;
   text-align: left;
 }
@@ -401,7 +400,7 @@
   height: 1.833em;
   margin-left: 4px;
   padding: 0 8px 0 6px;
-  border: 1px solid var(--line);
+  border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
   border-radius: var(--radius);
   color: var(--muted);
   cursor: pointer;
@@ -492,7 +491,7 @@
   text-align: right;
   color: var(--muted);
   opacity: 0.75;
-  font-size: var(--font-size-sm);
+  font-size: var(--code-font-size-sm);
 }
 
 .sign {
@@ -505,7 +504,7 @@
   padding: 2px 0 2px calc(2 * var(--num-col) + 18px);
   color: var(--muted);
   background: var(--surface-solid);
-  font-size: var(--font-size-sm);
+  font-size: var(--code-font-size-sm);
 }
 
 .rows.single .row.hunk,
@@ -689,11 +688,11 @@
   box-sizing: border-box;
   margin: 6px 12px 8px 60px;
   width: min(720px, calc(100cqw - 72px));
-  border: 1px solid var(--line);
+  border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
   border-radius: 7px;
   background: var(--surface-solid);
   font-family: var(--ui);
-  font-size: var(--font-size);
+  font-size: var(--ui-font-size);
   user-select: text;
   transition: box-shadow 0.3s;
 }

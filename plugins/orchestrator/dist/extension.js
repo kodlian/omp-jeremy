@@ -87,7 +87,7 @@ var DELETE_REMOVE = "Delete and remove the worktree";
 var DELETE_KEEP = "Delete and keep the worktree";
 var CANCEL = "Cancel";
 var ORCHESTRATOR_CONTEXT = `Orchestrator mode is on in this checkout: this session manages the Orchestrator backlog of its flow. A card is a title and a description. Once started, it runs in its own git worktree branched from this checkout's branch. Auto cards let that task's omp quickly decide whether plan review is useful; Plan requires it and Fast implements directly.
-- Work the board only through the orchestrator_* tools (orchestrator_tasks, orchestrator_plan, orchestrator_children, orchestrator_history, orchestrator_ready, orchestrator_create, orchestrator_edit, orchestrator_amend, orchestrator_link, orchestrator_start, orchestrator_move, orchestrator_message, orchestrator_review, orchestrator_stop, orchestrator_screen, orchestrator_diff, orchestrator_context, orchestrator_publish, orchestrator_memory, orchestrator_cleanup, orchestrator_done, orchestrator_delete). Never git merge a task's branch, create or remove its worktree, or call the board's HTTP API or bd by hand.
+- Work the board only through the orchestrator_* tools (orchestrator_tasks, orchestrator_plan, orchestrator_children, orchestrator_history, orchestrator_ready, orchestrator_create, orchestrator_edit, orchestrator_amend, orchestrator_link, orchestrator_start, orchestrator_move, orchestrator_message, orchestrator_review, orchestrator_stop, orchestrator_screen, orchestrator_diff, orchestrator_context, orchestrator_publish, orchestrator_memory, orchestrator_cleanup, orchestrator_recover, orchestrator_done, orchestrator_delete). Never git merge a task's branch, create or remove its worktree, or call the board's HTTP API or bd by hand.
 - When the user asks for a task (or several), first call orchestrator_tasks once for that flow. Compare the open card titles and dependencies; read orchestrator_plan only for a plausible same-subject card or prerequisite, then set dependsOn when that card must land first. Keep this preflight bounded: don't explore the repository and don't turn it into planning.
 - Every card costs a worktree and a build, so group work by subject. An ask on the same subject as an open card (same screen, feature, component or bug area) that fits its branch without changing its direction goes to that card with orchestrator_amend, even when the card has started; don't create a card for it. If orchestrator_amend refuses because the card is done or its agent isn't running, create a new card; if the card is still starting, tell the user to retry shortly.
 - Otherwise create cards right away with orchestrator_create. The card's omp owns implementation decisions when it starts. Read only what the user points you to when the description needs it (a ticket, a design). The description says what to build and why, what the user decided in this conversation, the acceptance and the links (ticket, design, files the user named), not how.
@@ -1196,6 +1196,19 @@ ${r.output}` : `Deleted ${id}`;
     const done2 = await withLegacyConfirm(ctx, id, (confirmLegacy) => api("POST", `/api/tasks/${id}/cleanup`, { confirmLegacy }));
     return done2.output;
   };
+  const recoverCard = async (ctx, raw) => {
+    const id = taskId(raw);
+    if (!ctx.hasUI)
+      throw new Error(`Returning a task to Backlog needs the user's confirmation: ask them to use Return to Backlog on ${id} in the board`);
+    const t = findTask(await api("GET", "/api/state"), id);
+    if (!t.health?.worktreeMissing)
+      throw new Error(`${id}'s worktree isn't missing; nothing to recover`);
+    const sure = await ctx.ui.confirm(`Return ${taskNumber(id)} to Backlog?`, `Its worktree ${t.worktree ? tilde(t.worktree) : ""} no longer exists. Clears that pointer and the stale agent state; keeps the title, description, plan, dependencies and the branch ${t.branch} with its commits. No agent starts.`);
+    if (!sure)
+      return `${id} left unchanged`;
+    await api("POST", `/api/tasks/${id}/recover`, {});
+    return `Returned ${id} to Backlog; it can be started again`;
+  };
   const memory = async (ctx, params) => {
     const key = params.key?.trim() ?? "";
     const query = params.query?.trim() ?? "";
@@ -1679,6 +1692,16 @@ ${diff}` : ""}${cut ? `
     approval: "read",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       return answer(cleanupCard(ctx, params.id));
+    }
+  });
+  pi.registerTool({
+    name: "orchestrator_recover",
+    label: "Orchestrator recover",
+    description: "Return an Orchestrator card whose recorded worktree was deleted outside the board to Backlog, after the user confirms: clears the missing worktree pointer and stale agent state, keeps its title, description, plan, dependencies, branch and commits, and starts no agent. Only for cards flagged worktree missing; call it only when the user asks.",
+    parameters: z.object({ id: z.string() }),
+    approval: "read",
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      return answer(recoverCard(ctx, params.id));
     }
   });
   pi.registerTool({

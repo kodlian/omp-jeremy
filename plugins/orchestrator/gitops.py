@@ -49,17 +49,37 @@ def merge_base(cwd: str, base: str) -> Tuple[str, str]:
     return ref, (out.strip() if code == 0 and out.strip() else ref)
 
 
-def find_worktree(repo: str, branch: str) -> Optional[str]:
+def registered_worktrees(repo: str) -> List[Tuple[str, Optional[str]]]:
+    """The worktrees git has registered for `repo`, main checkout first, with the branch each has checked out; one
+    deleted by hand stays registered until it is removed or pruned. Empty when git can't list them."""
     code, out, _ = run(["git", "-C", repo, "worktree", "list", "--porcelain"], timeout=15)
-    if code != 0:
-        return None
-    path = None
-    for line in out.splitlines():
+    entries: List[Tuple[str, Optional[str]]] = []
+    for line in out.splitlines() if code == 0 else []:
         if line.startswith("worktree "):
-            path = line[len("worktree "):]
-        elif line == f"branch refs/heads/{branch}" and path:
-            return path
-    return None
+            entries.append((line[len("worktree "):], None))
+        elif line.startswith("branch refs/heads/") and entries:
+            entries[-1] = (entries[-1][0], line[len("branch refs/heads/"):])
+    return entries
+
+
+def find_worktree(repo: str, branch: str) -> Optional[str]:
+    """The worktree that has `branch` checked out; a registered one whose directory is gone doesn't count."""
+    return next((path for path, name in registered_worktrees(repo) if name == branch and os.path.isdir(path)), None)
+
+
+def drop_missing_worktrees(repo: str, branch: str, path: Optional[str] = None) -> str:
+    """Unregisters only the worktrees of `branch` (or at `path`) whose directory was deleted by hand, so they can be
+    checked out again; their branch and commits stay, and no other worktree is touched. Returns a log."""
+    target = os.path.realpath(path) if path else None
+    log = ""
+    for index, (registered, name) in enumerate(registered_worktrees(repo)):
+        if index == 0 or os.path.lexists(registered) or (name != branch and os.path.realpath(registered) != target):
+            continue
+        code, out, err = run(["git", "-C", repo, "worktree", "remove", registered], timeout=60)
+        if code != 0:
+            raise RuntimeError(f"Could not unregister the deleted worktree {registered}: {(err or out).strip()}")
+        log += f"Unregistered the deleted worktree {registered}\n"
+    return log
 
 
 def prepare_branch(repo: str, branch: str, base: str) -> str:

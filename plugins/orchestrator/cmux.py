@@ -22,8 +22,8 @@ def is_light(color: str) -> bool:
     return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.5
 
 
-def terminal_appearance(config: str) -> Tuple[str, bool, Optional[str]]:
-    """CSS variables matching the terminal's colors and font (from `ghostty +show-config`), whether it's a Nerd Font, and its scheme."""
+def terminal_appearance(config: str) -> Tuple[str, bool, Optional[str], Dict[int, str]]:
+    """CSS variables matching the terminal's colors and font (from `ghostty +show-config`), whether it's a Nerd Font, its scheme and its 256-color palette."""
     colors: Dict[str, str] = {}
     palette: Dict[int, str] = {}
     fonts: List[str] = []
@@ -36,8 +36,8 @@ def terminal_appearance(config: str) -> Tuple[str, bool, Optional[str]]:
             colors[key] = value
         elif key == "palette":
             index, _, color = value.partition("=")
-            if index.isdigit() and HEX_COLOR.fullmatch(color):
-                palette[int(index)] = color
+            if index.isdigit() and int(index) <= 255 and HEX_COLOR.fullmatch(color):
+                palette[int(index)] = color.lower()
         elif key == "font-family" and value:
             fonts.append(value)
     decls = []
@@ -54,4 +54,4 @@ def terminal_appearance(config: str) -> Tuple[str, bool, Optional[str]]:
         decls.append(f'--mono: {quoted}, ui-monospace, "SF Mono", Menlo, monospace')
     css = ":root {\n" + "".join(f"  {d};\n" for d in decls) + "}\n" if decls else ""
     scheme = ("light" if is_light(colors["background"]) else "dark") if "background" in colors and "foreground" in colors else None
-    return css, any("Nerd Font" in f for f in fonts), scheme
+    return css, any("Nerd Font" in f for f in fonts), scheme, palette

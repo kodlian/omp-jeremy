@@ -63,7 +63,7 @@ Pending comments, including a non-empty inline draft, expose **Send review (coun
 
 The page follows the active omp theme, including live theme switches. Under Ghostty or cmux it also uses the terminal's background and text colors when their brightness matches the theme.
 
-The diff reuses the configured terminal font and base size under Ghostty or cmux, including settings in cmux Settings > Terminal; both are read again on each `/review`. File names and file headers use a smaller proportional size. Installed font files are resolved through CoreText on macOS or Fontconfig on Linux and served through the plugin's token-protected local server, so browser restrictions on installed fonts do not prevent reuse. Fonts are not uploaded or bundled into the plugin.
+Code follows the configured terminal font and base size under Ghostty or cmux, including cmux Settings > Terminal; both are read again on each `/review`. Controls and ordinary UI text are smaller, secondary metadata smaller again, while file titles keep the code's base size for emphasis. Installed fonts are resolved through CoreText on macOS or Fontconfig on Linux and served by the token-protected local server; fonts are never uploaded or bundled into the plugin.
 
 In cmux, line spacing also follows the calling terminal's live cell height rather than adding extra diff-row padding. Choosing another text size scales that spacing proportionally; selecting Terminal restores the configured size.
 
@@ -72,6 +72,8 @@ If no installed font can be resolved, code uses the bundled [Fira Code](https://
 Text uses the browser's native font smoothing. The font file and base size are shared with the terminal, but renderer-specific settings such as Ghostty's `font-thicken` can still produce visual differences.
 
 Syntax colors follow omp's syntax tokens. Diff rows use a faint addition/deletion tint, stronger gutter cues, and restrained changed-word highlights; hunk headers stay neutral so they do not compete with the code.
+
+File groups use spacing and subtle surfaces instead of outlined cards. Sticky file headings, semantic gutters and visible keyboard focus retain the hierarchy without extra separators.
 
 ## Development
 

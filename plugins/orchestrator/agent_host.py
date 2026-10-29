@@ -25,11 +25,12 @@ import uuid
 from collections import deque
 from contextlib import contextmanager
 from functools import lru_cache
+from itertools import groupby
 from pathlib import Path
 from typing import Any, Deque, Dict, Iterator, List, Optional, Tuple
 
 from gitops import find_worktree
-from runtime import agent_env, child_env, now_iso
+from runtime import PRIVATE_USE, agent_env, child_env, now_iso
 
 SPEC, META, SOCKET, LOCK, LOG, SCREEN = "spec.json", "host.json", "agent.sock", "lock", "host.log", "screen.txt"
 SCRIPT = str(Path(__file__).resolve())
@@ -203,19 +204,28 @@ def status(directory: Path) -> Dict[str, Any]:
     return recorded(meta, bool(meta) and meta.get("exitCode") is None and is_host(meta, directory))
 
 
-def output(directory: Path, lines: int) -> str:
-    """The last `lines` lines of the agent's screen: live from its host, else as the host left it."""
+def screen(directory: Path, lines: int, styled: bool = False) -> Dict[str, Any]:
+    """The last `lines` lines of the agent's screen as {"text"}: live from its host, else as the host left it. With
+    `styled`, a host that tracks cell styles adds "rows", each line's runs of [text, SGR attribute]."""
     try:
-        reply = request(directory, {"op": "output", "lines": lines})
+        reply = request(directory, {"op": "output", "lines": lines, **({"styled": True} if styled else {})})
         if reply.get("ok"):
-            return str(reply.get("text") or "")
+            shown = {"text": str(reply.get("text") or "")}
+            if "rows" in reply:
+                shown["rows"] = reply["rows"]
+            return shown
     except (OSError, ValueError, HostError):
         pass
     try:
         text = (directory / SCREEN).read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return ""
-    return "\n".join(text.splitlines()[-lines:])
+        return {"text": ""}
+    return {"text": "\n".join(text.splitlines()[-lines:])}
+
+
+def output(directory: Path, lines: int) -> str:
+    """The last `lines` lines of the agent's screen: live from its host, else as the host left it."""
+    return screen(directory, lines)["text"]
 
 
 def prepare(directory: Path, spec: Dict[str, Any]) -> None:
@@ -332,6 +342,12 @@ BLANK = (" ", "")
 REPLAY_MODES = (1, 12, 66, 1000, 1002, 1003, 1004, 1005, 1006, 1015, 1016, 2004)
 FLAGS = {1, 2, 3, 5, 6, 7, 8, 9, 53}
 FLAG_RESETS = {22: (1, 2), 23: (3,), 25: (5, 6), 27: (7,), 28: (8,), 29: (9,), 55: (53,)}
+STYLE_FLAGS = {1: "bold", 2: "dim", 3: "italic", 4: "underline", 21: "underline", 7: "inverse", 9: "strike"}
+STYLE_COLORS = {"38": "fg", "48": "bg"}
+XTERM_16 = ("#000000", "#cd0000", "#00cd00", "#cdcd00", "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
+            "#7f7f7f", "#ff0000", "#00ff00", "#ffff00", "#5c5cff", "#ff00ff", "#00ffff", "#ffffff")
+Runs = Tuple[Tuple[str, str], ...]
+Style = Tuple[Tuple[str, Any], ...]
 
 
 @lru_cache(maxsize=4096)
@@ -345,13 +361,144 @@ def row_text(row: List[Tuple[str, str]]) -> str:
     return "".join(cell[0] for cell in row).rstrip()
 
 
+def row_line(row: List[Tuple[str, str]]) -> Tuple[str, Runs]:
+    """A row's text and its runs of (text, SGR attribute) covering exactly that text."""
+    text = row_text(row)
+    runs, left = [], len(text)
+    for attr, cells in groupby((cell for cell in row if cell[0]), key=lambda cell: cell[1]):
+        if left <= 0:
+            break
+        chunk = "".join(cell[0] for cell in cells)[:left]
+        left -= len(chunk)
+        runs.append((chunk, attr))
+    return text, tuple(runs)
+
+
+def sgr_color(args: List[str]) -> Any:
+    """An SGR 38/48 color's arguments (after 38 or 48) as a palette index or #rrggbb; None when malformed."""
+    if len(args) >= 2 and args[0] == "5":
+        values = args[1:2]
+    elif args and args[0] == "2":
+        values = args[2:5] if len(args) >= 5 else args[1:4]
+    else:
+        return None
+    if len(values) != (1 if args[0] == "5" else 3) or not all(v.isascii() and v.isdigit() and int(v) <= 255
+                                                               for v in values):
+        return None
+    return int(values[0]) if args[0] == "5" else "#%02x%02x%02x" % tuple(int(v) for v in values)
+
+
+@lru_cache(maxsize=4096)
+def attr_style(attr: str) -> Style:
+    """What a cell's SGR attribute shows in a preview: fg and bg as a palette index or #rrggbb, and its flags."""
+    style: Dict[str, Any] = {}
+    items = attr.split(";") if attr else []
+    i = 0
+    while i < len(items):
+        item = items[i]
+        if ":" in item:
+            head, *args = item.split(":")
+            if head in STYLE_COLORS:
+                color = sgr_color(args)
+                if color is not None:
+                    style[STYLE_COLORS[head]] = color
+            elif head == "4":
+                style["underline"] = True
+            i += 1
+            continue
+        n = int(item) if item.isascii() and item.isdigit() else -1
+        if n in (38, 48, 58):
+            size = 3 if items[i + 1:i + 2] == ["5"] else 5
+            color = sgr_color(items[i + 1:i + size])
+            if color is not None and n != 58:
+                style[STYLE_COLORS[str(n)]] = color
+            i += size
+            continue
+        if n in STYLE_FLAGS:
+            style[STYLE_FLAGS[n]] = True
+        elif 30 <= n <= 37 or 90 <= n <= 97:
+            style["fg"] = n - 30 if n < 90 else n - 82
+        elif 40 <= n <= 47 or 100 <= n <= 107:
+            style["bg"] = n - 40 if n < 100 else n - 92
+        i += 1
+    return tuple(sorted(style.items()))
+
+
+def palette_color(index: int, palette: Dict[int, str]) -> str:
+    """The #rrggbb of a 256-color index: the terminal's palette, else xterm's."""
+    if index in palette:
+        return palette[index]
+    if index < 16:
+        return XTERM_16[index]
+    if index < 232:
+        r, g, b = ((index - 16) // 36, (index - 16) // 6 % 6, (index - 16) % 6)
+        return "#%02x%02x%02x" % tuple(0 if c == 0 else 55 + 40 * c for c in (r, g, b))
+    return "#%02x%02x%02x" % ((8 + 10 * (index - 232),) * 3)
+
+
+def css_style(attr: str, palette: Dict[int, str]) -> Style:
+    return tuple((k, palette_color(v, palette) if isinstance(v, int) and k in ("fg", "bg") else v)
+                 for k, v in attr_style(attr))
+
+
+def cell_styles(text: str, rows: Any, palette: Dict[int, str]) -> Optional[List[Style]]:
+    """Each character's style of `text` from a host's rows of [text, attr] runs; None unless they spell `text`."""
+    if not isinstance(rows, list):
+        return None
+    chars: List[str] = []
+    styles: List[Style] = []
+    known: Dict[str, Style] = {}
+    for i, row in enumerate(rows):
+        if not isinstance(row, list):
+            return None
+        if i:
+            chars.append("\n")
+            styles.append(())
+        for run in row:
+            if not (isinstance(run, list) and len(run) == 2 and isinstance(run[0], str) and isinstance(run[1], str)):
+                return None
+            if run[1] not in known:
+                known[run[1]] = css_style(run[1], palette)
+            chars.append(run[0])
+            styles.extend([known[run[1]]] * len(run[0]))
+    return styles if "".join(chars) == text else None
+
+
+def preview(text: str, rows: Any, palette: Dict[int, str], private: bool, lines: int) -> Dict[str, Any]:
+    """The screen as the board previews it: its last `lines` right-trimmed lines without trailing blank ones, without
+    private-use glyphs unless `private`, and, when the host's rows spell the text, "rows" of each line's styled runs."""
+    styles = cell_styles(text, rows, palette)
+    if not private:
+        if styles is not None:
+            styles = [s for ch, s in zip(text, styles) if not PRIVATE_USE.match(ch)]
+        text = PRIVATE_USE.sub("", text)
+    shown: List[str] = []
+    styled: List[List[Style]] = []
+    pos = 0
+    for segment in text.splitlines(True):
+        line = segment.splitlines()[0].rstrip()
+        shown.append(line)
+        if styles is not None:
+            styled.append(styles[pos:pos + len(line)])
+        pos += len(segment)
+    while shown and not shown[-1]:
+        shown.pop()
+    shown, styled = shown[-lines:], styled[:len(shown)][-lines:]
+    result: Dict[str, Any] = {"text": "\n".join(shown)}
+    if styles is not None:
+        result["rows"] = [[{"text": "".join(ch for ch, _ in group), **dict(style)}
+                           for style, group in groupby(zip(line, line_styles), key=lambda pair: pair[1])]
+                          for line, line_styles in zip(shown, styled)]
+    return result
+
+
 class Screen:
     """Enough of an xterm for omp's TUI: a readable screen with scrollback, and a snapshot that redraws it with its
     colors and input modes in a newly attached terminal."""
 
     def __init__(self, rows: int, cols: int) -> None:
         self.rows, self.cols = rows, cols
-        self.history: Deque[str] = deque(maxlen=HISTORY)
+        self.history: Deque[Tuple[str, Runs]] = deque(maxlen=HISTORY)
         self.main = self.blank_rows(rows)
         self.alt = self.blank_rows(rows)
         self.grid = self.main
@@ -722,7 +869,7 @@ class Screen:
         del self.grid[top:top + n]
         self.grid[bottom - n + 1:bottom - n + 1] = self.blank_rows(n, self.bg or "")
         if self.grid is self.main and top == 0:
-            self.history.extend(row_text(row) for row in removed)
+            self.history.extend(row_line(row) for row in removed)
 
     def scroll_down(self, n: int) -> None:
         top, bottom = self.top, self.bottom
@@ -874,7 +1021,7 @@ class Screen:
             if excess > 0:
                 cut = min(excess, max(0, self.y - rows + 1)) if grid is self.grid else 0
                 if grid is self.main:
-                    self.history.extend(row_text(row) for row in grid[:cut])
+                    self.history.extend(row_line(row) for row in grid[:cut])
                 del grid[:cut]
                 del grid[rows:]
                 if grid is self.grid:
@@ -889,13 +1036,17 @@ class Screen:
 
     # output
 
-    def text(self, lines: int) -> str:
-        rows = [row_text(row) for row in self.grid]
+    def recent(self, lines: int) -> List[Tuple[str, Runs]]:
+        """The last `lines` lines of scrollback and screen, without trailing blank ones, as (text, runs)."""
+        rows = [row_line(row) for row in self.grid]
         if not self.alt_on:
             rows = list(self.history) + rows
-        while rows and not rows[-1]:
+        while rows and not rows[-1][0]:
             rows.pop()
-        return "\n".join(rows[-lines:])
+        return rows[-lines:]
+
+    def text(self, lines: int) -> str:
+        return "\n".join(text for text, _ in self.recent(lines))
 
     def snapshot(self) -> bytes:
         """Escape sequences that redraw this screen, its modes and cursor in a terminal of the same size."""
@@ -1240,7 +1391,14 @@ class Host:
             elif op == "output":
                 lines = message.get("lines")
                 lines = lines if isinstance(lines, int) and 0 < lines <= 10000 else 120
-                self.reply(client, {"ok": True, "instance": self.instance, "text": self.screen.text(lines)})
+                shown = self.screen.recent(lines)
+                data: Dict[str, Any] = {"ok": True, "instance": self.instance,
+                                        "text": "\n".join(text for text, _ in shown)}
+                if message.get("styled") is True:
+                    rows = [runs for _, runs in shown]
+                    if len(json.dumps(data)) + len(json.dumps(rows)) < FRAME_LIMIT - 64:
+                        data["rows"] = rows
+                self.reply(client, data)
             elif op == "terminate":
                 wanted = message.get("instance")
                 if wanted is not None and wanted != self.instance:

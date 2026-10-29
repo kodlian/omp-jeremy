@@ -24,8 +24,8 @@ from urllib.parse import parse_qs, urlparse
 import agent_host
 import beads_store as beads
 from cmux import ghostty_cli, terminal_appearance
-from gitops import (base_ref, checkout_info, default_branch, find_worktree, git_toplevel, has_ref, merge_base,
-                    prepare_branch, unmerged_files)
+from gitops import (base_ref, checkout_info, default_branch, drop_missing_worktrees, find_worktree, git_toplevel,
+                    has_ref, merge_base, prepare_branch, unmerged_files)
 from integrations import PACKAGE_ROOT, terminals
 from runtime import ANSI, child_env, now_iso, plain, run, same_dir, tail, which, within, write_atomic
 
@@ -766,6 +766,7 @@ class Store:
                 "log": t["spawn"].get("log", ""),
             },
             "worktree": t.get("worktree"),
+            "health": {"worktreeMissing": worktree_missing(t)},
             "presentation": t.get("presentation"),
             "execution": execution_view(t, connected, host),
             "session": session_view(t, connected),
@@ -864,6 +865,11 @@ def has_started(t: Dict[str, Any]) -> bool:
 def paused(t: Dict[str, Any]) -> bool:
     """A started task in Todo or Backlog: its worktree and omp session stay, but its agent is stopped and holds no slot."""
     return spawned(t) and t["column"] in PAUSED_COLUMNS and not t.get("merged")
+
+
+def worktree_missing(t: Dict[str, Any]) -> bool:
+    """An unfinished started task whose recorded worktree was deleted outside the board: its agent can't resume there."""
+    return spawned(t) and not t.get("merged") and t["column"] != "done" and not Path(t["worktree"]).is_dir()
 
 
 def host_dir(t: Dict[str, Any]) -> Optional[Path]:
@@ -1677,6 +1683,7 @@ def builtin_worktree(repo: str, branch: str) -> Tuple[str, str, bool]:
     if existing:
         return existing, f"Reusing {existing}\n", False
     path = str(HOME / "worktrees" / os.path.basename(repo) / branch)
+    log = drop_missing_worktrees(repo, branch, path)
     if has_ref(repo, f"refs/heads/{branch}"):
         cmd = ["git", "-C", repo, "worktree", "add", "-q", path, branch]
     else:
@@ -1684,7 +1691,7 @@ def builtin_worktree(repo: str, branch: str) -> Tuple[str, str, bool]:
     code, out, err = run(cmd, timeout=300)
     if code != 0:
         raise RuntimeError(f"git worktree add failed: {(err or out).strip()}")
-    return path, out + err + f"Created {path}\n", True
+    return path, log + out + err + f"Created {path}\n", True
 
 
 def checkout(t: Dict[str, Any], directory: Path) -> Tuple[str, str, bool]:
@@ -1699,7 +1706,9 @@ def checkout(t: Dict[str, Any], directory: Path) -> Tuple[str, str, bool]:
                "KANBOARD_BRANCH": branch, "KANBOARD_BASE": t["base"],
                "KANBOARD_AGENT_COMMAND": agent_host.command("launch", directory),
                "KANBOARD_SETUP_SCRIPT": os.path.expanduser(setup)}
+        dropped = drop_missing_worktrees(repo, branch)
         code, log, error = run_hook("createWorktree", hook_command, repo, 900, env)
+        log = dropped + log
         path = find_worktree(repo, branch)
         if code != 0:
             # A hook failing after its terminal started the agent (e.g. in a later sidebar step) leaves a real host: adopt
@@ -2388,11 +2397,9 @@ def read_screen(task_id: str) -> Dict[str, Any]:
         directory = host_dir(t)
     if not directory:
         raise ApiError(409, f"{task_id}'s agent runs in a terminal the board doesn't manage; its screen shows only there")
-    text = agent_host.output(directory, 120)
-    lines = [line.rstrip() for line in (text if appearance()["nerdFont"] else plain(text)).splitlines()]
-    while lines and not lines[-1]:
-        lines.pop()
-    return {"text": "\n".join(lines[-120:])}
+    shown = agent_host.screen(directory, 120, styled=True)
+    look = appearance()
+    return agent_host.preview(shown["text"], shown.get("rows"), look["palette"], look["nerdFont"], 120)
 
 
 def task_diff(task_id: str) -> Dict[str, Any]:
@@ -2429,7 +2436,8 @@ def present_diff(task_id: str) -> Dict[str, Any]:
 
 
 def cleanup_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Removes a started task's worktree and branch, stopping its agent first so nothing works in a deleted tree."""
+    """Removes a started task's worktree and branch, stopping its agent first so nothing works in a deleted tree; an
+    unfinished task can then start again."""
     with store.lock:
         t = store.get(task_id)
         path = require_spawned(t)
@@ -2471,18 +2479,74 @@ def cleanup_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         run(["git", "-C", repo, "branch", "-D", branch], timeout=30)
         output = log + f"Removed {path} and branch {branch}"
     with store.lock:
-        store.activity.pop(task_id, None)
-        store.resuming.pop(task_id, None)
-        store.hosts.pop(task_id, None)
-        hub.cancel_queued(task_id)
         t = store.tasks.get(task_id)
         if t:
-            t.update(worktree=None, presentation=None, execution=None, agent=None, git=None)
-            store.save(t)
+            forget_worktree(t, park=("todo", "doing"))
     if directory:
         shutil.rmtree(directory, ignore_errors=True)
     hub.changed()
     return {"ok": True, "output": output}
+
+
+def forget_worktree(t: Dict[str, Any], park: Tuple[str, ...]) -> None:
+    """Drops a task's worktree, agent and terminal records and its live state (call under store.lock). An unfinished
+    task is no longer started, so starting it checks its branch out anew; a card in `park` moves to Backlog."""
+    task_id = t["id"]
+    t.update(worktree=None, presentation=None, execution=None, agent=None, git=None)
+    if not t.get("merged") and t["column"] != "done":
+        t["spawn"] = {"state": "none", "error": None, "log": ""}
+        if t["column"] in park:
+            t["column"], t["order"] = "backlog", store.next_order("backlog")
+    store.save(t)
+    store.activity.pop(task_id, None)
+    store.resuming.pop(task_id, None)
+    store.hosts.pop(task_id, None)
+    hub.cancel_queued(task_id)
+
+
+def recoverable(t: Dict[str, Any]) -> Optional[Path]:
+    """Refuses to return a task to Backlog unless it is unfinished, its recorded worktree is gone and no agent of it is
+    connected or may run in a terminal the board doesn't manage (call under store.lock); returns its host directory."""
+    task_id = t["id"]
+    path = require_spawned(t)
+    if t["column"] == "done" or t.get("merged"):
+        raise ApiError(409, f"{task_id} is done")
+    if t["spawn"]["state"] == "running":
+        raise ApiError(409, f"{task_id} is still starting")
+    if Path(path).is_dir():
+        raise ApiError(409, f"{task_id}'s worktree {path} still exists; stop the task, or clean it up to remove it")
+    if hub.task_live(task_id):
+        raise ApiError(409, f"{task_id}'s omp session is still connected; stop it first")
+    if legacy_unknown(t):
+        raise ApiError(409, f"{task_id}'s agent ran in a terminal the board doesn't manage and wasn't seen to exit; "
+                            "close that terminal, then try again")
+    return host_dir(t)
+
+
+def recover_task(task_id: str) -> Dict[str, Any]:
+    """Returns a started task whose worktree was deleted outside the board to a restartable Backlog card: forgets its
+    worktree, agent and terminal records, keeping the card, its notes and its branch. It never stops, starts or resumes
+    an agent, so one that may still run is refused."""
+    with store.lock:
+        directory = recoverable(store.get(task_id))
+    if directory and directory.is_dir():
+        try:
+            idle = agent_host.abandon(directory)
+        except (OSError, agent_host.HostError) as e:
+            raise ApiError(409, f"{task_id}'s agent host couldn't be checked ({e}); try again")
+        if not idle:
+            raise ApiError(409, f"{task_id}'s agent is still running; stop it first")
+    with store.lock:
+        t = store.get(task_id)
+        if recoverable(t) != directory:
+            raise ApiError(409, f"{task_id}'s agent changed meanwhile; try again")
+        forget_worktree(t, park=("todo", "doing", "review"))
+        view = store.view(t)
+    if directory:
+        shutil.rmtree(directory, ignore_errors=True)
+    hub.changed()
+    poller.kick()
+    return view
 
 
 def commit_task_changes(path: str, branch: str, task_id: str, title: str) -> Optional[str]:
@@ -2915,20 +2979,20 @@ poller = Poller()
 
 # --- appearance -------------------------------------------------------------------------
 
-appearance_cache: Dict[str, Any] = {"at": 0.0, "css": "", "nerdFont": False, "scheme": None}
+appearance_cache: Dict[str, Any] = {"at": 0.0, "css": "", "nerdFont": False, "scheme": None, "palette": {}}
 
 
 def appearance() -> Dict[str, Any]:
     """The terminal-derived appearance, re-read at most every APPEARANCE_TTL seconds."""
     if time.time() - appearance_cache["at"] < APPEARANCE_TTL:
         return appearance_cache
-    css, nerd_font, scheme = "", False, None
+    css, nerd_font, scheme, palette = "", False, None, {}
     cli = ghostty_cli()
     if cli:
         code, out, _ = run([cli, "+show-config"], timeout=5)
         if code == 0:
-            css, nerd_font, scheme = terminal_appearance(out)
-    appearance_cache.update(at=time.time(), css=css, nerdFont=nerd_font, scheme=scheme)
+            css, nerd_font, scheme, palette = terminal_appearance(out)
+    appearance_cache.update(at=time.time(), css=css, nerdFont=nerd_font, scheme=scheme, palette=palette)
     return appearance_cache
 
 
@@ -3149,6 +3213,7 @@ ROUTES = [
     ("POST", r"/api/tasks/([\w.-]+)/merge", lambda m, b: merge_task(m[1], b)),
     ("POST", r"/api/tasks/([\w.-]+)/discuss", lambda m, b: discuss_task(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/cleanup", lambda m, b: cleanup_task(m[1], b)),
+    ("POST", r"/api/tasks/([\w.-]+)/recover", lambda m, b: recover_task(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/history", lambda m, b: task_history(m[1], b)),
     ("POST", r"/api/readiness", lambda m, b: readiness(b)),
     ("POST", r"/api/refresh", lambda m, b: refresh()),
@@ -3219,7 +3284,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not page.exists():
                     raise ApiError(404, "index.html is missing")
                 return self.serve_bytes(page.read_bytes(), "text/html; charset=utf-8")
-            if self.command == "GET" and path in ("/markdown.js", "/graph-layout.js", "/pipeline.js", "/pipeline.css", "/native.js", "/native.css"):
+            if self.command == "GET" and path in ("/markdown.js", "/graph-layout.js", "/pipeline.js", "/pipeline.css", "/workbench.js", "/workbench.css", "/native.js", "/native.css"):
                 asset = ROOT / path.lstrip("/")
                 content_type = "text/javascript" if path.endswith(".js") else "text/css"
                 return self.serve_bytes(asset.read_bytes(), content_type + "; charset=utf-8")
