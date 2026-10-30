@@ -7,11 +7,32 @@ import { terminalCellHeight } from "./terminal";
 
 export type Scheme = "dark" | "light";
 
-// Shape of omp's `getNativeThemePalette()`: resolved hex colors per auto-theme slot.
-export interface ThemePalette {
-	name: Partial<Record<Scheme, string>>;
-	dark?: Record<string, string>;
-	light?: Record<string, string>;
+// The active omp theme: its resolved hex colors (tokens plus page colors such as `pageBg`) and omp's light/dark verdict.
+export interface OmpTheme {
+	colors: Record<string, string>;
+	light: boolean;
+}
+
+// omp's theme exports, all undocumented: without every one, pages keep their built-in palette.
+interface OmpThemeApi {
+	getCurrentThemeName(): string;
+	getResolvedThemeColors(name: string): Promise<Record<string, string>>;
+	getThemeExportColors(name: string): Promise<Record<string, string>>;
+	isLightTheme(name: string): boolean;
+	getThemeEpoch(): number;
+}
+
+const THEME_EXPORTS = ["getCurrentThemeName", "getResolvedThemeColors", "getThemeExportColors", "isLightTheme", "getThemeEpoch"] as const;
+
+export function hasThemeApi(module: object): module is OmpThemeApi {
+	return THEME_EXPORTS.every((name) => typeof (module as Record<string, unknown>)[name] === "function");
+}
+
+// omp's active (or previewed) theme, read through `hasThemeApi`-checked exports.
+export async function currentTheme(api: OmpThemeApi): Promise<OmpTheme> {
+	const name = api.getCurrentThemeName();
+	const [tokens, page] = await Promise.all([api.getResolvedThemeColors(name), api.getThemeExportColors(name)]);
+	return { colors: { ...tokens, ...page }, light: api.isLightTheme(name) };
 }
 
 export interface TerminalConfig {
@@ -40,13 +61,10 @@ export function isLightColor(hex: string): boolean {
 	return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.5;
 }
 
-export function resolveTheme(palette: ThemePalette, current: string, terminal: TerminalConfig | null): ResolvedTheme | null {
-	const slot: Scheme = palette.name.dark === current ? "dark" : palette.name.light === current ? "light" : palette.dark ? "dark" : "light";
-	const tokens = palette[slot];
-	if (!tokens) return null;
-	const colors = Object.fromEntries(Object.entries(tokens).filter(([, value]) => HEX.test(value)));
+export function resolveTheme(theme: OmpTheme, terminal: TerminalConfig | null): ResolvedTheme {
+	const colors = Object.fromEntries(Object.entries(theme.colors).filter(([, value]) => HEX.test(value)));
 	const base = colors.pageBg ?? colors.userMessageBg;
-	const scheme: Scheme = base ? (isLightColor(base) ? "light" : "dark") : slot;
+	const scheme: Scheme = base ? (isLightColor(base) ? "light" : "dark") : theme.light ? "light" : "dark";
 	const term = terminal?.background && isLightColor(terminal.background) === (scheme === "light") ? terminal : null;
 	return { scheme, colors, background: term?.background ?? colors.pageBg, foreground: term?.foreground ?? colors.text };
 }

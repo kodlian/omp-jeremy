@@ -151,6 +151,7 @@ const selToolbar = app.querySelector(".sel-toolbar");
 const filterInput = app.querySelector(".filter");
 app.style.setProperty("--sidebar-w", `${state.sidebarWidth}px`);
 app.classList.toggle("sidebar-hidden", state.sidebarHidden);
+app.classList.toggle("default-syntax", !state.syntaxColors);
 app.querySelector('[data-act="sidebar"]').setAttribute("aria-expanded", String(!state.sidebarHidden));
 
 function toggleSidebar() {
@@ -757,11 +758,11 @@ function renderBody(fs) {
     body.innerHTML = `<div class="body-note">Large diff (${fs.file.rows.length.toLocaleString()} lines) hidden to keep scrolling smooth.<button class="btn" data-act="load-diff">Load diff</button></div>`;
   } else {
     fs.spans ??= wordSpans(fs.rows);
-    if (state.syntaxColors && fs.tokens == null && fs.highlighting == null) highlight(fs);
+    if (fs.tokens == null && fs.highlighting == null) highlight(fs);
     body.innerHTML = bodyHtml({ ...fs.file, rows: fs.rows }, {
       items: fs.items,
       layout: state.layout,
-      tokens: state.syntaxColors ? fs.tokens : null,
+      tokens: fs.tokens,
       spans: fs.spans,
       pinFor: (item) => pinForItem(fs, item),
       pins: pinsFor(fs.file.path),
@@ -1165,7 +1166,7 @@ function pickViewOptions(anchor) {
   openMenu(anchor, [
     { id: "wrap", label: "Wrap long lines", icon: state.wrap ? icon("check", 13) : icon("wrap", 13) },
     { id: "whitespace", label: "Ignore whitespace", icon: state.ignoreWhitespace ? icon("check", 13) : icon("whitespace", 13) },
-    { id: "syntax-colors", label: "Syntax colors", icon: state.syntaxColors ? icon("check", 13) : null },
+    { id: "syntax-colors", label: "Use omp syntax colors", icon: state.syntaxColors ? icon("check", 13) : null },
     { id: "font-size", label: "Text size", icon: icon("textSize", 13) },
     { id: "prev-file", label: "Previous file", subtitle: "k" },
     { id: "next-file", label: "Next file", subtitle: "j" },
@@ -1180,10 +1181,7 @@ function pickViewOptions(anchor) {
       renderToolbar();
       updateSelectionUi();
       if (id === "whitespace") refresh();
-      if (id === "syntax-colors") {
-        for (const fs of fileStates.values()) if (fs.rendered) renderBody(fs);
-        refreshFind();
-      }
+      if (id === "syntax-colors") app.classList.toggle("default-syntax", !state.syntaxColors);
     }
   });
 }

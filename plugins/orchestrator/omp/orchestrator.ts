@@ -7,7 +7,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import * as omp from "@oh-my-pi/pi-coding-agent";
 import { truncateToWidth, type AutocompleteItem } from "@oh-my-pi/pi-tui";
 import { detectTerminalContext, openBoard as openTerminalBoard, type TerminalContext, type TerminalKind } from "omp-integrations/terminal";
-import { isLightColor, resolveTheme, type Scheme, type ThemePalette } from "omp-integrations/theme";
+import { currentTheme, hasThemeApi, isLightColor, resolveTheme, type Scheme } from "omp-integrations/theme";
 
 const BASE = `http://127.0.0.1:${process.env.KANBOARD_PORT || "4747"}`;
 const HOME = process.env.KANBOARD_HOME || join(homedir(), ".kanboard");
@@ -722,8 +722,7 @@ interface Paint {
 }
 
 // Undocumented omp exports, used as omp-git-diff-review does; without them the board keeps cmux's colors.
-const themeApi =
-	typeof omp.getNativeThemePalette === "function" && typeof omp.getCurrentThemeName === "function" && typeof omp.getThemeEpoch === "function";
+const themeApi = hasThemeApi(omp);
 const WIDGET = "orchestrator";
 const BOARD_GLYPH: Record<string, string> = { nerd: "\uf502", unicode: "\u25a5", ascii: "[kb]" };
 const COLUMN_TONE: Record<string, Tone> = { backlog: "dim", todo: "muted", doing: "accent", review: "success" };
@@ -800,10 +799,8 @@ function widgetLines(p: Paint, board: Board | null, scope: { flow: string } | { 
 }
 
 /** omp's current theme as board colors (the mapping omp-git-diff-review uses); the board puts them over cmux's colors. */
-function themeAppearance(): { scheme: Scheme; vars: Record<string, string> } | null {
-	const palette: ThemePalette = omp.getNativeThemePalette();
-	const theme = resolveTheme(palette, omp.getCurrentThemeName(), null);
-	if (!theme) return null;
+async function themeAppearance(): Promise<{ scheme: Scheme; vars: Record<string, string> }> {
+	const theme = resolveTheme(await currentTheme(omp), null);
 	const vars: Record<string, string> = {};
 	for (const [name, token] of Object.entries(THEME_VARS)) {
 		const value = theme.colors[token];
@@ -886,8 +883,10 @@ export default function orchestrator(pi: ExtensionAPI) {
 		const epoch: number = omp.getThemeEpoch();
 		if (epoch === themeEpoch) return;
 		themeEpoch = epoch;
-		const look = themeAppearance();
-		if (look) void api("POST", "/api/appearance", { flow: flowId, ...look }, false).catch(() => {});
+		const flow = flowId;
+		void themeAppearance()
+			.then((look) => (themeEpoch === epoch ? api("POST", "/api/appearance", { flow, ...look }, false) : undefined))
+			.catch(() => {});
 	};
 
 	/** The flow this session works in: the one /orchestrator on registered, else its task's, else its checkout's. */
@@ -998,12 +997,12 @@ export default function orchestrator(pi: ExtensionAPI) {
 				ctx.ui.notify(`${taskNumber(t.id)}'s plan is ready: review it on the board or ${presentationText(t)}`, "warning");
 			}
 			if (t.column === "review" && before.column !== "review" && t.merge === "local" && !t.pr) {
-				ctx.ui.notify(`${taskNumber(t.id)} is ready to merge: /orchestrator done ${taskNumber(t.id)}`, "info");
+				ctx.ui.notify(`${taskNumber(t.id)} · ${t.title}\nReady to merge ${t.branch} → ${t.base}: /orchestrator done ${taskNumber(t.id)}`, "info");
 			}
 			if (t.pr?.state === "merged" && before.pr?.state !== "merged") {
-				ctx.ui.notify(`${taskNumber(t.id)}: its pull request was merged into ${t.base}`, "info");
+				ctx.ui.notify(`${taskNumber(t.id)} · ${t.title}\nPR${t.pr.number ? ` #${t.pr.number}` : ""} merged: ${t.branch} → ${t.base}`, "info");
 			} else if (t.merged && !before.merged) {
-				ctx.ui.notify(`${taskNumber(t.id)} merged into ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info");
+				ctx.ui.notify(`${taskNumber(t.id)} · ${t.title}\nMerged ${t.branch} → ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info");
 			}
 		}
 		seen = next;

@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import * as omp from "@oh-my-pi/pi-coding-agent";
 import { openBoard } from "omp-integrations/terminal";
-import { terminalConfig } from "omp-integrations/theme";
+import { currentTheme, hasThemeApi, terminalConfig } from "omp-integrations/theme";
 import { toAppearance } from "./appearance";
 import { type Compare, isRepo, repoRoot } from "./git";
 import { DEFAULT_PORTS, type ReviewServer, startReviewServer } from "./server";
@@ -9,7 +9,7 @@ import { DEFAULT_PORTS, type ReviewServer, startReviewServer } from "./server";
 const USAGE = "Usage: /review [branch [base] | uncommitted | commit [sha]]";
 
 // Undocumented omp exports; without them the page keeps its built-in palette and font size.
-const themeApi = typeof omp.getNativeThemePalette === "function" && typeof omp.getCurrentThemeName === "function" && typeof omp.getThemeEpoch === "function";
+const themeApi = hasThemeApi(omp);
 
 function parseArgs(args: string): Compare | null {
 	const [kind, value] = args.trim().split(/\s+/).filter(Boolean);
@@ -42,11 +42,12 @@ export default function gitDiffReview(pi: ExtensionAPI) {
 	};
 
 	async function syncAppearance(force = false) {
+		if (!themeApi) return;
 		const epoch = omp.getThemeEpoch();
 		if (!server || (epoch === themeEpoch && !force)) return;
 		themeEpoch = epoch;
-		const appearance = toAppearance(omp.getNativeThemePalette(), omp.getCurrentThemeName(), await terminalConfig());
-		if (themeEpoch === epoch) server?.setAppearance(appearance);
+		const [theme, terminal] = await Promise.all([currentTheme(omp), terminalConfig()]);
+		if (themeEpoch === epoch) server?.setAppearance(toAppearance(theme, terminal));
 	}
 
 	async function ensureServer(cwd: string, port: number | null): Promise<ReviewServer> {

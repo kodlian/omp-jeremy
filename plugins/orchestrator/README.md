@@ -107,6 +107,8 @@ The browser exposes the same Beads operations in Board, Graph and Live. Task det
 
 While orchestrator mode is on, a line under the prompt shows the flow's open cards by column, then the cards in Review, In Progress and Todo with their state (ready to merge, plan ready for review, working, needs input, paused, waiting for a task slot, starts or resumes after KB-n…), in the session's theme colors. The session also tells you when one of the flow's cards fails to start, has its plan ready for review, needs your input, is ready to merge, or got merged.
 
+Merge notifications identify the task number and title, source branch and destination, plus the merge commit or PR number. Ready-to-merge notices include the same task identity and the completion command.
+
 ## Task sessions
 
 A task's omp owns its implementation decisions in its worktree. Auto tasks briefly inspect enough to choose Fast implementation or Plan review; approving a plan there starts implementation, while Refine sends it back with your notes. The plan and the resolved Auto route show on the card. The omp knows its card, base branch and commits, including after restarting omp in its worktree. Tell it "ok merge", or that it's done: your request is the approval, so it stages and commits pending changes, merges into the base without asking again, and closes its worktree and agent. It never merges just because it considers the work finished. A task that lands through a pull request commits, pushes and opens it instead. Its brief lists sibling tasks from the same parent branch.

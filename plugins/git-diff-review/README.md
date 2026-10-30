@@ -4,7 +4,7 @@
 
 The comparison header uses three icon segments for Working tree, Branch and Single commit, with tooltips and a highlighted active mode. The relevant base or commit picker stays alongside.
 
-Turn off **Syntax colors** in View options for monochrome code while preserving addition/deletion shading. The choice is saved with the other browser preferences and survives reloads.
+Turn off **Use omp syntax colors** in View options to use Review's default light/dark syntax palette instead of omp's theme colors. Highlighting and addition/deletion shading stay enabled. The choice is saved with the other browser preferences and survives reloads.
 
 ## Install
 
@@ -78,7 +78,7 @@ If no installed font can be resolved, code uses the bundled [Fira Code](https://
 
 Text uses the browser's native font smoothing. The font file and base size are shared with the terminal, but renderer-specific settings such as Ghostty's `font-thicken` can still produce visual differences.
 
-Syntax colors follow omp's syntax tokens. Diff rows use a faint addition/deletion tint, stronger gutter cues, and restrained changed-word highlights; hunk headers stay neutral so they do not compete with the code.
+Syntax colors follow omp's syntax tokens by default, with an option to use Review's own light/dark palette. Diff rows use a faint addition/deletion tint, stronger gutter cues, and restrained changed-word highlights; hunk headers stay neutral so they do not compete with the code.
 
 File groups use spacing and subtle surfaces instead of outlined cards. Sticky file headings, semantic gutters and visible keyboard focus retain the hierarchy without extra separators. Colors, buttons, icon buttons, the comparison switch and text fields come from the shared design system also used by the Orchestrator; diff rows, syntax colors, pickers and menus stay specific to Review.
 

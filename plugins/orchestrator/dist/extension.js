@@ -42,20 +42,25 @@ async function openBoard(url, options = {}) {
 var fonts = new Map;
 
 // packages/integrations/src/theme.ts
+var THEME_EXPORTS = ["getCurrentThemeName", "getResolvedThemeColors", "getThemeExportColors", "isLightTheme", "getThemeEpoch"];
+function hasThemeApi(module) {
+  return THEME_EXPORTS.every((name) => typeof module[name] === "function");
+}
+async function currentTheme(api) {
+  const name = api.getCurrentThemeName();
+  const [tokens, page] = await Promise.all([api.getResolvedThemeColors(name), api.getThemeExportColors(name)]);
+  return { colors: { ...tokens, ...page }, light: api.isLightTheme(name) };
+}
 var HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
 function isLightColor(hex) {
   const full = hex.length === 4 ? [...hex.slice(1)].map((c) => c + c).join("") : hex.slice(1);
   const [r, g, b] = [0, 2, 4].map((i) => Number.parseInt(full.slice(i, i + 2), 16));
   return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.5;
 }
-function resolveTheme(palette, current, terminal) {
-  const slot = palette.name.dark === current ? "dark" : palette.name.light === current ? "light" : palette.dark ? "dark" : "light";
-  const tokens = palette[slot];
-  if (!tokens)
-    return null;
-  const colors = Object.fromEntries(Object.entries(tokens).filter(([, value]) => HEX.test(value)));
+function resolveTheme(theme, terminal) {
+  const colors = Object.fromEntries(Object.entries(theme.colors).filter(([, value]) => HEX.test(value)));
   const base = colors.pageBg ?? colors.userMessageBg;
-  const scheme = base ? isLightColor(base) ? "light" : "dark" : slot;
+  const scheme = base ? isLightColor(base) ? "light" : "dark" : theme.light ? "light" : "dark";
   const term = terminal?.background && isLightColor(terminal.background) === (scheme === "light") ? terminal : null;
   return { scheme, colors, background: term?.background ?? colors.pageBg, foreground: term?.foreground ?? colors.text };
 }
@@ -584,7 +589,7 @@ function readinessText(board, r) {
   return text.length > DIFF_TOOL_LIMIT ? `${text.slice(0, DIFF_TOOL_LIMIT)}
 [cut; name one card with id]` : text;
 }
-var themeApi = typeof omp.getNativeThemePalette === "function" && typeof omp.getCurrentThemeName === "function" && typeof omp.getThemeEpoch === "function";
+var themeApi = hasThemeApi(omp);
 var WIDGET = "orchestrator";
 var BOARD_GLYPH = { nerd: "\uF502", unicode: "\u25A5", ascii: "[kb]" };
 var COLUMN_TONE = { backlog: "dim", todo: "muted", doing: "accent", review: "success" };
@@ -657,11 +662,8 @@ function widgetLines(p, board, scope) {
     lines.push(`   ${p.fg("dim", `+${listed.length - MAX_LISTED} more on the board`)}`);
   return [`${head}${sep}${counts.length ? counts.join(sep) : p.fg("dim", "no open cards")}`, ...lines];
 }
-function themeAppearance() {
-  const palette = omp.getNativeThemePalette();
-  const theme = resolveTheme(palette, omp.getCurrentThemeName(), null);
-  if (!theme)
-    return null;
+async function themeAppearance() {
+  const theme = resolveTheme(await currentTheme(omp), null);
   const vars = {};
   for (const [name, token] of Object.entries(THEME_VARS)) {
     const value = theme.colors[token];
@@ -739,9 +741,8 @@ function orchestrator(pi) {
     if (epoch === themeEpoch)
       return;
     themeEpoch = epoch;
-    const look = themeAppearance();
-    if (look)
-      api("POST", "/api/appearance", { flow: flowId, ...look }, false).catch(() => {});
+    const flow = flowId;
+    themeAppearance().then((look) => themeEpoch === epoch ? api("POST", "/api/appearance", { flow, ...look }, false) : undefined).catch(() => {});
   };
   const sessionFlow = (board, ctx) => {
     if (flowId)
@@ -849,12 +850,15 @@ function orchestrator(pi) {
         ctx.ui.notify(`${taskNumber(t.id)}'s plan is ready: review it on the board or ${presentationText(t)}`, "warning");
       }
       if (t.column === "review" && before.column !== "review" && t.merge === "local" && !t.pr) {
-        ctx.ui.notify(`${taskNumber(t.id)} is ready to merge: /orchestrator done ${taskNumber(t.id)}`, "info");
+        ctx.ui.notify(`${taskNumber(t.id)} \xB7 ${t.title}
+Ready to merge ${t.branch} \u2192 ${t.base}: /orchestrator done ${taskNumber(t.id)}`, "info");
       }
       if (t.pr?.state === "merged" && before.pr?.state !== "merged") {
-        ctx.ui.notify(`${taskNumber(t.id)}: its pull request was merged into ${t.base}`, "info");
+        ctx.ui.notify(`${taskNumber(t.id)} \xB7 ${t.title}
+PR${t.pr.number ? ` #${t.pr.number}` : ""} merged: ${t.branch} \u2192 ${t.base}`, "info");
       } else if (t.merged && !before.merged) {
-        ctx.ui.notify(`${taskNumber(t.id)} merged into ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info");
+        ctx.ui.notify(`${taskNumber(t.id)} \xB7 ${t.title}
+Merged ${t.branch} \u2192 ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info");
       }
     }
     seen = next;

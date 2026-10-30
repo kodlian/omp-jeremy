@@ -11,8 +11,8 @@
   initial-value: 20px;
 }
 
-:root {
-  --badge: light-dark(#0969da, #6cb6ff);
+:root,
+.default-syntax {
   --syn-comment: light-dark(#59636e, #8b949e);
   --syn-keyword: light-dark(#cf222e, #ff7b72);
   --syn-function: light-dark(#8250df, #d2a8ff);
@@ -22,6 +22,10 @@
   --syn-type: light-dark(#953800, #ffa657);
   --syn-operator: light-dark(#cf222e, #ff7b72);
   --syn-punctuation: var(--fg);
+}
+
+:root {
+  --badge: light-dark(#0969da, #6cb6ff);
   --header-h: 3em;
   --row-h: calc(var(--font-size) * var(--terminal-line-height, 1.666666667));
 }

@@ -1,5 +1,5 @@
 import type { LocalFont } from "omp-integrations/fonts";
-import type { TerminalConfig, ThemePalette } from "omp-integrations/theme";
+import type { OmpTheme, TerminalConfig } from "omp-integrations/theme";
 import { isLightColor, resolveTheme } from "omp-integrations/theme";
 
 export interface Appearance {
@@ -26,9 +26,8 @@ const TOKEN_VARS: Record<string, string> = {
 	"--syn-punctuation": "syntaxPunctuation",
 };
 
-export function toAppearance(palette: ThemePalette, current: string, terminal: TerminalConfig | null): Appearance | null {
-	const theme = resolveTheme(palette, current, terminal);
-	if (!theme) return null;
+export function toAppearance(omp: OmpTheme, terminal: TerminalConfig | null): Appearance {
+	const theme = resolveTheme(omp, terminal);
 	const { scheme, colors } = theme;
 	const vars: Record<string, string> = {};
 	if (theme.background) vars["--bg"] = theme.background;

@@ -144,20 +144,25 @@ async function terminalFont(families) {
 }
 
 // packages/integrations/src/theme.ts
+var THEME_EXPORTS = ["getCurrentThemeName", "getResolvedThemeColors", "getThemeExportColors", "isLightTheme", "getThemeEpoch"];
+function hasThemeApi(module) {
+  return THEME_EXPORTS.every((name) => typeof module[name] === "function");
+}
+async function currentTheme(api) {
+  const name = api.getCurrentThemeName();
+  const [tokens, page] = await Promise.all([api.getResolvedThemeColors(name), api.getThemeExportColors(name)]);
+  return { colors: { ...tokens, ...page }, light: api.isLightTheme(name) };
+}
 var HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
 function isLightColor(hex) {
   const full = hex.length === 4 ? [...hex.slice(1)].map((c) => c + c).join("") : hex.slice(1);
   const [r, g, b] = [0, 2, 4].map((i) => Number.parseInt(full.slice(i, i + 2), 16));
   return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.5;
 }
-function resolveTheme(palette, current, terminal) {
-  const slot = palette.name.dark === current ? "dark" : palette.name.light === current ? "light" : palette.dark ? "dark" : "light";
-  const tokens = palette[slot];
-  if (!tokens)
-    return null;
-  const colors = Object.fromEntries(Object.entries(tokens).filter(([, value]) => HEX.test(value)));
+function resolveTheme(theme, terminal) {
+  const colors = Object.fromEntries(Object.entries(theme.colors).filter(([, value]) => HEX.test(value)));
   const base = colors.pageBg ?? colors.userMessageBg;
-  const scheme = base ? isLightColor(base) ? "light" : "dark" : slot;
+  const scheme = base ? isLightColor(base) ? "light" : "dark" : theme.light ? "light" : "dark";
   const term = terminal?.background && isLightColor(terminal.background) === (scheme === "light") ? terminal : null;
   return { scheme, colors, background: term?.background ?? colors.pageBg, foreground: term?.foreground ?? colors.text };
 }
@@ -224,10 +229,8 @@ var TOKEN_VARS = {
   "--syn-operator": "syntaxOperator",
   "--syn-punctuation": "syntaxPunctuation"
 };
-function toAppearance(palette, current, terminal) {
-  const theme = resolveTheme(palette, current, terminal);
-  if (!theme)
-    return null;
+function toAppearance(omp, terminal) {
+  const theme = resolveTheme(omp, terminal);
   const { scheme, colors } = theme;
   const vars = {};
   if (theme.background)
@@ -850,7 +853,7 @@ function startReviewServer(initialRoot, hooks, { store = new ReviewStore, ports 
 
 // plugins/git-diff-review/src/extension.ts
 var USAGE = "Usage: /review [branch [base] | uncommitted | commit [sha]]";
-var themeApi = typeof omp.getNativeThemePalette === "function" && typeof omp.getCurrentThemeName === "function" && typeof omp.getThemeEpoch === "function";
+var themeApi = hasThemeApi(omp);
 function parseArgs(args) {
   const [kind, value] = args.trim().split(/\s+/).filter(Boolean);
   if (!kind || kind === "branch")
@@ -883,13 +886,15 @@ function gitDiffReview(pi) {
     sessionName: () => pi.getSessionName() || "omp"
   };
   async function syncAppearance(force = false) {
+    if (!themeApi)
+      return;
     const epoch = omp.getThemeEpoch();
     if (!server || epoch === themeEpoch && !force)
       return;
     themeEpoch = epoch;
-    const appearance = toAppearance(omp.getNativeThemePalette(), omp.getCurrentThemeName(), await terminalConfig());
+    const [theme, terminal] = await Promise.all([currentTheme(omp), terminalConfig()]);
     if (themeEpoch === epoch)
-      server?.setAppearance(appearance);
+      server?.setAppearance(toAppearance(theme, terminal));
   }
   async function ensureServer(cwd, port) {
     const root = await reviewRoot(cwd);
