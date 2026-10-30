@@ -1,0 +1,5 @@
+{
+  "name": "cmux-sim-preview",
+  "description": "Run SwiftUI #Previews natively in a cmux Simulator pane with hot reload",
+  "version": "0.1.0"
+}

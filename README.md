@@ -1,6 +1,6 @@
 # omp-jeremy
 
-Two plugins for [omp](https://github.com/can1357/oh-my-pi): orchestrate coding tasks across worktrees, and review their changes in the browser.
+Three plugins for [omp](https://github.com/can1357/oh-my-pi): orchestrate coding tasks across worktrees, review their changes in the browser, and preview SwiftUI views in cmux.
 
 ## Orchestrator
 
@@ -10,6 +10,10 @@ Turn plans into tasks that run in their own Git worktrees. Track dependencies, r
 
 Open a browser-based diff viewer from omp with `/review`. Browse changed files, comment on individual lines, and send review feedback directly to your agent.
 
+## cmux Sim Preview
+
+The `sim-preview` skill runs an iOS app's SwiftUI `#Preview` in the cmux Simulator pane, with about one second of hot reload on save. The skill builds its bundled `SimPreview` Swift package (Xcode required) and links `sim-preview` into `~/.local/bin`.
+
 ## Install from the marketplace
 
 Once this repository is pushed to GitHub:
@@ -18,9 +22,10 @@ Once this repository is pushed to GitHub:
 omp plugin marketplace add kodlian/omp-jeremy
 omp plugin install orchestrator@omp-jeremy
 omp plugin install git-diff-review@omp-jeremy
+omp plugin install cmux-sim-preview@omp-jeremy
 ```
 
-Install either plugin independently. Restart omp after installing extensions.
+Install each plugin independently. Restart omp after installing extensions.
 
 The orchestrator needs Python 3, Git and [Beads](https://github.com/steveyegge/beads) (`bd`). On macOS, install Beads with `brew install beads`.
 
