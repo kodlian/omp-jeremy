@@ -14,7 +14,7 @@ Restart omp. Requires `omp`, `bun`, `python3`, `git` and Beads (`brew install be
 
 ### Local development
 
-For local development, install dependencies and build from the monorepo root. Marketplace releases already include the extension bundle and Python helper.
+For local development, install dependencies and build from the repository root. Marketplace releases already include the extension bundle and Python helper.
 
 ```bash
 git clone https://github.com/kodlian/omp-jeremy.git && cd omp-jeremy
@@ -205,7 +205,7 @@ Each command runs with `/bin/sh -c`; a non-zero exit fails the operation with it
 {
   "defaults": { "setupScript": "", "teardownScript": "" },
   "projects": {
-    "monorepo": { "setupScript": "~/kit/setup.sh", "teardownScript": "~/kit/teardown.sh" }
+    "my-app": { "setupScript": "~/kit/setup.sh", "teardownScript": "~/kit/teardown.sh" }
   }
 }
 ```

@@ -2,7 +2,7 @@
   "name": "omp-jeremy",
   "owner": { "name": "kodlian" },
   "metadata": {
-    "description": "Jeremy's omp plugins and shared integrations",
+    "description": "omp plugins for task orchestration and browser diff review, with shared integrations",
     "version": "0.1.0"
   },
   "plugins": [

@@ -30,7 +30,7 @@ omp plugin link plugins/git-diff-review
 
 `omp plugin link` symlinks the plugin directory into `~/.omp/plugins/node_modules`, so edits apply in place.
 
-`bun run build` copies the shared stylesheet to `web/design-system.css`. The copy is committed, so marketplace installs serve it from the plugin itself without building or reaching into the monorepo.
+`bun run build` copies the shared stylesheet to `web/design-system.css`. The copy is committed, so marketplace installs serve it from the plugin itself without building or reaching into the rest of the repository.
 
 Check it's loaded with `omp plugin list`; remove it with `omp plugin uninstall omp-git-diff-review`.
 
