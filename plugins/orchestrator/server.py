@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 import agent_host
 import beads_store as beads
-from cmux import ghostty_cli, terminal_appearance
+from cmux import cmux_config, ghostty_cli, terminal_appearance
 from gitops import (base_ref, checkout_info, default_branch, drop_missing_worktrees, find_worktree, git_toplevel,
                     has_ref, merge_base, prepare_branch, unmerged_files)
 from integrations import PACKAGE_ROOT, terminals
@@ -1157,7 +1157,8 @@ def create_task(body: Dict[str, Any]) -> Dict[str, Any]:
             t.update(repo=p["repo"], checkout=p.get("checkout") or p["repo"], base=p["base"])
         refuse_task_worktree(t)
         t["parent"] = validate_parent("", body.get("parent"), t["repo"], t["base"], [])
-        t["dependsOn"] = validate_deps("", body.get("dependsOn") or [], t["repo"], t["base"], t["parent"])
+        deps = body.get("dependsOn") if "dependsOn" in body else ([owner["id"]] if owner else [])
+        t["dependsOn"] = validate_deps("", deps or [], t["repo"], t["base"], t["parent"])
         t["merge"] = validate_merge(body["merge"]) if "merge" in body else default_merge(t)
         t["branch"] = store.suggest_branch(t)
         if plan:
@@ -2995,7 +2996,7 @@ def appearance() -> Dict[str, Any]:
     if cli:
         code, out, _ = run([cli, "+show-config"], timeout=5)
         if code == 0:
-            css, nerd_font, scheme, palette = terminal_appearance(out)
+            css, nerd_font, scheme, palette = terminal_appearance(out + "\n" + cmux_config())
     appearance_cache.update(at=time.time(), css=css, nerdFont=nerd_font, scheme=scheme, palette=palette)
     return appearance_cache
 
@@ -3288,7 +3289,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not page.exists():
                     raise ApiError(404, "index.html is missing")
                 return self.serve_bytes(page.read_bytes(), "text/html; charset=utf-8")
-            if self.command == "GET" and path in ("/markdown.js", "/graph-layout.js", "/pipeline.js", "/pipeline.css", "/workbench.js", "/workbench.css", "/native.js", "/native.css"):
+            if self.command == "GET" and path in ("/design-system.css", "/markdown.js", "/graph-layout.js", "/pipeline.js", "/pipeline.css", "/workbench.js", "/workbench.css", "/native.js", "/native.css"):
                 asset = ROOT / path.lstrip("/")
                 content_type = "text/javascript" if path.endswith(".js") else "text/css"
                 return self.serve_bytes(asset.read_bytes(), content_type + "; charset=utf-8")

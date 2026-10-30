@@ -12,6 +12,10 @@
       "name": "omp-integrations",
       "version": "0.1.0",
     },
+    "packages/web-design-system": {
+      "name": "omp-web-design-system",
+      "version": "0.1.0",
+    },
     "plugins/git-diff-review": {
       "name": "omp-git-diff-review",
       "version": "1.0.0",

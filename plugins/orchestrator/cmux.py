@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
+GHOSTTY_FONT_SIZE = 13.0 if sys.platform == "darwin" else 12.0
 
 
 def ghostty_cli() -> Optional[str]:
@@ -15,6 +17,15 @@ def ghostty_cli() -> Optional[str]:
     candidates = [Path(resources, rel) for rel in ("../bin/ghostty", "../../MacOS/ghostty", "../../bin/ghostty")] if resources else []
     candidates += [Path("/Applications/cmux.app/Contents/Resources/bin/ghostty"), Path("/Applications/Ghostty.app/Contents/MacOS/ghostty")]
     return next((str(c.resolve()) for c in candidates if c.is_file() and os.access(c, os.X_OK)), None)
+
+
+def cmux_config() -> str:
+    """cmux's own Ghostty config file (Settings > Terminal), which cmux loads after the resolved Ghostty config."""
+    bundle = os.environ.get("CMUX_BUNDLE_ID")
+    try:
+        return Path.home().joinpath("Library/Application Support", bundle, "config.ghostty").read_text() if bundle else ""
+    except OSError:
+        return ""
 
 
 def is_light(color: str) -> bool:
@@ -27,6 +38,7 @@ def terminal_appearance(config: str) -> Tuple[str, bool, Optional[str], Dict[int
     colors: Dict[str, str] = {}
     palette: Dict[int, str] = {}
     fonts: List[str] = []
+    font_size = GHOSTTY_FONT_SIZE
     for line in config.splitlines():
         key, sep, value = line.partition(" = ")
         key, value = key.strip(), value.strip()
@@ -40,6 +52,8 @@ def terminal_appearance(config: str) -> Tuple[str, bool, Optional[str], Dict[int
                 palette[int(index)] = color.lower()
         elif key == "font-family" and value:
             fonts.append(value)
+        elif key == "font-size" and re.fullmatch(r"\d+(\.\d+)?", value) and float(value) > 0:
+            font_size = float(value)
     decls = []
     if "background" in colors and "foreground" in colors:
         decls += [f"color-scheme: {'light' if is_light(colors['background']) else 'dark'}",
@@ -52,6 +66,7 @@ def terminal_appearance(config: str) -> Tuple[str, bool, Optional[str], Dict[int
     if fonts:
         quoted = ", ".join('"' + f.replace("\\", "\\\\").replace('"', '\\"') + '"' for f in fonts)
         decls.append(f'--mono: {quoted}, ui-monospace, "SF Mono", Menlo, monospace')
+    decls.append(f"--terminal-font-size: {font_size:g}px")
     css = ":root {\n" + "".join(f"  {d};\n" for d in decls) + "}\n" if decls else ""
     scheme = ("light" if is_light(colors["background"]) else "dark") if "background" in colors and "foreground" in colors else None
     return css, any("Nerd Font" in f for f in fonts), scheme, palette

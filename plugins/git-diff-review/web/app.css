@@ -70,10 +70,6 @@
   background: color-mix(in srgb, var(--remove) 14%, transparent);
 }
 
-.banner[hidden] {
-  display: none;
-}
-
 .top {
   display: flex;
   flex-direction: column;
@@ -92,10 +88,6 @@
 
 .review-context .compare-context {
   flex: 1;
-}
-
-.comparison-mode {
-  flex: none;
 }
 
 .compare-context {
@@ -125,8 +117,7 @@
   justify-content: flex-start;
 }
 
-.mono {
-  font-family: var(--mono);
+.chip-label .mono {
   font-size: var(--font-size-sm);
   color: var(--muted);
 }
@@ -559,10 +550,6 @@
   color: var(--muted);
 }
 
-.findbar[hidden] {
-  display: none;
-}
-
 .findbar:focus-within {
   border-color: var(--accent);
 }
@@ -781,10 +768,6 @@
   border-radius: 7px;
   background: var(--surface-solid);
   box-shadow: 0 6px 20px rgb(0 0 0 / 0.28);
-}
-
-.sel-toolbar[hidden] {
-  display: none;
 }
 
 .sel-toolbar button {

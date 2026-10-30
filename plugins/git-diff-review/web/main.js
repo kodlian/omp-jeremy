@@ -34,6 +34,7 @@ const state = {
   layout: prefs.layout === "split" ? "split" : "unified",
   wrap: Boolean(prefs.wrap),
   ignoreWhitespace: Boolean(prefs.ignoreWhitespace),
+  syntaxColors: prefs.syntaxColors !== false,
   sidebarWidth: prefs.sidebarWidth ?? 300,
   sidebarHidden: Boolean(prefs.sidebarHidden),
   openIn: typeof prefs.openIn === "string" ? prefs.openIn : null,
@@ -81,8 +82,8 @@ function signature(file) {
 }
 
 function savePrefs() {
-  const { tree, layout, wrap, ignoreWhitespace, sidebarWidth, sidebarHidden, openIn, fontSize } = state;
-  localStorage.setItem(PREFS_KEY, JSON.stringify({ tree, layout, wrap, ignoreWhitespace, sidebarWidth, sidebarHidden, openIn, fontSize }));
+  const { tree, layout, wrap, ignoreWhitespace, syntaxColors, sidebarWidth, sidebarHidden, openIn, fontSize } = state;
+  localStorage.setItem(PREFS_KEY, JSON.stringify({ tree, layout, wrap, ignoreWhitespace, syntaxColors, sidebarWidth, sidebarHidden, openIn, fontSize }));
 }
 
 function syncUrl() {
@@ -102,7 +103,7 @@ app.innerHTML = `
   <section class="main">
     <div class="banner" hidden></div>
     <header class="review-context">
-      <button class="chip comparison-mode" data-act="compare" title="Choose comparison"></button>
+      <div class="segmented icons comparison-mode" role="group" aria-label="Comparison mode">${[["uncommitted", "diff", "Working tree"], ["branch", "branch", "Branch comparison"], ["commit", "commit", "Single commit"]].map(([kind, glyph, label]) => `<button type="button" data-act="compare" data-kind="${kind}" title="${label}" aria-label="${label}" aria-pressed="false">${icon(glyph, 14)}</button>`).join("")}</div>
       <div class="compare-context"></div>
     </header>
     <header class="toolbar">
@@ -510,8 +511,9 @@ function renderReviewActions() {
 }
 
 function renderSidebar() {
-  const labels = { uncommitted: "Working tree", branch: "Branch", commit: "Commit" };
-  app.querySelector('[data-act="compare"]').innerHTML = `${labels[state.compare.kind]} ${icon("chevronDown", 12)}`;
+  for (const button of app.querySelectorAll('[data-act="compare"]')) {
+    button.setAttribute("aria-pressed", String(button.dataset.kind === state.compare.kind));
+  }
   app.querySelector(".compare-context").innerHTML = contextRow();
   app.querySelector('[data-act="tree"]').classList.toggle("active", state.tree);
   renderList();
@@ -755,11 +757,11 @@ function renderBody(fs) {
     body.innerHTML = `<div class="body-note">Large diff (${fs.file.rows.length.toLocaleString()} lines) hidden to keep scrolling smooth.<button class="btn" data-act="load-diff">Load diff</button></div>`;
   } else {
     fs.spans ??= wordSpans(fs.rows);
-    if (fs.tokens == null && fs.highlighting == null) highlight(fs);
+    if (state.syntaxColors && fs.tokens == null && fs.highlighting == null) highlight(fs);
     body.innerHTML = bodyHtml({ ...fs.file, rows: fs.rows }, {
       items: fs.items,
       layout: state.layout,
-      tokens: fs.tokens,
+      tokens: state.syntaxColors ? fs.tokens : null,
       spans: fs.spans,
       pinFor: (item) => pinForItem(fs, item),
       pins: pinsFor(fs.file.path),
@@ -1163,6 +1165,7 @@ function pickViewOptions(anchor) {
   openMenu(anchor, [
     { id: "wrap", label: "Wrap long lines", icon: state.wrap ? icon("check", 13) : icon("wrap", 13) },
     { id: "whitespace", label: "Ignore whitespace", icon: state.ignoreWhitespace ? icon("check", 13) : icon("whitespace", 13) },
+    { id: "syntax-colors", label: "Syntax colors", icon: state.syntaxColors ? icon("check", 13) : null },
     { id: "font-size", label: "Text size", icon: icon("textSize", 13) },
     { id: "prev-file", label: "Previous file", subtitle: "k" },
     { id: "next-file", label: "Next file", subtitle: "j" },
@@ -1171,11 +1174,16 @@ function pickViewOptions(anchor) {
     else if (id === "prev-file" || id === "next-file") stepFile(id === "prev-file" ? -1 : 1);
     else {
       if (id === "wrap") state.wrap = !state.wrap;
+      else if (id === "syntax-colors") state.syntaxColors = !state.syntaxColors;
       else state.ignoreWhitespace = !state.ignoreWhitespace;
       savePrefs();
       renderToolbar();
       updateSelectionUi();
       if (id === "whitespace") refresh();
+      if (id === "syntax-colors") {
+        for (const fs of fileStates.values()) if (fs.rendered) renderBody(fs);
+        refreshFind();
+      }
     }
   });
 }
@@ -1411,13 +1419,10 @@ app.addEventListener("click", async (e) => {
   const pinId = actEl.closest("[data-pin]")?.dataset.pin;
   switch (act) {
     case "compare":
-      openMenu(actEl, [
-        { id: "uncommitted", label: "Working tree", subtitle: "Uncommitted changes" },
-        { id: "branch", label: "Branch", subtitle: "All changes since branching" },
-        { id: "commit", label: "Commit", subtitle: "One commit" },
-      ], (kind) => {
+      {
+        const kind = actEl.dataset.kind;
         if (kind !== state.compare.kind) setCompare(kind === "branch" ? { kind, base: null } : kind === "commit" ? { kind, sha: null } : { kind });
-      });
+      }
       break;
     case "git-init":
       send({ type: "init" });

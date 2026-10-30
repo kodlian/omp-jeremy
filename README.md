@@ -43,4 +43,4 @@ omp plugin marketplace add /path/to/omp-jeremy
 omp plugin install orchestrator@omp-jeremy
 ```
 
-*Both plugins share terminal, theme and font integrations internally.*
+*Both plugins share terminal, theme and font integrations, plus a [web design system](packages/web-design-system/README.md) for consistent typography and controls. Build from the repository root to update the standalone assets shipped with each plugin.*

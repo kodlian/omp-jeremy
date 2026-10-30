@@ -2,6 +2,10 @@ import { copyFile, mkdir, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
+const designSystem = resolve(root, "packages/web-design-system/design-system.css");
+for (const target of ["plugins/orchestrator/design-system.css", "plugins/git-diff-review/web/design-system.css"]) {
+  await copyFile(designSystem, resolve(root, target));
+}
 for (const [name, entry] of [["orchestrator", "omp/orchestrator.ts"], ["git-diff-review", "src/extension.ts"]]) {
   const dir = resolve(root, "plugins", name);
   const result = await Bun.build({

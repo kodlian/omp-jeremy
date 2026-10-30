@@ -2,6 +2,10 @@
 
 `/review` for omp: opens a browser diff review with a file tree, a continuous diff, and inline line comments that are sent back to the agent.
 
+The comparison header uses three icon segments for Working tree, Branch and Single commit, with tooltips and a highlighted active mode. The relevant base or commit picker stays alongside.
+
+Turn off **Syntax colors** in View options for monochrome code while preserving addition/deletion shading. The choice is saved with the other browser preferences and survives reloads.
+
 ## Install
 
 Requires [Bun](https://bun.sh) and omp. Once the repository is pushed, install from the `omp-jeremy` marketplace:
@@ -15,7 +19,7 @@ Restart omp, then run `/review` in a session. Update with `omp plugin marketplac
 
 ### Local development
 
-The plugin lives in the `plugins/git-diff-review` directory of the marketplace repository and shares `packages/integrations` (terminal, theme and font detection) through a Bun workspace:
+The plugin lives in the `plugins/git-diff-review` directory of the marketplace repository and shares `packages/integrations` (terminal, theme and font detection) and `packages/web-design-system` (tokens, reset and controls) through a Bun workspace:
 
 ```sh
 git clone https://github.com/kodlian/omp-jeremy.git && cd omp-jeremy
@@ -26,6 +30,8 @@ omp plugin link plugins/git-diff-review
 
 `omp plugin link` symlinks the plugin directory into `~/.omp/plugins/node_modules`, so edits apply in place.
 
+`bun run build` copies the shared stylesheet to `web/design-system.css`. The copy is committed, so marketplace installs serve it from the plugin itself without building or reaching into the monorepo.
+
 Check it's loaded with `omp plugin list`; remove it with `omp plugin uninstall omp-git-diff-review`.
 
 ## Updating
@@ -33,6 +39,7 @@ Check it's loaded with `omp plugin list`; remove it with `omp plugin uninstall o
 | Changed | Needed |
 |---|---|
 | `web/*` | `bun run build`, then ⌘R in the review tab |
+| `packages/web-design-system/design-system.css` | `bun run build` from the repository root, then ⌘R in the review tab |
 | `src/*` | restart omp and run `/review` again |
 
 When the browser needs newer server functionality, the review tab shows a restart warning. ⌘R reloads the browser code, not the running omp extension.
@@ -73,7 +80,7 @@ Text uses the browser's native font smoothing. The font file and base size are s
 
 Syntax colors follow omp's syntax tokens. Diff rows use a faint addition/deletion tint, stronger gutter cues, and restrained changed-word highlights; hunk headers stay neutral so they do not compete with the code.
 
-File groups use spacing and subtle surfaces instead of outlined cards. Sticky file headings, semantic gutters and visible keyboard focus retain the hierarchy without extra separators.
+File groups use spacing and subtle surfaces instead of outlined cards. Sticky file headings, semantic gutters and visible keyboard focus retain the hierarchy without extra separators. Colors, buttons, icon buttons, the comparison switch and text fields come from the shared design system also used by the Orchestrator; diff rows, syntax colors, pickers and menus stay specific to Review.
 
 ## Development
 
