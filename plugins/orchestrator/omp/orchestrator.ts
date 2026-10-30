@@ -1610,7 +1610,7 @@ export default function orchestrator(pi: ExtensionAPI) {
 		name: "orchestrator_create",
 		label: "Orchestrator create",
 		description:
-			"Create an Orchestrator backlog card after the required bounded preflight, only when no open card covers the same subject (add to that card with orchestrator_amend instead): a title and a description of what to build and why (what the user decided, the acceptance, links), not a plan. Set dependsOn for open cards that must land first. parent (a card of the same flow) groups it under that card; use dependsOn for ordering, though a child also inherits its parent's blockers. planningMode defaults to auto; plan requires review and fast implements directly. Once started, it runs in its own git worktree branched from this checkout's branch.",
+			"Create an Orchestrator backlog card after the required bounded preflight, only when no open card covers the same subject (add to that card with orchestrator_amend instead): a title and a description of what to build and why (what the user decided, the acceptance, links), not a plan. Set dependsOn for open cards that must land first. parent (a card of the same flow) groups it under that card; use dependsOn for ordering, though a child also inherits its parent's blockers. planningMode defaults to auto; plan requires review and fast implements directly. Once started, it runs in its own git worktree branched from this checkout's branch. Created from a task's own worktree, the card joins that task's flow and, unless dependsOn is given, depends on that task as its follow-up; pass dependsOn [] when it should run alongside.",
 		parameters: z.object({
 			title: z.string(),
 			description: z.string(),
@@ -1632,7 +1632,8 @@ export default function orchestrator(pi: ExtensionAPI) {
 						origin: { session: ctx.sessionManager.getSessionId(), terminal: await originTerminal() },
 					});
 					lastCard = t.id;
-					return `Created ${t.id} in the backlog: ${t.title}${t.parent ? ` (child of ${t.parent})` : ""}`;
+					const after = t.dependsOn.length ? ` after ${t.dependsOn.join(", ")}` : "";
+					return `Created ${t.id} in the backlog${after}: ${t.title}${t.parent ? ` (child of ${t.parent})` : ""}`;
 				})(),
 			);
 		},

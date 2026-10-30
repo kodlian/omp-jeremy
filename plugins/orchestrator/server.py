@@ -1155,7 +1155,9 @@ def create_task(body: Dict[str, Any]) -> Dict[str, Any]:
         elif isinstance(body.get("parent"), str) and body["parent"] in store.tasks:
             p = store.tasks[body["parent"]]
             t.update(repo=p["repo"], checkout=p.get("checkout") or p["repo"], base=p["base"])
-        refuse_task_worktree(t)
+        owner = next((o for o in store.tasks.values() if same_dir(o.get("worktree"), t["checkout"])), None)
+        if owner:
+            t.update(repo=owner["repo"], checkout=owner.get("checkout") or owner["repo"], base=owner["base"])
         t["parent"] = validate_parent("", body.get("parent"), t["repo"], t["base"], [])
         deps = body.get("dependsOn") if "dependsOn" in body else ([owner["id"]] if owner else [])
         t["dependsOn"] = validate_deps("", deps or [], t["repo"], t["base"], t["parent"])
