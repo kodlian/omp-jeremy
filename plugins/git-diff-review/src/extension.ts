@@ -7,6 +7,8 @@ import { type Compare, isRepo, repoRoot } from "./git";
 import { DEFAULT_PORTS, type ReviewServer, startReviewServer } from "./server";
 
 const USAGE = "Usage: /review [branch [base] | uncommitted | commit [sha]]";
+// Session entry recording the port a session's review page uses, so a restored session brings it back.
+const SERVER_ENTRY = "git-diff-review.server";
 
 // Undocumented omp exports; without them the page keeps its built-in palette and font size.
 const themeApi = hasThemeApi(omp);
@@ -21,6 +23,14 @@ function parseArgs(args: string): Compare | null {
 
 async function reviewRoot(cwd: string): Promise<string> {
 	return (await isRepo(cwd)) ? await repoRoot(cwd) : cwd;
+}
+
+function recordedPort(sessionCtx: ExtensionContext): number | null {
+	let port: number | null = null;
+	for (const entry of sessionCtx.sessionManager.getBranch()) {
+		if (entry.type === "custom" && entry.customType === SERVER_ENTRY && typeof entry.data?.port === "number") port = entry.data.port;
+	}
+	return port;
 }
 
 export default function gitDiffReview(pi: ExtensionAPI) {
@@ -78,7 +88,9 @@ export default function gitDiffReview(pi: ExtensionAPI) {
 				commandCtx.ui.notify(USAGE, "error");
 				return;
 			}
-			const url = (await ensureServer(commandCtx.cwd, null)).url(compare);
+			const reviewServer = await ensureServer(commandCtx.cwd, null);
+			if (recordedPort(commandCtx) !== reviewServer.port) pi.appendEntry(SERVER_ENTRY, { port: reviewServer.port });
+			const url = reviewServer.url(compare);
 			await openBoard(url, { focus: true });
 			commandCtx.ui.notify(`review open at ${url}`, "info");
 		},
@@ -86,13 +98,16 @@ export default function gitDiffReview(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, sessionCtx) => {
 		ctx = sessionCtx;
-		if (resumePort === null) return;
-		const port = resumePort;
+		const port = resumePort ?? recordedPort(sessionCtx);
 		resumePort = null;
-		await ensureServer(sessionCtx.cwd, port);
+		if (port !== null) await ensureServer(sessionCtx.cwd, port);
 	});
 	pi.on("session_switch", async (_event, sessionCtx) => {
-		await follow(sessionCtx);
+		const port = server ? null : recordedPort(sessionCtx);
+		if (port !== null) {
+			ctx = sessionCtx;
+			await ensureServer(sessionCtx.cwd, port);
+		} else await follow(sessionCtx);
 	});
 	pi.on("tool_result", async (_event, sessionCtx) => {
 		await follow(sessionCtx);

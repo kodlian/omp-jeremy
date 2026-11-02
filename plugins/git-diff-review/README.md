@@ -44,6 +44,8 @@ Check it's loaded with `omp plugin list`; remove it with `omp plugin uninstall o
 
 When the browser needs newer server functionality, the review tab shows a restart warning. ⌘R reloads the browser code, not the running omp extension.
 
+A session that ran `/review` records its port, so restarting omp, `--continue` or resuming that session brings the review server back on the same port, and a review tab left open reconnects on its own.
+
 ## Usage
 
 `/review` defaults to the current branch against its base (falls back to uncommitted changes vs HEAD). Select lines and press `c` to comment; `⌘↩` sends the whole review to the agent.

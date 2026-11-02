@@ -853,6 +853,7 @@ function startReviewServer(initialRoot, hooks, { store = new ReviewStore, ports 
 
 // plugins/git-diff-review/src/extension.ts
 var USAGE = "Usage: /review [branch [base] | uncommitted | commit [sha]]";
+var SERVER_ENTRY = "git-diff-review.server";
 var themeApi = hasThemeApi(omp);
 function parseArgs(args) {
   const [kind, value] = args.trim().split(/\s+/).filter(Boolean);
@@ -866,6 +867,14 @@ function parseArgs(args) {
 }
 async function reviewRoot(cwd) {
   return await isRepo(cwd) ? await repoRoot(cwd) : cwd;
+}
+function recordedPort(sessionCtx) {
+  let port = null;
+  for (const entry of sessionCtx.sessionManager.getBranch()) {
+    if (entry.type === "custom" && entry.customType === SERVER_ENTRY && typeof entry.data?.port === "number")
+      port = entry.data.port;
+  }
+  return port;
 }
 function gitDiffReview(pi) {
   let server = null;
@@ -925,21 +934,28 @@ function gitDiffReview(pi) {
         commandCtx.ui.notify(USAGE, "error");
         return;
       }
-      const url = (await ensureServer(commandCtx.cwd, null)).url(compare);
+      const reviewServer = await ensureServer(commandCtx.cwd, null);
+      if (recordedPort(commandCtx) !== reviewServer.port)
+        pi.appendEntry(SERVER_ENTRY, { port: reviewServer.port });
+      const url = reviewServer.url(compare);
       await openBoard(url, { focus: true });
       commandCtx.ui.notify(`review open at ${url}`, "info");
     }
   });
   pi.on("session_start", async (_event, sessionCtx) => {
     ctx = sessionCtx;
-    if (resumePort === null)
-      return;
-    const port = resumePort;
+    const port = resumePort ?? recordedPort(sessionCtx);
     resumePort = null;
-    await ensureServer(sessionCtx.cwd, port);
+    if (port !== null)
+      await ensureServer(sessionCtx.cwd, port);
   });
   pi.on("session_switch", async (_event, sessionCtx) => {
-    await follow(sessionCtx);
+    const port = server ? null : recordedPort(sessionCtx);
+    if (port !== null) {
+      ctx = sessionCtx;
+      await ensureServer(sessionCtx.cwd, port);
+    } else
+      await follow(sessionCtx);
   });
   pi.on("tool_result", async (_event, sessionCtx) => {
     await follow(sessionCtx);

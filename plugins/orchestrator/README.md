@@ -10,7 +10,7 @@ omp plugin marketplace add kodlian/omp-jeremy
 omp plugin install orchestrator@omp-jeremy
 ```
 
-Restart omp. Requires `omp`, `bun`, `python3`, `git` and Beads (`brew install beads`); `cmux` and `tmux` are optional terminal presentations, and `gh` adds pull request status. The plugin starts the board server the first time it needs it (output in `~/.kanboard/server.log`) and restarts it when the plugin's server code is newer than the running one.
+Restart omp. Requires `omp`, `bun`, `python3`, `git` and Beads (`brew install beads`); `cmux` and `tmux` are optional terminal presentations, and `gh` adds pull request status. The plugin starts the board server the first time it needs it (output in `~/.kanboard/server.log`) and restarts it when the plugin's server code is newer than the running one. Starting or resuming an omp session in a checkout with orchestrator mode on also brings the board back if it is down, so board pages left open reconnect; task sessions never start it.
 
 ### Local development
 

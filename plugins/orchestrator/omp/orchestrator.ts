@@ -341,6 +341,12 @@ async function refreshBoard(): Promise<void> {
 	});
 }
 
+/** Starts the board when it is down, else restarts it when its server code is stale. */
+async function ensureBoard(): Promise<void> {
+	if (await health()) await refreshBoard();
+	else await exclusive(launch);
+}
+
 /** Calls the Orchestrator API, starting the board first when it is down (unless autostart is false); rejects with the board's error. */
 async function api<T>(method: string, path: string, body?: unknown, autostart = true): Promise<T> {
 	const init: RequestInit = {
@@ -1200,6 +1206,8 @@ export default function orchestrator(pi: ExtensionAPI) {
 		showWidget(ctx);
 		stopStream();
 		syncStream(ctx);
+		// Orchestrator mode brings the board back so pages left open reconnect; task mode never starts it.
+		if (on) void ensureBoard().catch((e) => ctx.ui.notify(errorText(e), "warning"));
 		if (!taskLookup) {
 			taskLookup = true;
 			void detectTask(ctx);

@@ -242,6 +242,12 @@ async function refreshBoard() {
     await launch();
   });
 }
+async function ensureBoard() {
+  if (await health())
+    await refreshBoard();
+  else
+    await exclusive(launch);
+}
 async function api(method, path, body, autostart = true) {
   const init = {
     method,
@@ -1055,6 +1061,8 @@ Merged ${t.branch} \u2192 ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info
     showWidget(ctx);
     stopStream();
     syncStream(ctx);
+    if (on)
+      ensureBoard().catch((e) => ctx.ui.notify(errorText(e), "warning"));
     if (!taskLookup) {
       taskLookup = true;
       detectTask(ctx);
