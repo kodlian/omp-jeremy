@@ -29,11 +29,17 @@ function pipelineCurve(a, b) {
   const bend = Math.max(60, Math.abs(b.x - a.x) / 2);
   return `M${a.x},${a.y} C${a.x + bend},${a.y} ${b.x - bend},${b.y} ${b.x},${b.y}`;
 }
+// Solid for the first half from the prerequisite, then dashed like a waiting connection (pipeline.css `stroke-dasharray:8 7`).
+function pipelineHalfDash(path) {
+  const length = path.getTotalLength();
+  return `${length / 2} 7` + " 8 7".repeat(Math.ceil(length / 2 / 15));
+}
 function pipelineDrawEdges() {
   for (const edge of pipeline.edges.values()) {
     const a = pipeline.positions.get(edge.from), b = pipeline.positions.get(edge.to);
     const d = pipelineCurve({ x: a.x + 245, y: a.y + 65 }, { x: b.x + 15, y: b.y + 65 });
     edge.path.setAttribute("d", d); edge.hit.setAttribute("d", d);
+    edge.path.style.strokeDasharray = edge.group.classList.contains("started") ? pipelineHalfDash(edge.path) : "";
     edge.group.classList.toggle("selected", pipeline.selected === edge.key);
   }
 }
@@ -220,6 +226,7 @@ function renderPipeline() {
     }
     const source = findTask(from);
     const complete = source.column === "done";
+    edge.group.classList.toggle("started", source.column === "doing" || source.column === "review");
     const active = source.column === "doing" && !!source.agent && !!AGENT_LABEL[source.agent.state];
     edge.group.classList.toggle("active", active);
     edge.group.classList.toggle("complete", complete);
