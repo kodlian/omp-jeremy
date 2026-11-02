@@ -332,6 +332,83 @@ def find_terminal(context: Dict[str, Any], cwd: str) -> Optional[Dict[str, Any]]
     return None
 
 
+def _cmux_servers(contexts: List[Any]) -> List[Dict[str, str]]:
+    """The distinct, validated cmux CLIs and sockets of `contexts`, then cmux's default socket."""
+    found: Dict[str, Dict[str, str]] = {}
+    parts = [c.get("cmux") for c in contexts if isinstance(c, dict)] + [{"cli": _which("cmux"), "socket": DEFAULT_CMUX_SOCKET}]
+    for part in parts:
+        try:
+            server = {"cli": _cmux_cli(part.get("cli")), "socket": _socket(part.get("socket"), "cmux socket")}
+        except (ValueError, AttributeError):
+            continue
+        found.setdefault(os.path.realpath(server["socket"]), server)
+    return list(found.values())
+
+
+def _tmux_servers(contexts: List[Any]) -> List[Dict[str, str]]:
+    """The distinct, validated tmux sockets of `contexts`."""
+    found: Dict[str, Dict[str, str]] = {}
+    for context in contexts:
+        try:
+            socket = _socket((context.get("tmux") or {}).get("socket"), "tmux socket")
+        except (ValueError, AttributeError):
+            continue
+        found.setdefault(os.path.realpath(socket), {"socket": socket})
+    return list(found.values())
+
+
+def _cmux_workspaces_in(server: Dict[str, str], root: str) -> List[str]:
+    """The ids of the workspaces, in every window of `server`, whose current directory is `root` or inside it."""
+    code, out, _ = _cmux(server, ["--json", "--id-format", "uuids", "list-windows"])
+    try:
+        windows = json.loads(out) if code == 0 else []
+    except ValueError:
+        return []
+    ids: List[str] = []
+    for window in windows if isinstance(windows, list) else []:
+        handle = window.get("id") if isinstance(window, dict) else None
+        if not isinstance(handle, str) or not CMUX_HANDLE.fullmatch(handle):
+            continue
+        code, out, _ = _cmux(server, ["--json", "--id-format", "uuids", "list-workspaces", "--window", handle])
+        try:
+            workspaces = (json.loads(out).get("workspaces") or []) if code == 0 else []
+        except (ValueError, AttributeError):
+            continue
+        for ws in workspaces:
+            wid = ws.get("id") if isinstance(ws, dict) else None
+            if isinstance(wid, str) and CMUX_HANDLE.fullmatch(wid) and _within(ws.get("current_directory"), root) >= 0:
+                ids.append(wid)
+    return ids
+
+
+def _tmux_panes_in(server: Dict[str, str], root: str) -> List[str]:
+    """The ids of the panes, in every session of `server`, whose current path is `root` or inside it."""
+    code, out, _ = _tmux(server, ["list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_path}"])
+    if code != 0:
+        return []
+    panes = (line.split("\t", 1) for line in out.splitlines())
+    return [p[0] for p in panes if len(p) == 2 and TMUX_PANE.fullmatch(p[0]) and _within(p[1], root) >= 0]
+
+
+def close_terminals(cwd: str, contexts: List[Any], spare: Optional[Dict[str, Any]] = None) -> int:
+    """Closes every cmux workspace (in any window) and tmux pane whose current directory is `cwd` or inside it, on the cmux
+    and tmux servers of `contexts` and cmux's default socket, except the terminal of the `spare` context; returns how many."""
+    root = os.path.realpath(cwd)
+    spare = spare if isinstance(spare, dict) else {}
+    spare_workspace = str((spare.get("cmux") or {}).get("workspace") or "").upper()
+    spare_tmux = spare.get("tmux") or {}
+    spare_pane = (os.path.realpath(spare_tmux["socket"]), spare_tmux.get("pane")) if spare_tmux.get("socket") else None
+    closed = 0
+    for server in _tmux_servers(contexts):
+        for pane in _tmux_panes_in(server, root):
+            if (os.path.realpath(server["socket"]), pane) != spare_pane and _tmux(server, ["kill-pane", "-t", pane])[0] == 0:
+                closed += 1
+    for server in _cmux_servers(contexts):
+        for workspace in _cmux_workspaces_in(server, root):
+            if workspace.upper() != spare_workspace and _cmux(server, ["workspace", "close", "--force", "--workspace", workspace])[0] == 0:
+                closed += 1
+    return closed
+
 
 # --- attachments
 

@@ -464,6 +464,12 @@ async function originTerminal(): Promise<TerminalContext> {
 	return found.context;
 }
 
+/** This session's terminal for a request that closes a worktree's terminals, so the board closes it last; undefined when unknown. */
+async function requestTerminal(): Promise<TerminalContext | undefined> {
+	const found = await callerTerminal();
+	return "context" in found ? found.context : undefined;
+}
+
 /** Shows the board in this session's cmux workspace when it has one, else the default browser; throws when neither opens. */
 async function showBoard(url: string, focus: boolean): Promise<void> {
 	await openTerminalBoard(url, { focus, python: PYTHON, overrideEnvs: TERMINAL_OVERRIDES });
@@ -1286,7 +1292,7 @@ export default function orchestrator(pi: ExtensionAPI) {
 				pi.appendEntry(CLEANUP_ENTRY, { cleanup });
 			}
 		}
-		const r = await api<{ output: string; cleanupError?: string }>("POST", `/api/tasks/${id}/merge`, { cleanup, commit: true });
+		const r = await api<{ output: string; cleanupError?: string }>("POST", `/api/tasks/${id}/merge`, { cleanup, commit: true, terminal: await requestTerminal() });
 		return r.cleanupError ? `${r.output}\n${r.cleanupError}` : r.output;
 	};
 
@@ -1317,8 +1323,9 @@ export default function orchestrator(pi: ExtensionAPI) {
 				: "Its plan is deleted with it.";
 			if (!(await ctx.ui.confirm(`Delete ${taskNumber(id)}?`, `${t.title} (${column})\n\n${detail}${unlinks}`))) return `${id} kept`;
 		}
+		const terminal = await requestTerminal();
 		const r = await withLegacyConfirm(ctx, id, (confirmLegacy) =>
-			api<{ output?: string }>("DELETE", `/api/tasks/${id}`, { confirmWorking: t.moveRequiresConfirmation, cleanup, confirmLegacy }),
+			api<{ output?: string }>("DELETE", `/api/tasks/${id}`, { confirmWorking: t.moveRequiresConfirmation, cleanup, confirmLegacy, terminal }),
 		);
 		return r.output ? `Deleted ${id}\n${r.output}` : `Deleted ${id}`;
 	};
@@ -1364,7 +1371,8 @@ export default function orchestrator(pi: ExtensionAPI) {
 			`Deletes ${tilde(t.worktree)} and the branch ${t.branch}, ending its omp and terminal. The card stays.`,
 		);
 		if (!sure) return `${id}'s worktree kept`;
-		const done = await withLegacyConfirm(ctx, id, (confirmLegacy) => api<{ output: string }>("POST", `/api/tasks/${id}/cleanup`, { confirmLegacy }));
+		const terminal = await requestTerminal();
+		const done = await withLegacyConfirm(ctx, id, (confirmLegacy) => api<{ output: string }>("POST", `/api/tasks/${id}/cleanup`, { confirmLegacy, terminal }));
 		return done.output;
 	};
 

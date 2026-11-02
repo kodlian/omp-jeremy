@@ -25,6 +25,8 @@ omp plugin link plugins/orchestrator
 
 The launcher and plugin run `python3 server.py --prepare` before starting the server. Preparation initializes the external Beads workspace and migrates legacy cards before the HTTP startup deadline begins. To prepare without opening the board, run that command directly with the desired `KANBOARD_HOME`; a running board should be stopped before migrating its data.
 
+`bun run test` includes lifecycle tests (`tests/lifecycle.test.ts`) that run a real board in a temporary home against a fake `cmux` CLI (`tests/fake_cmux.py`) and fake `createWorktree`/`removeWorktree` commands. They check that merging closes every terminal in the task's worktree, with a requesting session's own terminal last, and that Stop closes a hook's terminal. They need Beads (`bd`) and are skipped without it.
+
 ## Terminals
 
 Each task's omp runs in a detached agent host (`agent_host.py`) that owns its terminal: the host outlives the board server and every terminal showing it, keeps the recent screen for the **Agent** tab and `orchestrator_screen`, and lives in a private directory under `$KANBOARD_HOME/hosts/`. Terminals only present it, according to where the omp session that created the card runs:
@@ -49,7 +51,7 @@ The attach command runs `agent_host.py attach <host directory>`; **Ctrl-\\** det
 | Review | The card moves here when the branch has an open pull request. A task that merges locally moves here when its agent is idle (or stopped) with committed work and a clean worktree ("Ready to merge"). |
 | Done | The card moves here when the pull request is merged, or when **Merge into &lt;base&gt;** or `/orchestrator done` merged the branch; you can also drag it here. Its title and description are then fixed—create a new card for more work. **Remove worktree** stops its agent, closes its terminal and deletes the worktree and the branch, without unlocking its branch, repository, base, merge mode or planning mode. |
 
-Successful local merges stop the task agent and close its terminal even when keeping the worktree. The cleanup choice controls deletion of the worktree and branch, not whether a completed task's workspace stays open.
+Successful local merges stop the task agent and close every terminal in its worktree even when keeping the worktree: cmux workspaces in any cmux window and tmux panes whose current directory is in it, including one a `createWorktree` command opened and ones from tasks started before this behavior. **Remove worktree** closes them too once the worktree is gone. When you merge or remove from an omp session running in that worktree, its own terminal closes last, after the reply. The cleanup choice controls deletion of the worktree and branch, not whether a completed task's terminals stay open.
 
 The board takes its background, monospace font and font size from the terminal's Ghostty configuration (`ghostty +show-config`, plus cmux's own terminal settings under cmux) and its colors from omp: the page shows its flow in the omp theme of that flow's orchestrator sessions, and follows theme changes. Text and controls scale from the terminal's font size with the same formula as `/review`. When the terminal's font is a Nerd Font, the agent's screen shows its icons too.
 

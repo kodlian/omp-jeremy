@@ -1777,6 +1777,8 @@ def spawn_worker(task_id: str) -> None:
             if not hooked:
                 presentation, note = open_presentation(context, branch, path, directory)
                 log += note
+            else:
+                presentation = terminals.find_terminal(context, path)
         with store.lock:
             t = store.tasks.get(task_id)
             if not t:
@@ -1889,6 +1891,41 @@ def terminal_context(raw: Optional[str]) -> Optional[Dict[str, Any]]:
         return terminals.normalize_context(json.loads(raw))
     except ValueError:
         return None
+
+
+def request_terminal(body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The requesting omp session's terminal context from a request body, validated; None when absent or malformed."""
+    try:
+        return terminals.normalize_context(body["terminal"]) if body.get("terminal") else None
+    except ValueError:
+        return None
+
+
+REPLY = threading.local()
+
+
+def after_reply(action: Callable[[], None]) -> None:
+    """Runs `action` once the current request's successful reply is sent; at once outside a request."""
+    actions = getattr(REPLY, "actions", None)
+    if actions is None:
+        action()
+    else:
+        actions.append(action)
+
+
+def close_worktree_terminals(task_id: str, path: str, requester: Optional[Dict[str, Any]]) -> Callable[[], None]:
+    """Closes every terminal in a task's worktree, in any cmux window or the tmux of its terminals (a createWorktree
+    hook's included), except the requester's own; returns what closes that one, for after_reply."""
+    with store.lock:
+        t = store.tasks.get(task_id)
+        contexts = [c for c in ((t or {}).get("presentation"), presentation_context(t) if t else None, requester) if c]
+    terminals.close_terminals(path, contexts, spare=requester)
+
+    def close_requester() -> None:
+        if requester:
+            terminals.close_terminals(path, contexts)
+    return close_requester
+
 
 
 def new_host_dir(task_id: str) -> Path:
@@ -2439,8 +2476,9 @@ def present_diff(task_id: str) -> Dict[str, Any]:
 
 
 def cleanup_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Removes a started task's worktree and branch, stopping its agent first so nothing works in a deleted tree; an
-    unfinished task can then start again."""
+    """Removes a started task's worktree and branch, stopping its agent first so nothing works in a deleted tree, then
+    closes every terminal left in it (the requester's own once replied); an unfinished task can then start again."""
+    requester = request_terminal(body)
     with store.lock:
         t = store.get(task_id)
         path = require_spawned(t)
@@ -2481,6 +2519,8 @@ def cleanup_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
             raise ApiError(500, (err or out).strip())
         run(["git", "-C", repo, "branch", "-D", branch], timeout=30)
         output = log + f"Removed {path} and branch {branch}"
+    # A removeWorktree hook runs without the caller's terminal identity, so the board closes what is left in the worktree.
+    close_requester = close_worktree_terminals(task_id, path, requester)
     with store.lock:
         t = store.tasks.get(task_id)
         if t:
@@ -2488,6 +2528,7 @@ def cleanup_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if directory:
         shutil.rmtree(directory, ignore_errors=True)
     hub.changed()
+    after_reply(close_requester)
     return {"ok": True, "output": output}
 
 
@@ -2715,15 +2756,19 @@ def merge_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         lines.append(f"Rebased {branch} onto {base}")
     lines.append(f"Merged {branch} into {base} ({merged['sha'][:7]})")
     output = "\n".join(lines)
+    requester = request_terminal(body)
     if body.get("cleanup"):
         try:
-            output += "\n" + cleanup_task(task_id, {})["output"]
+            output += "\n" + cleanup_task(task_id, {"terminal": body.get("terminal")})["output"]
         except ApiError as e:
+            # Done either way: its terminals close as when keeping the worktree, the requester's staying to show why.
+            close_worktree_terminals(task_id, path, requester)
             return {"ok": True, "output": output, "merged": merged, "cleanupError": e.message}
     else:
         note = stop_agent(task_id)
         if note:
             output += "\n" + note
+        after_reply(close_worktree_terminals(task_id, path, requester))
     return {"ok": True, "output": output, "merged": merged}
 
 
@@ -3303,7 +3348,15 @@ class Handler(BaseHTTPRequestHandler):
             for method, pattern, handler in ROUTES:
                 m = re.fullmatch(pattern, path)
                 if m and method == self.command:
-                    return self.send_json(200, handler(m, self.body() if method != "GET" else {}))
+                    REPLY.actions = []
+                    try:
+                        data = handler(m, self.body() if method != "GET" else {})
+                    finally:
+                        deferred, REPLY.actions = REPLY.actions, None
+                    try:
+                        return self.send_json(200, data)
+                    finally:
+                        self.run_after_reply(deferred)
             raise ApiError(404, f"No route {self.command} {path}")
         except ApiError as e:
             self.send_json(e.status, {"error": e.message, **e.extra})
@@ -3315,6 +3368,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(500, {"error": f"Internal error: {e}"})
             except OSError:
                 pass
+
+    def run_after_reply(self, actions: List[Callable[[], None]]) -> None:
+        """Runs what a successful request deferred until its reply was sent (after_reply)."""
+        for action in actions:
+            try:
+                action()
+            except Exception as e:
+                print(f"orchestrator: after {self.command} {self.path}: {e!r}", file=sys.stderr)
 
     do_GET = do_POST = do_PATCH = do_DELETE = handle_any
 

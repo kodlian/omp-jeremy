@@ -353,6 +353,10 @@ async function originTerminal() {
     throw new Error(found.error);
   return found.context;
 }
+async function requestTerminal() {
+  const found = await callerTerminal();
+  return "context" in found ? found.context : undefined;
+}
 async function showBoard(url, focus) {
   await openBoard(url, { focus, python: PYTHON, overrideEnvs: TERMINAL_OVERRIDES });
 }
@@ -1139,7 +1143,7 @@ Merged ${t.branch} \u2192 ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info
         pi.appendEntry(CLEANUP_ENTRY, { cleanup });
       }
     }
-    const r = await api("POST", `/api/tasks/${id}/merge`, { cleanup, commit: true });
+    const r = await api("POST", `/api/tasks/${id}/merge`, { cleanup, commit: true, terminal: await requestTerminal() });
     return r.cleanupError ? `${r.output}
 ${r.cleanupError}` : r.output;
   };
@@ -1170,7 +1174,8 @@ ${r.cleanupError}` : r.output;
 ${detail}${unlinks}`))
         return `${id} kept`;
     }
-    const r = await withLegacyConfirm(ctx, id, (confirmLegacy) => api("DELETE", `/api/tasks/${id}`, { confirmWorking: t.moveRequiresConfirmation, cleanup, confirmLegacy }));
+    const terminal2 = await requestTerminal();
+    const r = await withLegacyConfirm(ctx, id, (confirmLegacy) => api("DELETE", `/api/tasks/${id}`, { confirmWorking: t.moveRequiresConfirmation, cleanup, confirmLegacy, terminal: terminal2 }));
     return r.output ? `Deleted ${id}
 ${r.output}` : `Deleted ${id}`;
   };
@@ -1205,7 +1210,8 @@ ${r.output}` : `Deleted ${id}`;
     const sure = await ctx.ui.confirm(`Remove ${taskNumber(id)}'s worktree?`, `Deletes ${tilde(t.worktree)} and the branch ${t.branch}, ending its omp and terminal. The card stays.`);
     if (!sure)
       return `${id}'s worktree kept`;
-    const done2 = await withLegacyConfirm(ctx, id, (confirmLegacy) => api("POST", `/api/tasks/${id}/cleanup`, { confirmLegacy }));
+    const terminal2 = await requestTerminal();
+    const done2 = await withLegacyConfirm(ctx, id, (confirmLegacy) => api("POST", `/api/tasks/${id}/cleanup`, { confirmLegacy, terminal: terminal2 }));
     return done2.output;
   };
   const recoverCard = async (ctx, raw) => {
