@@ -1621,9 +1621,10 @@ function startPeek() {
     if (!peekWanted()) { stopPeek(); return; }
     const id = openId;
     try {
-      const r = await api("GET", tpath(id, "/screen"));
-      if (P && openId === id && P.term.textContent !== r.text) {
-        P.term.textContent = r.text;
+      const view = wbScreen(await api("GET", tpath(id, "/screen")), Infinity);
+      if (P && openId === id && P.termKey !== view.key) {
+        P.termKey = view.key;
+        wbPaint(P.term, view);
         if (P.termPinned) P.term.scrollTop = P.term.scrollHeight;
       }
     } catch {}

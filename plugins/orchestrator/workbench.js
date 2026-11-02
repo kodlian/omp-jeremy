@@ -31,10 +31,10 @@ function wbRows(rows, n) {
     return out;
   });
 }
-function wbScreen(data) {
-  const rows = wbRows(data?.rows, WB_LINES);
+function wbScreen(data, lines = WB_LINES) {
+  const rows = wbRows(data?.rows, lines);
   if (rows) return { key: "r" + JSON.stringify(rows), rows };
-  const text = wbLines(data?.text ?? "", WB_LINES);
+  const text = wbLines(data?.text ?? "", lines);
   return { key: "t" + text, text };
 }
 function wbRunEl(r) {
