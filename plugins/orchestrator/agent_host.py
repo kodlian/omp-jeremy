@@ -30,9 +30,11 @@ from pathlib import Path
 from typing import Any, Deque, Dict, Iterator, List, Optional, Tuple
 
 from gitops import find_worktree
+from integrations import terminals
 from runtime import PRIVATE_USE, agent_env, child_env, now_iso
 
 SPEC, META, SOCKET, LOCK, LOG, SCREEN = "spec.json", "host.json", "agent.sock", "lock", "host.log", "screen.txt"
+PRESENTER = "presenter.json"
 SCRIPT = str(Path(__file__).resolve())
 ROWS, COLS = 48, 160
 HISTORY = 2000
@@ -1101,6 +1103,7 @@ class Client:
         self.greeted = False
         self.closing = False
         self.gone = False
+        self.terminal: Dict[str, str] = {}
 
 
 class Host:
@@ -1137,6 +1140,8 @@ class Host:
             raise HostError(f"the agent's directory {cwd} doesn't exist")
         path = self.dir / SOCKET
         path.unlink(missing_ok=True)
+        presenter = self.dir / PRESENTER
+        presenter.unlink(missing_ok=True)
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         previous = os.umask(0o177)
         try:
@@ -1147,7 +1152,7 @@ class Host:
         self.socket_inode = path.stat().st_ino
         self.listener.listen(16)
         self.listener.setblocking(False)
-        env = agent_env({"PWD": cwd})
+        env = agent_env({"PWD": cwd, terminals.PRESENTER_ENV: str(presenter)})
         pid, fd = os.forkpty()
         if pid == 0:
             try:
@@ -1175,6 +1180,18 @@ class Host:
 
     def reply(self, client: Client, data: Dict[str, Any]) -> None:
         self.send(client, frame(b"J", json.dumps(data).encode()))
+
+    def write_presenter(self) -> None:
+        """Names the latest attached terminal as the one showing the agent, so what its omp opens goes there."""
+        shown = [c.terminal for c in self.clients.values() if c.attached and c.terminal]
+        path = self.dir / PRESENTER
+        try:
+            if shown:
+                write_private(path, {"env": shown[-1]})
+            else:
+                path.unlink(missing_ok=True)
+        except OSError as e:
+            print(f"{now_iso()} agent host {self.instance} couldn't record its terminal: {e}", file=sys.stderr, flush=True)
 
     def status(self) -> Dict[str, Any]:
         return {"ok": True, "instance": self.instance, "pid": os.getpid(), "child": self.child,
@@ -1335,6 +1352,9 @@ class Host:
         except (KeyError, ValueError):
             pass
         client.sock.close()
+        # Once the agent exited, a later host may own the directory's presenter.
+        if client.attached and client.terminal and self.exit_code is None:
+            self.write_presenter()
 
     def send(self, client: Client, data: bytes) -> None:
         if client.gone:
@@ -1411,6 +1431,9 @@ class Host:
                 if isinstance(rows, int) and isinstance(cols, int) and 2 <= rows <= 1000 and 2 <= cols <= 1000:
                     self.resize(rows, cols)
                 client.attached = True
+                client.terminal = terminals.terminal_identity(message.get("terminal"))
+                if client.terminal:
+                    self.write_presenter()
                 self.reply(client, {"ok": True, "instance": self.instance, "task": self.spec.get("task"),
                                     "alt": self.screen.alt_on})
                 self.send(client, frame(b"O", self.screen.snapshot()))
@@ -1517,7 +1540,8 @@ def attach(directory: Path) -> int:
         print(f"The agent of {directory} isn't running", file=sys.stderr)
         return 1
     rows, cols = terminal_size()
-    sock.sendall(frame(b"H", json.dumps({"op": "attach", "rows": rows, "cols": cols}).encode()))
+    sock.sendall(frame(b"H", json.dumps({"op": "attach", "rows": rows, "cols": cols,
+                                         "terminal": terminals.terminal_identity(os.environ)}).encode()))
     sock.settimeout(None)
     wake_r, wake_w = os.pipe()
     os.set_blocking(wake_r, False)

@@ -18,6 +18,9 @@ from urllib.parse import urlsplit
 KINDS = ("cmux", "tmux", "plain")
 OVERRIDES = ("auto",) + KINDS
 OVERRIDE_ENVS = ("OMP_TERMINAL",)
+# A detached process (no terminal of its own) names a JSON file {"env": {...}} with the identity of the terminal showing it.
+PRESENTER_ENV = "OMP_TERMINAL_PRESENTER"
+IDENTITY_ENV = ("CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID", "CMUX_SOCKET_PATH", "CMUX_BUNDLED_CLI_PATH", "TMUX", "TMUX_PANE")
 DEFAULT_CMUX_SOCKET = str(Path.home() / ".local/state/cmux/cmux.sock")
 CMUX_HANDLE = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|(?:workspace|surface|window):\d+")
 CMUX_BUNDLED = re.compile(r"\.app/Contents/Resources/bin/cmux$")
@@ -446,6 +449,25 @@ def _detect_cmux(environ: Mapping[str, str]) -> Tuple[Optional[Dict[str, str]], 
     return part, ""
 
 
+def terminal_identity(environ: Any) -> Dict[str, str]:
+    """The variables of `environ` that detection reads to identify its terminal."""
+    if not isinstance(environ, Mapping):
+        return {}
+    return {k: v for k in IDENTITY_ENV if isinstance(v := environ.get(k), str) and v and len(v) <= 1024}
+
+
+def presenter_cmux(environ: Mapping[str, str]) -> Optional[Dict[str, str]]:
+    """The validated cmux part of the terminal now showing this detached process (PRESENTER_ENV); None without one."""
+    path = environ.get(PRESENTER_ENV)
+    if not path:
+        return None
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return _detect_cmux(terminal_identity(data.get("env") if isinstance(data, dict) else None))[0]
+
+
 def _detect_tmux(environ: Mapping[str, str]) -> Tuple[Optional[Dict[str, str]], str]:
     tmux, pane = environ.get("TMUX"), environ.get("TMUX_PANE")
     if not tmux or not pane:
@@ -486,7 +508,8 @@ def main(argv: List[str]) -> int:
                         help=f"env var forcing auto|cmux|tmux|plain, first set wins (repeatable; default {', '.join(OVERRIDE_ENVS)})")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("detect", help="print this terminal's validated context as JSON")
-    board = sub.add_parser("board", help="open a URL in the terminal's cmux workspace, else the default browser")
+    board = sub.add_parser("board", help="open a URL in the cmux workspace of this terminal (or of the terminal showing "
+                                          "this detached process), else the default browser")
     board.add_argument("url")
     board.add_argument("--focus", action=argparse.BooleanOptionalAction, default=True)
     board.add_argument("--context", help="a context JSON from detect, instead of detecting this terminal")
@@ -501,6 +524,10 @@ def main(argv: List[str]) -> int:
     if args.command == "detect":
         print(json.dumps(context))
         return 0
+    if not given and not context.get("cmux"):
+        presenter = presenter_cmux(os.environ)
+        if presenter:
+            context = {**context, "cmux": presenter}
     if open_board(context, args.url, args.focus):
         return 0
     if webbrowser.open(args.url):

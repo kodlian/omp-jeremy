@@ -73,7 +73,7 @@ export async function terminalCellHeight(options: TerminalOptions = {}): Promise
 	}
 }
 
-/** Opens `url` in the context's cmux workspace (reusing a panel already on its origin), else the default browser; rejects when nothing opens it. */
+/** Opens `url` in the context's cmux workspace (reusing a panel already on its origin), else the default browser; rejects when nothing opens it. A detected caller without cmux of its own uses the cmux workspace now showing it, named by OMP_TERMINAL_PRESENTER. */
 export async function openBoard(url: string, options: OpenBoardOptions = {}): Promise<void> {
 	const args = ["board", url, options.focus ? "--focus" : "--no-focus"];
 	if (options.context) args.push("--context", JSON.stringify(options.context));
