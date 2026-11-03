@@ -1662,7 +1662,6 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "j" || e.key === "k") {
     stepFile(e.key === "j" ? 1 : -1);
   } else if (e.key === "]" || e.key === "[") {
-    e.preventDefault();
     jumpChange(e.key === "]" ? 1 : -1);
   } else if (e.key === "n" || e.key === "N") {
     stepPin(e.key === "n" ? 1 : -1);
@@ -1673,17 +1672,17 @@ document.addEventListener("keydown", (e) => {
   } else if (e.key === "v" && state.selected && fileStates.has(state.selected)) {
     toggleViewed(state.selected, !state.viewed[viewedKey(state.selected)]);
   } else if (e.key === "c" && sel) {
-    e.preventDefault();
     openComposer();
   } else if (e.key === "r") {
     refresh();
   } else if (e.key === "/") {
-    e.preventDefault();
     if (state.sidebarHidden) toggleSidebar();
     filterInput.focus();
-  } else if (e.key === "Escape" && clearSelection()) {
-    e.preventDefault();
+  } else if (e.key !== "Escape" || !clearSelection()) {
+    return;
   }
+  // An unhandled key makes WebKit hosts such as cmux's browser pane play the system alert sound.
+  e.preventDefault();
 });
 
 document.addEventListener("copy", (e) => {
