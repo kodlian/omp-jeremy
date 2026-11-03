@@ -35,6 +35,7 @@ const state = {
   wrap: Boolean(prefs.wrap),
   ignoreWhitespace: Boolean(prefs.ignoreWhitespace),
   syntaxColors: prefs.syntaxColors !== false,
+  hideUnchanged: Boolean(prefs.hideUnchanged),
   sidebarWidth: prefs.sidebarWidth ?? 300,
   sidebarHidden: Boolean(prefs.sidebarHidden),
   openIn: typeof prefs.openIn === "string" ? prefs.openIn : null,
@@ -82,8 +83,8 @@ function signature(file) {
 }
 
 function savePrefs() {
-  const { tree, layout, wrap, ignoreWhitespace, syntaxColors, sidebarWidth, sidebarHidden, openIn, fontSize } = state;
-  localStorage.setItem(PREFS_KEY, JSON.stringify({ tree, layout, wrap, ignoreWhitespace, syntaxColors, sidebarWidth, sidebarHidden, openIn, fontSize }));
+  const { tree, layout, wrap, ignoreWhitespace, syntaxColors, hideUnchanged, sidebarWidth, sidebarHidden, openIn, fontSize } = state;
+  localStorage.setItem(PREFS_KEY, JSON.stringify({ tree, layout, wrap, ignoreWhitespace, syntaxColors, hideUnchanged, sidebarWidth, sidebarHidden, openIn, fontSize }));
 }
 
 function syncUrl() {
@@ -338,10 +339,20 @@ function setCompare(compare) {
 
 // MARK: file order
 
+// Pure renames and moves, mode-only changes and empty files: nothing to read in the diff.
+const lineless = (f) => !f.additions && !f.deletions && !f.binary && !f.truncated && !f.note;
+
+function reviewFiles() {
+  return state.hideUnchanged ? state.files.filter((f) => !lineless(f)) : state.files;
+}
+
 function filteredFiles() {
   const q = state.filter.trim().toLowerCase();
-  return q ? state.files.filter((f) => f.path.toLowerCase().includes(q)) : state.files;
+  const files = reviewFiles();
+  return q ? files.filter((f) => f.path.toLowerCase().includes(q)) : files;
 }
+
+const noMatch = () => (state.filter.trim() ? `No files match “${esc(state.filter)}”` : "No files with line changes");
 
 function treeOf(files) {
   const root = { dirs: new Map(), files: [] };
@@ -475,8 +486,8 @@ function listHtml() {
     return `<div class="empty-state"><strong>${what}</strong><span>Edits show up here as your agent makes them.</span></div>`;
   }
   const files = filteredFiles();
-  if (!files.length) return `<div class="empty-state"><span>No files match “${esc(state.filter)}”</span></div>`;
-  if (!state.tree) return files.map((f) => fileRow(f, 0)).join("");
+  if (!files.length) return `<div class="empty-state"><span>${noMatch()}</span></div>${hiddenNote()}`;
+  if (!state.tree) return files.map((f) => fileRow(f, 0)).join("") + hiddenNote();
   const out = [];
   for (const entry of walk(treeOf(files))) {
     const path = entry.dir ?? entry.file.path;
@@ -490,7 +501,12 @@ function listHtml() {
       `<div class="dir-row nav" tabindex="-1" aria-expanded="${!collapsed}" data-dir="${esc(entry.dir)}" style="padding-left:${4 + entry.depth * 10}px">${icon(collapsed ? "chevronRight" : "chevronDown", 12)}${icon(collapsed ? "folder" : "folderOpen", 14)}<span>${esc(entry.name)}</span></div>`,
     );
   }
-  return out.join("");
+  return out.join("") + hiddenNote();
+}
+
+function hiddenNote() {
+  const hidden = state.files.length - reviewFiles().length;
+  return hidden ? `<div class="hidden-note"><span>${hidden} renamed or unchanged file${hidden > 1 ? "s" : ""} hidden</span><button class="btn ghost sm" data-act="show-unchanged">Show</button></div>` : "";
 }
 
 function renderList() {
@@ -525,11 +541,12 @@ function renderSidebar() {
 
 function renderToolbar() {
   renderReviewActions();
-  const adds = state.files.reduce((n, f) => n + (f.additions ?? 0), 0);
-  const dels = state.files.reduce((n, f) => n + (f.deletions ?? 0), 0);
-  const viewed = state.files.filter((f) => state.viewed[viewedKey(f.path)]).length;
-  app.querySelector(".totals").innerHTML = state.files.length
-    ? `<span class="muted">${viewed}/${state.files.length} viewed</span>${adds ? ` <span class="add">+${adds}</span>` : ""}${dels ? ` <span class="remove">−${dels}</span>` : ""}`
+  const files = reviewFiles();
+  const adds = files.reduce((n, f) => n + (f.additions ?? 0), 0);
+  const dels = files.reduce((n, f) => n + (f.deletions ?? 0), 0);
+  const viewed = files.filter((f) => state.viewed[viewedKey(f.path)]).length;
+  app.querySelector(".totals").innerHTML = files.length
+    ? `<span class="muted">${viewed}/${files.length} viewed</span>${adds ? ` <span class="add">+${adds}</span>` : ""}${dels ? ` <span class="remove">−${dels}</span>` : ""}`
     : "";
   const layoutBtn = app.querySelector('[data-act="layout"]');
   layoutBtn.innerHTML = icon(state.layout === "split" ? "unified" : "split");
@@ -574,7 +591,7 @@ function emptyHtml() {
   if (state.notRepo) {
     return `<strong>Not a git repository</strong><span>Initialize one to review every file here and track changes as your agent edits.</span><button class="btn primary" data-act="git-init">Initialize git repository</button>`;
   }
-  if (state.files.length) return `<span>No files match “${esc(state.filter)}”</span>`;
+  if (state.files.length) return `<span>${noMatch()}</span>`;
   return `<strong>Nothing to review</strong><span>Changes appear here as your agent edits files.</span>`;
 }
 
@@ -1166,6 +1183,7 @@ function pickViewOptions(anchor) {
   openMenu(anchor, [
     { id: "wrap", label: "Wrap long lines", icon: state.wrap ? icon("check", 13) : icon("wrap", 13) },
     { id: "whitespace", label: "Ignore whitespace", icon: state.ignoreWhitespace ? icon("check", 13) : icon("whitespace", 13) },
+    { id: "hide-unchanged", label: "Hide renamed and unchanged files", icon: state.hideUnchanged ? icon("check", 13) : null },
     { id: "syntax-colors", label: "Use omp syntax colors", icon: state.syntaxColors ? icon("check", 13) : null },
     { id: "font-size", label: "Text size", icon: icon("textSize", 13) },
     { id: "prev-file", label: "Previous file", subtitle: "k" },
@@ -1173,6 +1191,7 @@ function pickViewOptions(anchor) {
   ], (id) => {
     if (id === "font-size") pickFontSize(anchor);
     else if (id === "prev-file" || id === "next-file") stepFile(id === "prev-file" ? -1 : 1);
+    else if (id === "hide-unchanged") setHideUnchanged(!state.hideUnchanged);
     else {
       if (id === "wrap") state.wrap = !state.wrap;
       else if (id === "syntax-colors") state.syntaxColors = !state.syntaxColors;
@@ -1184,6 +1203,13 @@ function pickViewOptions(anchor) {
       if (id === "syntax-colors") app.classList.toggle("default-syntax", !state.syntaxColors);
     }
   });
+}
+
+function setHideUnchanged(hide) {
+  state.hideUnchanged = hide;
+  savePrefs();
+  renderSidebar();
+  renderFiles();
 }
 
 async function expandGap(fs, gap, dir) {
@@ -1465,6 +1491,9 @@ app.addEventListener("click", async (e) => {
       break;
     case "view-options":
       pickViewOptions(actEl);
+      break;
+    case "show-unchanged":
+      setHideUnchanged(false);
       break;
     case "load-diff":
       if (path) {

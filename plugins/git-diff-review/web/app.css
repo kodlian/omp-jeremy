@@ -236,6 +236,19 @@
   color: var(--muted);
 }
 
+.hidden-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 6px 0 18px;
+  color: var(--muted);
+}
+
+.hidden-note span {
+  flex: 1;
+  min-width: 0;
+}
+
 .file-dir {
   flex: 0 10 auto;
   min-width: 0;

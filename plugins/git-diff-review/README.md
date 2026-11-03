@@ -6,6 +6,8 @@ The comparison header uses three icon segments for Working tree, Branch and Sing
 
 Turn off **Use omp syntax colors** in View options to use Review's default light/dark syntax palette instead of omp's theme colors. Highlighting and addition/deletion shading stay enabled. The choice is saved with the other browser preferences and survives reloads.
 
+Turn on **Hide renamed and unchanged files** in View options to drop files with no line changes (pure renames and moves, mode-only changes, empty files) from the file list and diff. The list then ends with a count and a **Show** button that turns the option back off. Renames that also edit lines and binary changes always show. The choice is saved with the other preferences.
+
 ## Install
 
 Requires [Bun](https://bun.sh) and omp. Once the repository is pushed, install from the `omp-jeremy` marketplace:
