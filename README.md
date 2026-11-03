@@ -22,6 +22,8 @@ omp plugin install git-diff-review@omp-jeremy
 
 Install either plugin independently. Restart omp after installing extensions.
 
+omp only picks up a new release when its version in `.omp-plugin/marketplace.json` goes up. To have omp install new releases when it starts, run `omp config set marketplace.autoUpdate auto`; the default, `notify`, only writes to omp's debug log. To update by hand, run `omp plugin marketplace update omp-jeremy`, then `omp plugin upgrade`, and restart omp.
+
 The orchestrator needs Python 3, Git and [Beads](https://github.com/steveyegge/beads) (`bd`). On macOS, install Beads with `brew install beads`.
 
 ## Local development
@@ -34,7 +36,7 @@ bun run build
 bun run test
 ```
 
-Commit the generated plugin bundles, Python helpers and review web assets after rebuilding: marketplace installs do not run build scripts.
+Commit the generated plugin bundles, Python helpers and review web assets after rebuilding: marketplace installs do not run build scripts. To release, raise the plugin's version in both its `package.json` and `.omp-plugin/marketplace.json`; without that, marketplace installs never see the change.
 
 The marketplace can also be added from a local checkout:
 

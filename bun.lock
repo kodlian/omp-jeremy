@@ -18,7 +18,7 @@
     },
     "plugins/git-diff-review": {
       "name": "omp-git-diff-review",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "devDependencies": {
         "@types/bun": "latest",
         "lucide": "^1.55.0",
@@ -28,7 +28,7 @@
     },
     "plugins/orchestrator": {
       "name": "omp-orchestrator",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "devDependencies": {
         "@dagrejs/dagre": "^3.1.3",
         "omp-integrations": "workspace:*",
@@ -107,6 +107,8 @@
     "omp-integrations": ["omp-integrations@workspace:packages/integrations"],
 
     "omp-orchestrator": ["omp-orchestrator@workspace:plugins/orchestrator"],
+
+    "omp-web-design-system": ["omp-web-design-system@workspace:packages/web-design-system"],
 
     "oniguruma-parser": ["oniguruma-parser@0.12.2", "", {}, "sha512-6HVa5oIrgMC6aA6WF6XyyqbhRPJrKR02L20+2+zpDtO5QAzGHAUGw5TKQvwi5vctNnRHkJYmjAhRVQF2EKdTQw=="],
 
