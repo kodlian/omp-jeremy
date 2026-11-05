@@ -18,6 +18,7 @@ body{display:flex;flex-direction:column;-webkit-font-smoothing:antialiased}
 .chip{display:inline-flex;align-items:center;gap:4px;min-width:0;height:18px;padding:0 6px;border-radius:var(--radius-sm);background:var(--surface-2);color:var(--muted);font-size:var(--font-size-xs);font-weight:500;white-space:nowrap}
 button.chip{flex:none;border:0}
 button.chip:hover:not(:disabled){color:var(--fg)}
+.chip.needs{background:color-mix(in srgb,var(--warning) 15%,transparent);color:var(--warning)}
 button.chip:disabled{cursor:default;opacity:.7}
 .chip .x{display:inline-flex;margin-right:-2px;color:var(--faint)}
 .chip .x:hover{color:var(--remove)}
@@ -109,6 +110,7 @@ button.ctx:hover{color:var(--fg)}
 .p-tabs .dot{width:6px;height:6px}
 .p-scroll{flex:1;min-height:0;overflow-y:auto}
 .pane{display:flex;flex-direction:column;gap:18px;padding:16px}
+.loop-view{min-width:0}
 .sec{display:flex;flex-direction:column;gap:8px}
 .sec-h{display:flex;align-items:center;gap:6px;height:24px;color:var(--muted);font-size:var(--font-size-sm);font-weight:600;letter-spacing:.05em;text-transform:uppercase}
 .sec-h .meta{color:var(--faint);font-weight:400;letter-spacing:0;text-transform:none}
@@ -249,6 +251,7 @@ button.ctx:hover{color:var(--fg)}
 <link rel="stylesheet" href="/pipeline.css">
 <link rel="stylesheet" href="/workbench.css">
 <link rel="stylesheet" href="/native.css">
+<link rel="stylesheet" href="/control-view.css">
 <link rel="stylesheet" href="/appearance.css">
 </head>
 <body>
@@ -346,6 +349,18 @@ function planningItems(selected, choose) {
   return Object.entries(PLANNING_MODE).map(([mode, p]) => ({
     icon: p.icon, label: p.label, sub: p.sub, checked: mode === selected, action: () => choose(mode),
   }));
+}
+const flowLoops = flowId => flows().find(f => f.id === flowId)?.controlLoops ?? null;
+const loopStages = loop => loop.stages.map(s => s.nodes.map(n => n.name).join(" + ")).join(" \u2192 ");
+const loopSummary = t => t.loop ? (flowLoops(t.flow) || []).find(l => l.id === t.loop) ?? null : null;
+const loopName = t => loopSummary(t)?.name ?? t.loop;
+function loopItems(list, selected, choose) {
+  return [{ icon: "x", label: "None", sub: "The task session runs no control loop", checked: !selected, action: () => choose(null) },
+    ...(list || []).map(l => ({ icon: "refresh", label: l.name, sub: l.description || loopStages(l), checked: l.id === selected, action: () => choose(l.id) }))];
+}
+function loopBadge(t) {
+  const needs = !!t.control?.gate?.open;
+  return h("span", { class: "chip" + (needs ? " needs" : ""), title: "Control loop" }, I("refresh", 10), loopName(t) + (needs ? " \u00b7 needs you" : ""));
 }
 
 // MARK: utils
@@ -678,6 +693,7 @@ function cardEl(t) {
   const top = h("div", { class: "c-top" }, h("span", { class: "c-id" }, taskNumber(t.id)));
   if (t.ticket) top.append(h("span", { class: "chip mono" }, t.ticket));
   top.append(planningBadge(t));
+  if (t.loop) top.append(loopBadge(t));
   if (t.dependsOn.length) top.append(h("span", { class: "chip", title: "Depends on " + taskNumbers(t.dependsOn) }, I("link", 10), t.dependsOn.map(taskNumber).join(" ")));
   top.append(h("span", { class: "spacer" }));
   if (t.pr) top.append(prChip(t.pr));
@@ -999,13 +1015,24 @@ function openComposer({ parent = null } = {}) {
   };
   planning.onclick = () => openMenu(planning, planningItems(planningMode, mode => { planningMode = mode; renderPlanning(); }));
   renderPlanning();
+  let loopId = null;
+  const loopList = flowLoops(flow?.id);
+  const loopChip = h("button", { class: "prop-chip", type: "button", hidden: loopList === null });
+  const renderLoopChip = () => {
+    const l = (loopList || []).find(x => x.id === loopId);
+    loopChip.replaceChildren(I("refresh", 13), l ? l.name : "No loop", I("chevronDown", 11));
+    loopChip.title = l ? `Control loop: ${l.description || loopStages(l)}` : "The task session runs no control loop";
+    loopChip.setAttribute("aria-label", `Control loop: ${l ? l.name : "none"}`);
+  };
+  loopChip.onclick = () => openMenu(loopChip, loopItems(loopList, loopId, id => { loopId = id; renderLoopChip(); }));
+  renderLoopChip();
   const create = h("button", { class: "btn primary" }, "Create task", h("kbd", {}, "\u2318\u21A9"));
   const submit = async () => {
     const name = title.value.trim();
     if (!name) { title.focus(); title.classList.remove("shake"); void title.offsetWidth; title.classList.add("shake"); return; }
     create.disabled = true;
     try {
-      const t = await act("POST", "/api/tasks", { title: name, description: desc.value, ticket: ticket.value.trim() || null, planningMode,
+      const t = await act("POST", "/api/tasks", { title: name, description: desc.value, ticket: ticket.value.trim() || null, planningMode, loop: loopId,
         ...(parentPick.value ? { parent: parentPick.value } : flow ? { repo: flow.checkout } : {}) });
       if (!findTask(t.id)) board.tasks.push(t);
       closeModal();
@@ -1023,7 +1050,7 @@ function openComposer({ parent = null } = {}) {
     title, desc,
     h("div", { class: "nt-props" },
       h("label", { class: "prop-chip", title: "Ticket ID, used in the branch name and the pull request" }, I("ticket", 13), ticket),
-      planning, parentPick.el,
+      planning, loopChip, parentPick.el,
       h("span", { class: "prop-chip", title: `Branches from ${base} and opens its pull request into ${base}` }, I("branch", 13), h("span", { class: "mono" }, base))),
     h("div", { class: "nt-foot" }, h("span", { class: "spacer" }), h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), create)], "nt");
   box.addEventListener("keydown", e => {
@@ -1091,8 +1118,10 @@ function showPlanReview(t) {
 let P = null;
 let peekTimer = null;
 const canShowAgent = t => !!t.worktree || t.spawn.state !== "none";
+const canShowLoop = t => !!t.loop || !!t.control;
 function currentTab(t) {
   const tab = tabFor[t.id] || (canShowAgent(t) ? "agent" : "task");
+  if (tab === "loop" && !canShowLoop(t)) return canShowAgent(t) ? "agent" : "task";
   return tab === "agent" && !canShowAgent(t) ? "task" : tab;
 }
 function setTab(tab) { tabFor[openId] = tab; updatePanel(); }
@@ -1185,6 +1214,8 @@ function buildPanel() {
   const tabTask = h("button", { onclick: () => setTab("task") }, I("file", 13), "Task", taskDot);
   const agentDot = h("span", { class: "dot" });
   const tabAgent = h("button", { onclick: () => setTab("agent") }, I("terminal", 13), "Agent", agentDot);
+  const loopDot = h("span", { class: "dot", style: "color:var(--warning)" });
+  const tabLoop = h("button", { onclick: () => setTab("loop") }, I("refresh", 13), "Loop", loopDot);
 
   // task pane
   const ticket = boundField(h("input", { class: "prop mono", placeholder: "Add a ticket", spellcheck: "false" }), "ticket", { enter: true });
@@ -1202,6 +1233,18 @@ function buildPanel() {
       } catch {}
     }));
   } });
+  const loopChip = h("button", { class: "chip", onclick: () => {
+    const t = findTask(openId);
+    openMenu(loopChip, loopItems(flowLoops(t.flow), t.loop, async loop => {
+      try {
+        const r = await act("PATCH", tpath(t.id), { loop });
+        if (r && r.id) Object.assign(t, r);
+        renderBoard();
+        updatePanel();
+      } catch {}
+    }));
+  } });
+  const loopLabel = h("label", {}, I("refresh", 13), "Loop");
   const repo = boundField(h("input", { class: "prop mono", spellcheck: "false" }), "repo", { enter: true });
   const deps = h("div", { class: "deps" });
   const depsAdd = toolButton("plus", "Add a dependency", () => openMenu(depsAdd, dependencyMenu(findTask(openId))), 13);
@@ -1210,6 +1253,7 @@ function buildPanel() {
     h("label", {}, I("branch", 13), "Branch"), branch,
     h("label", { title: "The branch this task starts from and lands on" }, I("prMerged", 13), "Merges into"), h("div", { class: "prop-row" }, base, mergeChip),
     h("label", {}, I("zap", 13), "Planning"), planningChip,
+    loopLabel, loopChip,
     h("label", {}, I("repo", 13), "Repository"), repo,
     h("label", {}, I("link", 13), "Depends on"), deps);
   const desc = boundField(h("textarea", { class: "p-desc", rows: "2", placeholder: "Add a description…" }), "description", { autosize: 420, send: true });
@@ -1268,6 +1312,11 @@ function buildPanel() {
   const live = h("div", { class: "sec" }, health, agentHead, agentStep, agentMsg, gitRow, actions, cleanup, term, closed);
   const agentPane = h("div", { class: "pane" }, spawn.el, live, removed);
 
+  // loop pane
+  const loopOpen = h("button", { class: "btn sm", title: "Open the task session's Control page", onclick: () => act("POST", tpath(openId, "/control/open"), {}).catch(() => {}) }, I("openIn", 13), "Open in Control");
+  const loopView = h("div", { class: "loop-view" });
+  const loopPane = h("div", { class: "pane" }, h("div", { class: "actions" }, loopOpen), loopView);
+
   // composer
   const ta = h("textarea", { rows: "1" });
   const hint = h("span", { class: "hint" });
@@ -1278,11 +1327,12 @@ function buildPanel() {
   ta.addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submitComposer(); } });
 
   $("#panel").replaceChildren(head, h("div", { class: "p-title-wrap" }, title),
-    h("div", { class: "p-tabs" }, h("div", { class: "segmented" }, tabTask, tabAgent)),
-    h("div", { class: "p-scroll" }, taskPane, agentPane), composer);
-  P = { id, status, primary, openBtn, title, tabTask, taskDot, tabAgent, agentDot, ticket, branch, base, mergeChip, planningChip, repo, deps, depsAdd, desc, unsent, unsentText, unsentDismiss, unsentSend,
+    h("div", { class: "p-tabs" }, h("div", { class: "segmented" }, tabTask, tabAgent, tabLoop)),
+    h("div", { class: "p-scroll" }, taskPane, agentPane, loopPane), composer);
+  P = { id, status, primary, openBtn, title, tabTask, taskDot, tabAgent, agentDot, tabLoop, loopDot, ticket, branch, base, mergeChip, planningChip, loopChip, loopLabel, repo, deps, depsAdd, desc, unsent, unsentText, unsentDismiss, unsentSend,
         planMeta, editBtn, copyBtn, discussBtn, discussTip, emptyDiscuss, emptyDiscussTip,
         planView, planEmpty, planEmptyText, planEdit, editBar, taskPane, spawn, agentHead, agentStep, agentMsg, gitRow, actions, cleanup, cleanupText, health, term, closed, removed, live, agentPane,
+        loopPane, loopView, loopOpen, loopKey: null,
         composer, ta, hint, send, cmode: null, planSrc: null, editing: false, termPinned: true, sending: false, sendingUpdate: false };
   P.native = nativePanel(props, taskPane);
 }
@@ -1405,6 +1455,12 @@ function updatePanel() {
   P.planningChip.setAttribute("aria-label", `Planning mode: ${planning.label}`);
   P.planningChip.disabled = fixed;
   P.planningChip.title = fixed ? "Fixed once the task starts" : planning.sub;
+  const loops = flowLoops(t.flow);
+  P.loopChip.hidden = P.loopLabel.hidden = !loops && !t.loop;
+  P.loopChip.replaceChildren(I("refresh", 10), t.loop ? loopName(t) : "None", I("chevronDown", 10));
+  P.loopChip.setAttribute("aria-label", `Control loop: ${t.loop ? loopName(t) : "none"}`);
+  P.loopChip.disabled = fixed || !loops;
+  P.loopChip.title = fixed ? "Fixed once the task starts" : "The Control loop the task session runs after implementing";
   setField(P.repo, t.repo);
   const depsKey = JSON.stringify(t.dependsOn);
   if (P.deps.dataset.key !== depsKey) {
@@ -1425,15 +1481,32 @@ function updatePanel() {
   P.tabAgent.disabled = !canShowAgent(t);
   P.tabTask.classList.toggle("active", tab === "task");
   P.tabAgent.classList.toggle("active", tab === "agent");
+  P.tabLoop.hidden = !canShowLoop(t);
+  P.tabLoop.classList.toggle("active", tab === "loop");
+  P.loopDot.hidden = !t.control?.gate?.open;
   const tone = agentTone(t);
   P.agentDot.hidden = !tone;
   if (tone) { P.agentDot.style.color = tone; P.agentDot.classList.toggle("pulse", tone === "var(--accent)" || tone === "var(--warning)"); }
   P.taskPane.hidden = tab !== "task";
   P.agentPane.hidden = tab !== "agent";
+  P.loopPane.hidden = tab !== "loop";
+  updateLoop(t);
   updatePlan(t);
   updateAgent(t);
   updateComposer(t, tab);
   if (tab === "agent") startPeek(); else stopPeek();
+}
+
+function updateLoop(t) {
+  P.loopOpen.disabled = !sessionConnected(t);
+  if (!canShowLoop(t) || !window.ControlView) return;
+  const shape = t.control?.loop ?? loopSummary(t) ?? { id: t.loop, name: t.loop, description: "", maxPasses: 0, plan: false, planStages: [], stages: [] };
+  const key = JSON.stringify([shape, t.control]);
+  if (P.loopKey === key) return;
+  P.loopKey = key;
+  ControlView.renderLoop(P.loopView, shape, t.control, {
+    onDecide: (decisions, pause) => act("POST", tpath(t.id, "/control/decide"), { decisions, pause }).catch(() => {}),
+  });
 }
 
 function updatePlan(t) {
@@ -1663,6 +1736,7 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
 </script>
 <script src="/markdown.js"></script>
 <script src="/graph-layout.js"></script>
+<script src="/control-view.js"></script>
 <script src="/pipeline.js"></script>
 <script src="/workbench.js"></script>
 <script src="/native.js"></script>

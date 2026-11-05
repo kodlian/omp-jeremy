@@ -17,6 +17,12 @@
       "description": "Browser-based diff review with agent feedback and terminal appearance",
       "source": "./plugins/git-diff-review",
       "version": "1.0.0"
+    },
+    {
+      "name": "control",
+      "description": "Control loops: checks and focused reviewer agents verify each change before the agent finishes",
+      "source": "./plugins/control",
+      "version": "0.1.0"
     }
   ]
 }

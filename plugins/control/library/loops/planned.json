@@ -1,0 +1,14 @@
+{
+  "name": "Plan first",
+  "description": "Each request plans first; you approve the plan, quality and project-rules reviewers check the change, then you review it",
+  "maxPasses": 4,
+  "plan": true,
+  "stages": [
+    {
+      "nodes": [
+        "quality-reviewer",
+        "rules-reviewer"
+      ]
+    }
+  ]
+}

@@ -8,6 +8,10 @@
         "@types/bun": "latest",
       },
     },
+    "packages/control-view": {
+      "name": "omp-control-view",
+      "version": "0.1.0",
+    },
     "packages/integrations": {
       "name": "omp-integrations",
       "version": "0.1.0",
@@ -15,6 +19,15 @@
     "packages/web-design-system": {
       "name": "omp-web-design-system",
       "version": "0.1.0",
+    },
+    "plugins/control": {
+      "name": "omp-control",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/bun": "latest",
+        "omp-control-view": "workspace:*",
+        "omp-integrations": "workspace:*",
+      },
     },
     "plugins/git-diff-review": {
       "name": "omp-git-diff-review",
@@ -31,6 +44,7 @@
       "version": "0.2.0",
       "devDependencies": {
         "@dagrejs/dagre": "^3.1.3",
+        "omp-control-view": "workspace:*",
         "omp-integrations": "workspace:*",
       },
     },
@@ -102,11 +116,17 @@
 
     "micromark-util-types": ["micromark-util-types@2.0.3", "", {}, "sha512-oxB2Ik03hI0gv+VNn9tnh1t1YEe9MDPptViAEgfdf3YQHsn0pzGTgCdlSCJXcwhqm8phaEuM7zeEu3QQzVBrPg=="],
 
+    "omp-control": ["omp-control@workspace:plugins/control"],
+
+    "omp-control-view": ["omp-control-view@workspace:packages/control-view"],
+
     "omp-git-diff-review": ["omp-git-diff-review@workspace:plugins/git-diff-review"],
 
     "omp-integrations": ["omp-integrations@workspace:packages/integrations"],
 
     "omp-orchestrator": ["omp-orchestrator@workspace:plugins/orchestrator"],
+
+    "omp-web-design-system": ["omp-web-design-system@workspace:packages/web-design-system"],
 
     "oniguruma-parser": ["oniguruma-parser@0.12.2", "", {}, "sha512-6HVa5oIrgMC6aA6WF6XyyqbhRPJrKR02L20+2+zpDtO5QAzGHAUGw5TKQvwi5vctNnRHkJYmjAhRVQF2EKdTQw=="],
 

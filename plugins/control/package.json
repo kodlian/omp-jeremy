@@ -1,0 +1,19 @@
+{
+  "name": "omp-control",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Control loops for omp: checks and focused reviewer agents verify each change, with a visual loop editor",
+  "omp": {
+    "extensions": ["./dist/extension.js"]
+  },
+  "scripts": {
+    "build": "bun build web/main.js --outdir web/dist --format esm --minify",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "omp-integrations": "workspace:*",
+    "omp-control-view": "workspace:*",
+    "@types/bun": "latest"
+  }
+}

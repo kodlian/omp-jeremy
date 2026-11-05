@@ -3,10 +3,14 @@ import { dirname, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
 const designSystem = resolve(root, "packages/web-design-system/design-system.css");
-for (const target of ["plugins/orchestrator/design-system.css", "plugins/git-diff-review/web/design-system.css"]) {
+for (const target of ["plugins/orchestrator/design-system.css", "plugins/git-diff-review/web/design-system.css", "plugins/control/web/design-system.css"]) {
   await copyFile(designSystem, resolve(root, target));
 }
-for (const [name, entry] of [["orchestrator", "omp/orchestrator.ts"], ["git-diff-review", "src/extension.ts"]]) {
+const controlView = resolve(root, "packages/control-view");
+for (const target of ["plugins/orchestrator/control-view.css", "plugins/control/web/control-view.css"]) {
+  await copyFile(resolve(controlView, "control-view.css"), resolve(root, target));
+}
+for (const [name, entry] of [["orchestrator", "omp/orchestrator.ts"], ["git-diff-review", "src/extension.ts"], ["control", "src/extension.ts"]]) {
   const dir = resolve(root, "plugins", name);
   const result = await Bun.build({
     entrypoints: [resolve(dir, entry)],
@@ -27,6 +31,15 @@ const graph = await Bun.build({
   minify: true,
 });
 if (!graph.success) throw new AggregateError(graph.logs, "Could not build task graph layout");
+const view = await Bun.build({
+  entrypoints: [resolve(controlView, "src/global.ts")],
+  outdir: resolve(root, "plugins/orchestrator"),
+  naming: "control-view.js",
+  target: "browser",
+  format: "iife",
+  minify: true,
+});
+if (!view.success) throw new AggregateError(view.logs, "Could not build the control loop view");
 const dagre = Bun.resolveSync("@dagrejs/dagre", resolve(root, "plugins/orchestrator"));
 const graphlib = Bun.resolveSync("@dagrejs/graphlib", dirname(dagre));
 const licenses = resolve(root, "plugins/orchestrator/licenses");
@@ -37,3 +50,6 @@ for (const [name, entry] of [["dagre", dagre], ["graphlib", graphlib]]) {
 await rm(resolve(root, "plugins/git-diff-review/web/dist"), { recursive: true, force: true });
 const web = Bun.spawn([process.execPath, "run", "build"], { cwd: resolve(root, "plugins/git-diff-review"), stdout: "inherit", stderr: "inherit" });
 if (await web.exited !== 0) throw new Error("Could not build review web assets");
+await rm(resolve(root, "plugins/control/web/dist"), { recursive: true, force: true });
+const controlWeb = Bun.spawn([process.execPath, "run", "build"], { cwd: resolve(root, "plugins/control"), stdout: "inherit", stderr: "inherit" });
+if (await controlWeb.exited !== 0) throw new Error("Could not build Control web assets");

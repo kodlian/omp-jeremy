@@ -1,0 +1,13 @@
+{
+  "name": "omp-control-view",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Control loop protocol and run view shared by the Control and Orchestrator pages",
+  "exports": {
+    "./protocol": "./src/protocol.ts",
+    "./render": "./src/render.ts",
+    "./control-view.css": "./control-view.css"
+  },
+  "files": ["src", "control-view.css"]
+}
