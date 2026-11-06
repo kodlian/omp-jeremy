@@ -26,6 +26,25 @@ export async function baselineSha(root: string, baseline: Baseline, note?: (text
 	return (await must(["rev-parse", "HEAD"], root)).trim();
 }
 
+/** The branch work merges into: origin's default branch, else a local main or master; null in a repository with neither. */
+export async function defaultBranch(root: string): Promise<string | null> {
+	const remote = await git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], root);
+	if (remote.code === 0 && remote.stdout.trim()) return remote.stdout.trim();
+	for (const name of ["main", "master"]) if ((await git(["rev-parse", "--verify", "--quiet", `${name}^{commit}`], root)).code === 0) return name;
+	return null;
+}
+
+/** Whether ref names a commit in this repository. */
+export async function isCommit(root: string, ref: string): Promise<boolean> {
+	return !ref.startsWith("-") && (await git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], root)).code === 0;
+}
+
+/** How many commits HEAD has on top of sha. */
+export async function commitsSince(root: string, sha: string): Promise<number> {
+	const r = await git(["rev-list", "--count", `${sha}..HEAD`], root);
+	return r.code === 0 ? Number(r.stdout.trim()) || 0 : 0;
+}
+
 async function untracked(root: string): Promise<string[]> {
 	return (await must(["ls-files", "--others", "--exclude-standard", "-z"], root)).split("\0").filter(Boolean);
 }

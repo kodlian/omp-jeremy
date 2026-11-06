@@ -32,6 +32,8 @@ const hooks: ControlHooks = {
 		return { ok: true, message: "Recorded" };
 	},
 	send: (text) => sent.push(text),
+	check: () => {},
+	since: async () => "",
 	setPaused: () => {},
 };
 

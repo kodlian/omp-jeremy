@@ -1174,6 +1174,11 @@ class Controller {
     this.#running = run;
     return run;
   }
+  recheck() {
+    this.#state.settled = null;
+    this.#state.blocks = 0;
+    this.#persist();
+  }
   decide(decisions, pause) {
     const gate = this.#gate;
     if (!gate)
@@ -1680,6 +1685,22 @@ async function baselineSha(root, baseline, note) {
   note?.(`Couldn't find ${baseline.ref}; checking changes since HEAD`);
   return (await must(["rev-parse", "HEAD"], root)).trim();
 }
+async function defaultBranch(root) {
+  const remote = await git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], root);
+  if (remote.code === 0 && remote.stdout.trim())
+    return remote.stdout.trim();
+  for (const name of ["main", "master"])
+    if ((await git(["rev-parse", "--verify", "--quiet", `${name}^{commit}`], root)).code === 0)
+      return name;
+  return null;
+}
+async function isCommit(root, ref) {
+  return !ref.startsWith("-") && (await git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], root)).code === 0;
+}
+async function commitsSince(root, sha) {
+  const r = await git(["rev-list", "--count", `${sha}..HEAD`], root);
+  return r.code === 0 ? Number(r.stdout.trim()) || 0 : 0;
+}
 async function untracked(root) {
   return (await must(["ls-files", "--others", "--exclude-standard", "-z"], root)).split("\x00").filter(Boolean);
 }
@@ -2096,8 +2117,13 @@ data: ${JSON.stringify(await hooks.state())}
         return json({ ok: true });
       }
       case "POST /api/check":
-        hooks.send(CHECK_REQUEST);
+        hooks.check();
         return json({ ok: true });
+      case "POST /api/since": {
+        if (typeof body.ref !== "string" || !body.ref.trim())
+          throw new HttpError(400, "ref is required");
+        return json({ ok: true, since: await hooks.since(body.ref) });
+      }
       case "POST /api/pause":
         if (typeof body.paused !== "boolean")
           throw new HttpError(400, "paused must be true or false");
@@ -2177,7 +2203,7 @@ var SERVER_ENTRY = "control.server";
 var WIDGET = "control";
 var CONTEXT_TYPE = "control.context";
 var TOOL = "control_check";
-var USAGE = "Control: /control [open] | use <loop> | off | pause | resume | status | check | draft <what it should check>";
+var USAGE = "Control: /control [open] | use <loop> | off | pause | resume | status | check | since <branch or commit> | draft <what it should check>";
 var COMMANDS = [
   { label: "open", value: "open", description: "Open the Control page" },
   { label: "use", value: "use", description: "Attach a library loop to this session" },
@@ -2185,7 +2211,8 @@ var COMMANDS = [
   { label: "pause", value: "pause", description: "Pause the loop" },
   { label: "resume", value: "resume", description: "Resume the loop" },
   { label: "status", value: "status", description: "Show the loop's status" },
-  { label: "check", value: "check", description: "Ask the agent to run the loop now" },
+  { label: "check", value: "check", description: "Run the loop on the current code now, even if it already passed" },
+  { label: "since", value: "since", description: "Check the changes since a branch or commit" },
   { label: "draft", value: "draft", description: "Create a check or reviewer with the agent" }
 ];
 var FIX = "Fix it";
@@ -2464,14 +2491,26 @@ ${findingQuestion(f)}`;
     pi.appendEntry(LOOP_ENTRY, { loop: null, source: null, baseline: null });
     await activate(false);
   };
-  const headBaseline = async (at) => {
-    const ref = process.env.OMP_CONTROL_BASE;
+  const startBaseline = async (at) => {
+    const ref = process.env.OMP_CONTROL_BASE ?? await defaultBranch(at);
     if (ref)
       return { kind: "merge-base", ref };
     const head = await git(["rev-parse", "HEAD"], at);
     if (head.code !== 0)
       throw new Error("Control loops need a commit to compare against");
     return { kind: "commit", sha: head.stdout.trim() };
+  };
+  const checkNow = () => {
+    if (!attached)
+      throw new Error("No control loop is attached to this session.");
+    controller.recheck();
+    send(CHECK_REQUEST);
+  };
+  const startIfChanged = async () => {
+    if (!attached || controller.paused || attached.loop.plan)
+      return;
+    if (await deps.fingerprint().catch(() => "clean") !== "clean")
+      checkNow();
   };
   const attach = async (cwd, id) => {
     const at = await repoRoot(cwd);
@@ -2480,8 +2519,28 @@ ${findingQuestion(f)}`;
     root = at;
     const lib = await refreshLibrary();
     const loop = resolveLoop(lib, id);
-    await setLoop({ loop, source: `${lib.loops.get(id)?.source ?? "repo"}:${id}`, baseline: await headBaseline(at) });
+    await setLoop({ loop, source: `${lib.loops.get(id)?.source ?? "repo"}:${id}`, baseline: await startBaseline(at) });
+    await startIfChanged();
     return loop;
+  };
+  const since = async (ref) => {
+    if (!attached || !root)
+      throw new Error("No control loop is attached to this session.");
+    const name = ref.trim();
+    if (!name || !await isCommit(root, name))
+      throw new Error(`${name || "That"} isn't a branch or commit in this repository`);
+    await setLoop({ ...attached, baseline: { kind: "merge-base", ref: name } });
+    await startIfChanged();
+    return sinceLabel();
+  };
+  const sinceLabel = async () => {
+    if (!attached || !root)
+      return "";
+    const at = await currentSha();
+    const from = attached.baseline.kind === "merge-base" ? attached.baseline.ref : at.sha.slice(0, 7);
+    const [commits, dirty] = await Promise.all([commitsSince(at.root, at.sha), git(["status", "--porcelain"], at.root).then((r) => r.stdout.trim() !== "")]);
+    const parts = [commits ? `${commits} commit${commits === 1 ? "" : "s"}` : null, dirty ? "uncommitted changes" : null].filter(Boolean);
+    return `since ${from} \xB7 ${parts.length ? parts.join(" and ") : "no changes yet"}`;
   };
   const syncAppearance = async (force = false) => {
     if (!themeApi)
@@ -2498,7 +2557,10 @@ ${findingQuestion(f)}`;
     const lib = library ?? await refreshLibrary();
     return {
       session: { name: pi.getSessionName() || "omp", cwd: sessionCtx?.cwd ?? process.cwd(), repo: root, idle: sessionCtx?.isIdle() ?? true },
-      attached: controller.snapshot(),
+      attached: await (async () => {
+        const snap = controller.snapshot();
+        return snap ? { ...snap, since: await sinceLabel().catch(() => "") } : null;
+      })(),
       run: controller.view(),
       library: {
         loops: [...lib.loops.values()].map((e) => ({ ...e.loop, source: e.source, path: e.path, overrides: e.overrides })),
@@ -2522,7 +2584,7 @@ ${findingQuestion(f)}`;
           if (!at)
             throw new Error("Control loops need a git repository");
           root = at;
-          await setLoop({ loop, source: "session", baseline: attached?.baseline ?? await headBaseline(at) });
+          await setLoop({ loop, source: "session", baseline: attached?.baseline ?? await startBaseline(at) });
         },
         saveLoop: async (scope, loop, nodes) => {
           const paths = [];
@@ -2553,6 +2615,8 @@ ${findingQuestion(f)}`;
         },
         decide: (decisions, pause) => controller.decide(decisions, pause),
         send,
+        check: checkNow,
+        since,
         setPaused: (paused) => controller.setPaused(paused)
       }, { ports: port ? [port, ...DEFAULT_PORTS] : DEFAULT_PORTS });
       if (themeApi)
@@ -2934,10 +2998,15 @@ ${await Bun.file(entry.path).text()}`);
             ctx.ui.notify(statusText(controller.view()), "info");
             break;
           case "check":
-            if (!attached)
-              throw new Error("No control loop is attached to this session.");
-            send(CHECK_REQUEST);
+            checkNow();
             break;
+          case "since": {
+            const ref = rest.join(" ").trim();
+            if (!ref)
+              throw new Error("Say where to measure from: /control since <branch or commit>");
+            ctx.ui.notify(`Control: checking ${await since(ref)}`, "info");
+            break;
+          }
           case "draft": {
             const intent = rest.join(" ").trim();
             if (!intent)

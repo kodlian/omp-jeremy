@@ -1,5 +1,5 @@
 import { renderDecisions, renderLoop, runHeadline } from "omp-control-view/render";
-import { h, levelLabel, openMenu } from "./dom.js";
+import { h, levelLabel, modal, openMenu } from "./dom.js";
 import { describeFlow, libraryShape } from "./flows.js";
 
 let chosen = null;
@@ -164,6 +164,28 @@ function section(n, title, cls, ...body) {
   return h("section", { class: `run-section ${cls}` }, h("h2", {}, h("span", { class: "section-n" }, String(n)), title), ...body);
 }
 
+/** Asks for a branch or commit; the loop then checks everything since it. */
+function sinceDialog(page) {
+  const ref = h("input", { class: "field mono", placeholder: "main, origin/main, HEAD~3 or a commit", spellcheck: "false" });
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!ref.value.trim()) return ref.focus();
+    const r = await page.act("POST", "/api/since", { ref: ref.value.trim() });
+    if (r) close();
+  };
+  const close = modal(
+    h(
+      "form",
+      { class: "form", onsubmit: submit },
+      h("h3", {}, "Check changes since…"),
+      h("p", { class: "muted small" }, "A branch checks everything since this branch left it; a commit checks everything after it, uncommitted changes included. The loop starts right away."),
+      ref,
+      h("div", { class: "dialog-actions" }, h("button", { class: "btn", type: "button", onclick: () => close() }, "Cancel"), h("button", { class: "btn primary", type: "submit" }, "Check")),
+    ),
+  );
+  ref.focus();
+}
+
 function running(page) {
   const { attached, run, session } = page.payload;
   const paused = run.status === "paused";
@@ -172,6 +194,7 @@ function running(page) {
   name.onclick = () =>
     openMenu(name, [
       { label: "Switch flow…", action: () => page.go("#/pick") },
+      { label: "Check changes since…", sub: attached.since ? `Now: ${attached.since}` : "Pick a branch or commit to measure from", action: () => sinceDialog(page) },
       { label: "Edit this flow", sub: "Changes apply to this session; save them to keep them", action: () => page.go("#/edit/session") },
       { label: "Library", action: () => page.go("#/library") },
       "-",
@@ -203,7 +226,7 @@ function running(page) {
       h("span", { class: "spacer" }),
       h(
         "button",
-        { class: "btn sm", type: "button", disabled: !session.idle, title: session.idle ? "Ask the agent to run the checks now" : "The agent is working; it checks before it finishes", onclick: () => page.act("POST", "/api/check", {}, "Asked the agent to check") },
+        { class: "btn sm", type: "button", title: session.idle ? "Run the checks on the code as it is now, even if it already passed" : "The agent is working; the checks run on the code as it is when it's done", onclick: () => page.act("POST", "/api/check", {}, "The loop runs on the current code") },
         "Check now",
       ),
       h("button", { class: "btn sm", type: "button", onclick: () => page.act("POST", "/api/pause", { paused: !paused }, paused ? "Resumed" : "Paused") }, paused ? "Resume" : "Pause"),
@@ -212,6 +235,7 @@ function running(page) {
       "div",
       { class: `run-headline${waiting ? " is-waiting" : ""}` },
       h("div", { class: "run-status" }, runHeadline(run)),
+      attached.since ? h("div", { class: "run-request muted" }, `Checking the changes ${attached.since}`) : null,
       requests.length > 1
         ? h("ul", { class: "review-requests" }, requests.map((r) => h("li", {}, r.length > 200 ? `${r.slice(0, 199)}…` : r)))
         : requests.length

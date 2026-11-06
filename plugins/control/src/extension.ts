@@ -11,7 +11,7 @@ import { toAppearance } from "omp-integrations/appearance";
 import { openBoard } from "omp-integrations/terminal";
 import { currentTheme, hasThemeApi, terminalConfig } from "omp-integrations/theme";
 import { type Checkpoint, Controller, type ControllerDeps } from "./controller";
-import { type Baseline, baselineSha, changedFiles, fileDiff, fingerprint, git, repoRoot, reviewPacket } from "./git";
+import { type Baseline, baselineSha, changedFiles, commitsSince, defaultBranch, fileDiff, fingerprint, git, isCommit, repoRoot, reviewPacket } from "./git";
 import { copyItem, deleteItem, type Library, type LoopSnapshot, loadLibrary, loopFrom, nodeFrom, resolveLoop, saveLoop, saveNode, summarize } from "./library";
 import { CHECK_REQUEST, contextMessage, draftPrompt, reviewerSystemPrompt, stagesText } from "./prompts";
 import { runCheck, runReviewer } from "./sensors";
@@ -23,7 +23,7 @@ const SERVER_ENTRY = "control.server";
 const WIDGET = "control";
 const CONTEXT_TYPE = "control.context";
 const TOOL = "control_check";
-const USAGE = "Control: /control [open] | use <loop> | off | pause | resume | status | check | draft <what it should check>";
+const USAGE = "Control: /control [open] | use <loop> | off | pause | resume | status | check | since <branch or commit> | draft <what it should check>";
 const COMMANDS: AutocompleteItem[] = [
 	{ label: "open", value: "open", description: "Open the Control page" },
 	{ label: "use", value: "use", description: "Attach a library loop to this session" },
@@ -31,7 +31,8 @@ const COMMANDS: AutocompleteItem[] = [
 	{ label: "pause", value: "pause", description: "Pause the loop" },
 	{ label: "resume", value: "resume", description: "Resume the loop" },
 	{ label: "status", value: "status", description: "Show the loop's status" },
-	{ label: "check", value: "check", description: "Ask the agent to run the loop now" },
+	{ label: "check", value: "check", description: "Run the loop on the current code now, even if it already passed" },
+	{ label: "since", value: "since", description: "Check the changes since a branch or commit" },
 	{ label: "draft", value: "draft", description: "Create a check or reviewer with the agent" },
 ];
 const FIX = "Fix it";
@@ -310,12 +311,26 @@ export default function control(pi: ExtensionAPI) {
 		await activate(false);
 	};
 
-	const headBaseline = async (at: string): Promise<Baseline> => {
-		const ref = process.env.OMP_CONTROL_BASE;
+	/** Where a newly attached loop measures from: the Orchestrator's base, else where the branch left its default branch, else HEAD. */
+	const startBaseline = async (at: string): Promise<Baseline> => {
+		const ref = process.env.OMP_CONTROL_BASE ?? (await defaultBranch(at));
 		if (ref) return { kind: "merge-base", ref };
 		const head = await git(["rev-parse", "HEAD"], at);
 		if (head.code !== 0) throw new Error("Control loops need a commit to compare against");
 		return { kind: "commit", sha: head.stdout.trim() };
+	};
+
+	/** Runs the loop on the code as it is now, even when it already passed; the agent fixes what it finds. */
+	const checkNow = () => {
+		if (!attached) throw new Error("No control loop is attached to this session.");
+		controller.recheck();
+		send(CHECK_REQUEST);
+	};
+
+	/** Starts the loop right away when there is already code to check, so attaching to finished work reviews it. */
+	const startIfChanged = async () => {
+		if (!attached || controller.paused || attached.loop.plan) return;
+		if ((await deps.fingerprint().catch(() => "clean")) !== "clean") checkNow();
 	};
 
 	const attach = async (cwd: string, id: string): Promise<LoopSnapshot> => {
@@ -324,8 +339,29 @@ export default function control(pi: ExtensionAPI) {
 		root = at;
 		const lib = await refreshLibrary();
 		const loop = resolveLoop(lib, id);
-		await setLoop({ loop, source: `${lib.loops.get(id)?.source ?? "repo"}:${id}`, baseline: await headBaseline(at) });
+		await setLoop({ loop, source: `${lib.loops.get(id)?.source ?? "repo"}:${id}`, baseline: await startBaseline(at) });
+		await startIfChanged();
 		return loop;
+	};
+
+	/** Measures the attached loop from `ref` (a branch: where HEAD left it; a commit: that commit) and checks the code since. */
+	const since = async (ref: string): Promise<string> => {
+		if (!attached || !root) throw new Error("No control loop is attached to this session.");
+		const name = ref.trim();
+		if (!name || !(await isCommit(root, name))) throw new Error(`${name || "That"} isn't a branch or commit in this repository`);
+		await setLoop({ ...attached, baseline: { kind: "merge-base", ref: name } });
+		await startIfChanged();
+		return sinceLabel();
+	};
+
+	/** What the loop checks, in words: "since main · 3 commits and uncommitted changes". */
+	const sinceLabel = async (): Promise<string> => {
+		if (!attached || !root) return "";
+		const at = await currentSha();
+		const from = attached.baseline.kind === "merge-base" ? attached.baseline.ref : at.sha.slice(0, 7);
+		const [commits, dirty] = await Promise.all([commitsSince(at.root, at.sha), git(["status", "--porcelain"], at.root).then((r) => r.stdout.trim() !== "")]);
+		const parts = [commits ? `${commits} commit${commits === 1 ? "" : "s"}` : null, dirty ? "uncommitted changes" : null].filter(Boolean);
+		return `since ${from} · ${parts.length ? parts.join(" and ") : "no changes yet"}`;
 	};
 
 	// --- page
@@ -343,7 +379,10 @@ export default function control(pi: ExtensionAPI) {
 		const lib = library ?? (await refreshLibrary());
 		return {
 			session: { name: pi.getSessionName() || "omp", cwd: sessionCtx?.cwd ?? process.cwd(), repo: root, idle: sessionCtx?.isIdle() ?? true },
-			attached: controller.snapshot(),
+			attached: await (async () => {
+				const snap = controller.snapshot();
+				return snap ? { ...snap, since: await sinceLabel().catch(() => "") } : null;
+			})(),
 			run: controller.view(),
 			library: {
 				loops: [...lib.loops.values()].map((e) => ({ ...e.loop, source: e.source, path: e.path, overrides: e.overrides })),
@@ -366,7 +405,7 @@ export default function control(pi: ExtensionAPI) {
 						const at = root ?? (await repoRoot(sessionCtx?.cwd ?? process.cwd()));
 						if (!at) throw new Error("Control loops need a git repository");
 						root = at;
-						await setLoop({ loop, source: "session", baseline: attached?.baseline ?? (await headBaseline(at)) });
+						await setLoop({ loop, source: "session", baseline: attached?.baseline ?? (await startBaseline(at)) });
 					},
 					saveLoop: async (scope, loop, nodes) => {
 						const paths: string[] = [];
@@ -396,6 +435,8 @@ export default function control(pi: ExtensionAPI) {
 					},
 					decide: (decisions, pause) => controller.decide(decisions, pause),
 					send,
+					check: checkNow,
+					since,
 					setPaused: (paused) => controller.setPaused(paused),
 				},
 				{ ports: port ? [port, ...DEFAULT_PORTS] : DEFAULT_PORTS },
@@ -762,9 +803,14 @@ export default function control(pi: ExtensionAPI) {
 						ctx.ui.notify(statusText(controller.view()), "info");
 						break;
 					case "check":
-						if (!attached) throw new Error("No control loop is attached to this session.");
-						send(CHECK_REQUEST);
+						checkNow();
 						break;
+					case "since": {
+						const ref = rest.join(" ").trim();
+						if (!ref) throw new Error("Say where to measure from: /control since <branch or commit>");
+						ctx.ui.notify(`Control: checking ${await since(ref)}`, "info");
+						break;
+					}
 					case "draft": {
 						const intent = rest.join(" ").trim();
 						if (!intent) throw new Error("Say what it should check: /control draft <what it should check>");

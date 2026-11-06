@@ -7,7 +7,7 @@ import { type Appearance, appearanceCss } from "omp-integrations/appearance";
 import type { ControlReply, Decision, RunView, Scope, Source } from "omp-control-view/protocol";
 import type { ChangedFile } from "./git";
 import { type LoopDefinition, type LoopSnapshot, loopFrom, type NodeDefinition, nodeFrom, validateSnapshot } from "./library";
-import { CHECK_REQUEST, draftPrompt } from "./prompts";
+import { draftPrompt } from "./prompts";
 
 const WEB_DIR = resolve(dirname(realpathSync(import.meta.path)), "..", "web");
 export const DEFAULT_PORTS = Array.from({ length: 10 }, (_, i) => 9880 + i);
@@ -21,7 +21,8 @@ const CONTENT_TYPES: Record<string, string> = {
 
 export interface StatePayload {
 	session: { name: string; cwd: string; repo: string | null; idle: boolean };
-	attached: { loop: LoopSnapshot; source: string } | null;
+	/** since: what the loop checks, in words ("since main · 3 commits and uncommitted changes"). */
+	attached: { loop: LoopSnapshot; source: string; since: string } | null;
 	run: RunView | null;
 	library: {
 		loops: (LoopDefinition & { source: Source; path: string; overrides: Source[] })[];
@@ -43,6 +44,10 @@ export interface ControlHooks {
 	diff(path: string): Promise<string>;
 	decide(decisions: Record<string, Decision>, pause: boolean): ControlReply;
 	send(text: string): void;
+	/** Runs the loop on the current code now, even when it already passed. */
+	check(): void;
+	/** Measures the loop from a branch or commit and checks the code since; returns the new "since" text. */
+	since(ref: string): Promise<string>;
 	setPaused(paused: boolean): void;
 }
 
@@ -225,8 +230,12 @@ export function startControlServer(hooks: ControlHooks, { ports = DEFAULT_PORTS,
 				return json({ ok: true });
 			}
 			case "POST /api/check":
-				hooks.send(CHECK_REQUEST);
+				hooks.check();
 				return json({ ok: true });
+			case "POST /api/since": {
+				if (typeof body.ref !== "string" || !body.ref.trim()) throw new HttpError(400, "ref is required");
+				return json({ ok: true, since: await hooks.since(body.ref) });
+			}
 			case "POST /api/pause":
 				if (typeof body.paused !== "boolean") throw new HttpError(400, "paused must be true or false");
 				hooks.setPaused(body.paused);

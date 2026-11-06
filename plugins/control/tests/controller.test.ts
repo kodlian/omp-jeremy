@@ -257,6 +257,17 @@ test("an auto flow passes without a review, and so does a review flow without a 
 	expect(headless.state.asks).toHaveLength(0);
 });
 
+test("a change that already passed is checked again on request, on its current code", async () => {
+	const { controller, state, check } = harness(single(node("q")));
+	expect(await check()).toStartWith("Control loop «Test» passed on pass 1");
+	expect(await check()).toBe("Already checked: nothing changed since the last passing check.");
+	expect(state.ran).toEqual(["q"]);
+	controller.recheck();
+	state.outcomes.q = { kind: "findings", findings: [finding("crashes on nil", true)] };
+	expect(await check()).toStartWith("Control loop «Test» — pass 2 of 4: fix this finding");
+	expect(state.ran).toEqual(["q", "q"]);
+});
+
 test("sending the change back gives the agent your note", async () => {
 	const { controller, check, gateOpened } = harness(reviewed([node("q")]));
 	const pending = check();

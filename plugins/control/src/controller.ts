@@ -303,6 +303,13 @@ export class Controller {
 		return run;
 	}
 
+	/** Makes the next check run a full pass, even when this exact change already passed. */
+	recheck(): void {
+		this.#state.settled = null;
+		this.#state.blocks = 0;
+		this.#persist();
+	}
+
 	decide(decisions: Record<string, Decision>, pause: boolean): ControlReply {
 		const gate = this.#gate;
 		if (!gate) return { ok: false, message: "No control decision is pending" };

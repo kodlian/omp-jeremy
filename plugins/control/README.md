@@ -9,7 +9,7 @@ omp plugin marketplace add kodlian/omp-jeremy
 omp plugin install control@omp-jeremy
 ```
 
-Restart omp. Loops need a git repository: they check the change since the commit where the loop was attached (a task session started by the Orchestrator checks the change since its base branch).
+Restart omp. Loops need a git repository. They check everything since the branch left its default branch (`origin`'s default, else `main` or `master`), committed or not, so attaching a flow to finished work reviews it right away; on the default branch itself they check what isn't pushed yet. A task session started by the Orchestrator checks the change since its base branch. `/control since <branch or commit>` (or **Check changes since…** on the page) measures from somewhere else.
 
 ## Use
 
@@ -20,7 +20,8 @@ Restart omp. Loops need a git repository: they check the change since the commit
 | `/control off` | Detaches the loop |
 | `/control pause` / `resume` | Lets the agent finish without checks, then turns them back on |
 | `/control status` | Shows the loop, the pass and the latest findings |
-| `/control check` | Asks the agent to run the loop now |
+| `/control check` | Runs the loop on the code as it is now, even if it already passed |
+| `/control since <branch or commit>` | Checks everything since a branch (where this branch left it) or a commit, and starts the loop |
 | `/control draft <what it should check>` | Asks the agent to research the project and save a new check or reviewer |
 
 Once a flow is attached, the agent calls `control_check` before its final answer. If it tries to stop with unchecked changes, the flow sends it back; after three such stops it lets the agent stop and warns you. A pass runs the stages in order (a stage's checks run together) and stops at the first stage with findings the agent must fix, so AI checks never read code that doesn't build.
