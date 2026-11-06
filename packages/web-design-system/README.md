@@ -4,7 +4,7 @@ Shared look for the plugin web pages: one stylesheet, `design-system.css`, with 
 
 ## Delivery
 
-`bun run build` from the repository root copies the stylesheet to `plugins/orchestrator/design-system.css` and `plugins/git-diff-review/web/design-system.css`. The copies are committed, so each plugin serves `/design-system.css` from its own directory and installs without building. Pages link it first, then their own CSS, then the runtime `/appearance.css`, so plugin styles and the terminal theme override it. Edit only this file; never the copies.
+`bun run build` from the repository root copies the stylesheet to `plugins/orchestrator/design-system.css`, `plugins/git-diff-review/web/design-system.css` and `plugins/control/web/design-system.css`. The copies are committed, so each plugin serves `/design-system.css` from its own directory and installs without building. Pages link it first, then their own CSS, then the runtime `/appearance.css`, so plugin styles and the terminal theme override it. Edit only this file; never the copies.
 
 ## Tokens
 

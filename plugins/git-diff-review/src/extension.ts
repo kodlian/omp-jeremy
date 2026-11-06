@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import * as omp from "@oh-my-pi/pi-coding-agent";
 import { openBoard } from "omp-integrations/terminal";
 import { currentTheme, hasThemeApi, terminalConfig } from "omp-integrations/theme";
-import { toAppearance } from "./appearance";
+import { toAppearance } from "omp-integrations/appearance";
 import { type Compare, isRepo, repoRoot } from "./git";
 import { DEFAULT_PORTS, type ReviewServer, startReviewServer } from "./server";
 

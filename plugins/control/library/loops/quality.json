@@ -1,0 +1,6 @@
+{
+  "name": "Quality",
+  "description": "One quality reviewer checks every change, then you review it",
+  "maxPasses": 3,
+  "stages": [{ "nodes": ["quality-reviewer"] }]
+}

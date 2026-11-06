@@ -156,6 +156,12 @@ Pauses, resumes, messages, plan answers and stops reach the agent through its om
 
 The composer and task panel select the mode. It is fixed once the task starts. Each task gets its own omp configuration, so tasks with different modes can start concurrently without sharing startup state.
 
+## Control loops
+
+With the [Control](../control/README.md) plugin installed in the flow's omp, the composer and the task panel get a **Loop** picker listing that omp's Control loops; a card's loop is fixed once it starts. The task session starts with that loop attached (`OMP_CONTROL_LOOP`, checking the change since the card's base branch), so its checks and reviewers measure the work before the agent finishes. The card shows the loop as a chip (**needs you** while findings wait for a decision), and the panel's **Loop** tab shows the live loop graph with **Fix** and **Dismiss** for each doubtful finding and **Open in Control** for the session's full Control page. Without Control, the pickers stay hidden.
+
+A loop that finishes on its own (`finish: auto`, like the **Autopilot** preset) skips your review: when its checks pass and the agent stops, a task that merges locally commits and merges into its base, removes its worktree and ends its session, as `orchestrator_done` does. If the merge fails, the session shows why and the card stays in place. Pull-request tasks are left for you to push.
+
 
 ## Flows
 
@@ -241,9 +247,9 @@ orchestrator stop | restart | status | logs | serve             # serve: run in 
 
 The rename from Kanboard keeps existing data and running sessions working, so these names stay as they were: the `~/.kanboard` home and every `KANBOARD_*` variable (settings, hook and agent-script environment), the `KB-<n>` IDs, the Beads `kanboard` metadata key, `kanboardReserved` marker and `kanboard` actor, memory keys prefixed `kanboard.`, the browser's `kanboard.*` local storage, the `kanboard.cleanup` omp session entry, and the per-checkout mode file.
 
-Beads is authoritative for task titles, descriptions, plans (`design`), shared context (`notes`), statuses and native blocking dependencies. Existing `KB-<n>` references remain the native Beads issue IDs. Task routing (repository, base, branch, merge and planning mode) is stored in namespaced Beads metadata. All repositories, flows and worktrees served by this board use the external workspace at `$KANBOARD_HOME/beads`; code repositories receive no Beads hooks or agent-instruction changes.
+Beads is authoritative for task titles, descriptions, plans (`design`), shared context (`notes`), statuses and native blocking dependencies. Existing `KB-<n>` references remain the native Beads issue IDs. Task routing (repository, base, branch, merge mode, planning mode and control loop) is stored in namespaced Beads metadata. All repositories, flows and worktrees served by this board use the external workspace at `$KANBOARD_HOME/beads`; code repositories receive no Beads hooks or agent-instruction changes.
 
-`tasks/KB-<n>/execution.json` retains local execution state: ordering, launch progress, the worktree, agent host and terminal presentation, and merge observations. `board.json` retains flow settings and board context. These are not second copies of task content. The agent's `brief.md`, `omp.yml` and `launch.sh` are generated artifacts; the agent host launches the script rather than sending the full prompt through a terminal's canonical input limit.
+`tasks/KB-<n>/execution.json` retains local execution state: ordering, launch progress, the worktree, agent host and terminal presentation, merge observations and the session's latest control loop view. `board.json` retains flow settings (including the Control loops a flow's omp offers) and board context. These are not second copies of task content. The agent's `brief.md`, `omp.yml` and `launch.sh` are generated artifacts; the agent host launches the script rather than sending the full prompt through a terminal's canonical input limit.
 
 Preparation imports legacy `task.json` and `plan.md` data, preserving IDs and dependencies, and keeps a legacy backup before retiring the old task-content files. Stop the old board before preparation; do not run old and new server versions against the same home. Back up the whole home before upgrading; subsequent Beads backups should use its native backup facilities, not only the execution JSON.
 

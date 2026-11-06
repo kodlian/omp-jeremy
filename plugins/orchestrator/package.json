@@ -9,6 +9,7 @@
   },
   "devDependencies": {
     "@dagrejs/dagre": "^3.1.3",
-    "omp-integrations": "workspace:*"
+    "omp-integrations": "workspace:*",
+    "omp-control-view": "workspace:*"
   }
 }

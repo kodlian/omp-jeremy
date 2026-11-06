@@ -1,0 +1,90 @@
+/* Control flow cards and findings. Tokens come from design-system.css; hierarchy is tint, spacing and type, not borders. */
+.cv { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.cv-note, .cv-history, .cv-meta, .cv-filter { color: var(--muted); font-size: var(--font-size-sm); }
+.cv-spacer { flex: 1; }
+
+/* MARK: diagram */
+.cv-diagram-wrap { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+.cv-diagram { display: block; width: 100%; height: auto; font-family: var(--ui); }
+.cv-diagram text { fill: var(--fg); font-size: 12px; }
+.cv-diagram .cv-sub, .cv-diagram .cv-label { fill: var(--muted); font-size: 11px; }
+.cv-diagram .cv-title { font-weight: 600; }
+.cv-diagram .cv-box-title { fill: var(--muted); font-size: 11px; font-weight: 600; }
+.cv-diagram .cv-warn { fill: var(--warning); }
+.cv-diagram .cv-accent { fill: var(--accent); }
+.cv-diagram .cv-ok { fill: var(--add); font-weight: 600; }
+.cv-wire { fill: none; stroke: var(--muted); stroke-width: 1.2; }
+.cv-cross { stroke-width: 1.4; }
+.cv-back { stroke: var(--warning); stroke-dasharray: 5 4; }
+.cv-idle { stroke-dasharray: 5 4; opacity: 0.7; }
+.cv-inner { opacity: 0.5; }
+.cv-head { fill: var(--muted); }
+.cv-head.cv-back { fill: var(--warning); }
+.cv-sum { fill: var(--bg); stroke: var(--muted); stroke-width: 1.4; }
+.cv-sum.is-hot { stroke: var(--warning); }
+.cv-box { fill: color-mix(in srgb, var(--fg) 2.5%, transparent); stroke: var(--line); stroke-width: 1; }
+.cv-frame.is-active { fill: color-mix(in srgb, var(--accent) 4%, transparent); stroke: color-mix(in srgb, var(--accent) 35%, var(--line)); stroke-width: 1; }
+
+.cv-block rect { fill: var(--surface-2); stroke: var(--line-strong); stroke-width: 1; }
+.cv-block.is-active rect { fill: color-mix(in srgb, var(--accent) 16%, var(--surface-2)); }
+.cv-node rect { fill: var(--surface-2); stroke: var(--line-strong); stroke-width: 1; }
+.cv-node.is-running rect { fill: color-mix(in srgb, var(--accent) 14%, var(--surface-2)); stroke: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.cv-node.is-passed .cv-title { fill: var(--fg); }
+.cv-node.is-passed .cv-sub { fill: var(--add); }
+.cv-node.is-findings rect { fill: color-mix(in srgb, var(--warning) 14%, var(--surface-2)); stroke: color-mix(in srgb, var(--warning) 55%, var(--line)); }
+.cv-node.is-findings .cv-sub { fill: var(--warning); }
+.cv-node.is-failed rect, .cv-node.is-error rect { fill: color-mix(in srgb, var(--remove) 14%, var(--surface-2)); }
+.cv-node.is-failed .cv-sub, .cv-node.is-error .cv-sub { fill: var(--remove); }
+.cv-node.is-running .cv-sub { fill: var(--accent); }
+.cv-node.is-skipped { opacity: 0.5; }
+.cv-node.is-selected rect { stroke: var(--accent); stroke-width: 2; }
+.cv-add rect { fill: none; }
+.cv-add text { fill: var(--accent); font-size: 11px; }
+.cv-add:hover rect { fill: var(--accent-soft); }
+.clickable { cursor: pointer; }
+.cv-node.clickable:hover rect { fill: var(--hover); }
+.cv-plan-toggle { color: var(--accent); }
+.cv-toggles { display: flex; flex-wrap: wrap; gap: 4px; }
+.cv-toggles:empty { display: none; }
+
+/* MARK: findings */
+.cv-cards { display: flex; flex-direction: column; gap: 8px; }
+.cv-card { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: var(--radius); background: var(--surface); }
+.cv-approval { box-shadow: inset 3px 0 0 var(--warning); }
+.cv-card-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.cv-rule { font-weight: 600; }
+.cv-where { color: var(--muted); font-family: var(--mono); font-size: var(--font-size-sm); }
+.cv-observed, .cv-expected { overflow-wrap: anywhere; }
+.cv-expected { color: var(--muted); }
+.cv-again { color: var(--warning); font-size: var(--font-size-sm); }
+.cv-details summary, .cv-folded summary { width: fit-content; color: var(--muted); font-size: var(--font-size-sm); cursor: pointer; }
+.cv-fixes { margin: 4px 0; padding-left: 18px; }
+.cv-actions { display: flex; gap: 6px; margin-top: 4px; }
+.cv-send-note { width: 100%; height: auto; resize: vertical; }
+.cv-folded { display: flex; flex-direction: column; gap: 2px; }
+.cv-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: var(--font-size-sm); }
+.cv-line .cv-rule { overflow: hidden; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.cv-line-label { flex: none; color: var(--muted); }
+.cv-gate { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 12px; border-radius: var(--radius); background: var(--raised); box-shadow: var(--shadow); }
+
+@keyframes cv-pulse { 50% { opacity: 0.35; } }
+
+.cv-lane { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 3; }
+.cv-diagram .cv-stage-label { fill: var(--faint); font-size: 11px; }
+.cv-diagram .cv-then { fill: var(--faint); font-size: 11px; }
+.cv-icon { fill: none; stroke: var(--muted); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.cv-block.is-active .cv-icon, .cv-node.is-running .cv-icon { stroke: var(--accent); }
+.cv-node.is-passed .cv-icon { stroke: var(--add); }
+.cv-node.is-findings .cv-icon { stroke: var(--warning); }
+.cv-node.is-failed .cv-icon, .cv-node.is-error .cv-icon { stroke: var(--remove); }
+.cv-badge { fill: var(--surface-2); stroke: var(--bg); stroke-width: 2; }
+.cv-diagram .cv-badge-text { fill: var(--muted); font-size: 10px; font-weight: 700; }
+.cv-join circle { fill: var(--surface-2); stroke: var(--bg); stroke-width: 2; }
+.cv-join path { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linecap: round; }
+.cv-summary { margin: 4px 0; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--surface-2); font-family: var(--mono); font-size: var(--code-font-size-sm); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cv-question { box-shadow: inset 3px 0 0 var(--accent); }
+.cv-choose { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.cv-options { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
+.cv-options .btn { justify-content: flex-start; height: auto; min-height: 28px; padding-block: 4px; text-align: left; white-space: normal; }
+.cv-comment { width: 100%; height: auto; resize: vertical; }
+}

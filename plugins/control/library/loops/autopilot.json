@@ -1,0 +1,15 @@
+{
+  "name": "Autopilot",
+  "description": "Quality, conventions and project-rules reviewers, no review from you: once they pass the change is done, and a local Orchestrator task merges",
+  "maxPasses": 4,
+  "stages": [
+    {
+      "nodes": [
+        "quality-reviewer",
+        "conventions-reviewer",
+        "rules-reviewer"
+      ]
+    }
+  ],
+  "finish": "auto"
+}

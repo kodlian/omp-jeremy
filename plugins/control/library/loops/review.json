@@ -1,0 +1,14 @@
+{
+  "name": "Review",
+  "description": "Quality, conventions and project-rules reviewers check every change, then you review it",
+  "maxPasses": 4,
+  "stages": [
+    {
+      "nodes": [
+        "quality-reviewer",
+        "conventions-reviewer",
+        "rules-reviewer"
+      ]
+    }
+  ]
+}

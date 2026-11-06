@@ -211,7 +211,7 @@ ${cmux}`);
   }
 }
 
-// plugins/git-diff-review/src/appearance.ts
+// packages/integrations/src/appearance.ts
 var TOKEN_VARS = {
   "--muted": "muted",
   "--accent": "accent",

@@ -1,6 +1,6 @@
 # omp-jeremy
 
-Two plugins for [omp](https://github.com/can1357/oh-my-pi): orchestrate coding tasks across worktrees, and review their changes in the browser.
+Three plugins for [omp](https://github.com/can1357/oh-my-pi): orchestrate coding tasks across worktrees, review their changes in the browser, and check every change with control loops before the agent finishes.
 
 ## Orchestrator
 
@@ -10,6 +10,10 @@ Turn plans into tasks that run in their own Git worktrees. Track dependencies, r
 
 Open a browser-based diff viewer from omp with `/review`. Browse changed files, comment on individual lines, and send review feedback directly to your agent.
 
+## Control
+
+Attach a control loop to a session with `/control use <loop>`: when the agent says it's done, checks (shell commands that must exit 0) and focused reviewer agents measure its change. Certain findings go back to the agent to fix, doubtful ones to you, until the change is clean or the pass limit hands it to you. Loops and nodes live in `.omp/control` (project) and `~/.omp/control` (user); `/control` opens a page with the live loop, a visual loop editor and the library. With the Orchestrator also installed, cards pick a loop and their panel shows it live. See [plugins/control](plugins/control/README.md).
+
 ## Install from the marketplace
 
 Once this repository is pushed to GitHub:
@@ -18,9 +22,10 @@ Once this repository is pushed to GitHub:
 omp plugin marketplace add kodlian/omp-jeremy
 omp plugin install orchestrator@omp-jeremy
 omp plugin install git-diff-review@omp-jeremy
+omp plugin install control@omp-jeremy
 ```
 
-Install either plugin independently. Restart omp after installing extensions.
+Install each plugin independently. Restart omp after installing extensions.
 
 omp only picks up a new release when its version in `.omp-plugin/marketplace.json` goes up. To have omp install new releases when it starts, run `omp config set marketplace.autoUpdate auto`; the default, `notify`, only writes to omp's debug log. To update by hand, run `omp plugin marketplace update omp-jeremy`, then `omp plugin upgrade`, and restart omp.
 
@@ -45,4 +50,4 @@ omp plugin marketplace add /path/to/omp-jeremy
 omp plugin install orchestrator@omp-jeremy
 ```
 
-*Both plugins share terminal, theme and font integrations, plus a [web design system](packages/web-design-system/README.md) for consistent typography and controls. Build from the repository root to update the standalone assets shipped with each plugin.*
+*The plugins share terminal, theme and font integrations, plus a [web design system](packages/web-design-system/README.md) for consistent typography and controls. Build from the repository root to update the standalone assets shipped with each plugin.*
