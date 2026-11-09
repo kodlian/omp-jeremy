@@ -15,6 +15,7 @@ type Task = {
 	worktree: string | null;
 	spawn: { state: string; error: string | null };
 	presentation: { kind: string; cmux?: { workspace: string } } | null;
+	cleanupPending?: string | null;
 };
 type Context = { kind: "cmux"; cmux: { cli: string; socket: string; workspace: string; surface: string } };
 
@@ -33,8 +34,10 @@ git -C "$KANBOARD_REPO" worktree add -q "$wt" "$KANBOARD_BRANCH"
 cmux new-workspace --name "$KANBOARD_BRANCH" --cwd "$wt" --command "$KANBOARD_AGENT_COMMAND"
 `,
 	// Like cmuxkit's wt-rm: it closes workspaces only with the caller's cmux identity, which the board never passes.
+	// $HOME/wt-rm-fails makes it fail once, as when the worktree is busy.
 	"wt-rm": `#!/bin/sh
 set -e
+if [ -f "$HOME/wt-rm-fails" ]; then rm "$HOME/wt-rm-fails"; echo "worktree busy" >&2; exit 1; fi
 root=$(git rev-parse --show-toplevel)
 repo=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
 branch=$(git symbolic-ref --short -q HEAD)
@@ -43,8 +46,29 @@ git worktree remove --force --force "$root"
 git branch -D -q "$branch"
 if [ -n "\${CMUX_WORKSPACE_ID:-}" ]; then cmux workspace close --force --workspace "$CMUX_WORKSPACE_ID"; fi
 `,
-	omp: "#!/bin/sh\nexec sleep 600\n",
+	// An agent in a "slow" task's worktree keeps a session connected after its host is stopped, as omp does while it exits.
+	omp: '#!/bin/sh\ncase "$PWD" in *slow*) linger ;; esac\nexec sleep 600\n',
+	linger: `#!/usr/bin/env python3
+import os, socket, sys, time
+if os.fork():
+    sys.exit(0)
+os.setsid()
+port, task = os.environ["KANBOARD_PORT"], os.environ["KANBOARD_TASK"]
+s = socket.create_connection(("127.0.0.1", int(port)))
+s.sendall(f"GET /api/events?task={task}&session=slow HTTP/1.0\\r\\nHost: 127.0.0.1:{port}\\r\\n\\r\\n".encode())
+s.settimeout(1)
+end = time.time() + 20
+while time.time() < end:
+    try:
+        s.recv(65536)
+    except socket.timeout:
+        pass
+`,
 };
+
+async function card(id: string): Promise<Task> {
+	return (await api<{ tasks: Task[] }>("GET", "/api/state")).tasks.find((t) => t.id === id)!;
+}
 
 function run(cmd: string[], cwd = dir): string {
 	const p = Bun.spawnSync(cmd, { cwd, env });
@@ -191,4 +215,35 @@ describe.skipIf(!BD)("a done task's terminals", () => {
 		await api("POST", `/api/tasks/${t.id}/stop`);
 		expect(cmux().workspaces[opened!]).toBeUndefined();
 	}, 60_000);
+
+	test("Merging with removal finishes the removal once an agent that's slow to exit is gone", async () => {
+		useHooks(true);
+		const t = await startedTask("slow agent remove");
+		const res = await api<{ output: string; cleanupError?: string }>("POST", `/api/tasks/${t.id}/merge`, { cleanup: true, commit: true });
+		expect(res.cleanupError).toBeUndefined();
+		expect(res.output).toContain("still stopping");
+		expect(existsSync(t.worktree)).toBe(true);
+		expect((await card(t.id)).cleanupPending).toBeTruthy();
+		// The lingering session disconnects 20 s after the agent started; the board then sees it gone within a ping and a poll.
+		for (const deadline = Date.now() + 40_000; (await card(t.id)).worktree && Date.now() < deadline; ) await Bun.sleep(250);
+		const after = await card(t.id);
+		expect(after.worktree).toBeNull();
+		expect(after.cleanupPending ?? null).toBeNull();
+		expect(existsSync(t.worktree)).toBe(false);
+	}, 90_000);
+
+	test("A sweep removes a merged worktree a failed removal left behind, and keeps one the merge chose to keep", async () => {
+		useHooks(true);
+		const kept = await startedTask("sweep keep");
+		await api("POST", `/api/tasks/${kept.id}/merge`, { cleanup: false, commit: true });
+		const left = await startedTask("sweep leftover");
+		writeFileSync(join(dir, "home", "wt-rm-fails"), "");
+		const res = await api<{ cleanupError?: string }>("POST", `/api/tasks/${left.id}/merge`, { cleanup: true, commit: true });
+		expect(res.cleanupError).toContain("worktree busy");
+		expect(existsSync(left.worktree)).toBe(true);
+		await api("POST", "/api/refresh");
+		for (const deadline = Date.now() + 15_000; existsSync(left.worktree) && Date.now() < deadline; ) await Bun.sleep(250);
+		expect(existsSync(left.worktree)).toBe(false);
+		expect(existsSync(kept.worktree)).toBe(true);
+	}, 90_000);
 });

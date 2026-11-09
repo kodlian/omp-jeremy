@@ -10,13 +10,13 @@
       "name": "orchestrator",
       "description": "Beads-backed task orchestration, worktrees and agent sessions",
       "source": "./plugins/orchestrator",
-      "version": "0.3.0"
+      "version": "0.4.0"
     },
     {
       "name": "git-diff-review",
       "description": "Browser-based diff review with agent feedback and terminal appearance",
       "source": "./plugins/git-diff-review",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "name": "control",

@@ -252,6 +252,7 @@ button.ctx:hover{color:var(--fg)}
 <link rel="stylesheet" href="/workbench.css">
 <link rel="stylesheet" href="/native.css">
 <link rel="stylesheet" href="/control-view.css">
+<link rel="stylesheet" href="/flow-export.css">
 <link rel="stylesheet" href="/appearance.css">
 </head>
 <body>
@@ -409,10 +410,10 @@ function flash(el) { el.classList.remove("flash"); void el.offsetWidth; el.class
 function toolButton(name, title, onclick, size = 15) {
   return h("button", { class: "tool-button", title, "aria-label": title, onclick }, I(name, size));
 }
-function toast(text, error = false) {
+function toast(text, error = false, ms = error ? 6000 : 3000) {
   const t = h("div", { class: "toast" + (error ? " error" : "") }, I(error ? "alert" : "check", 14), h("span", {}, text));
   $("#toasts").append(t);
-  setTimeout(() => t.remove(), error ? 6000 : 3000);
+  setTimeout(() => t.remove(), ms);
 }
 async function copyText(text, message) {
   try { await navigator.clipboard.writeText(text); toast(message); }
@@ -448,9 +449,15 @@ const tabFor = {};
 const drafts = new Map();
 const sessionConnected = t => t.session?.connected === true;
 const findTask = id => board && board.tasks.find(t => t.id === id);
-const taskNumber = id => /^KB-\d+(?:\.\d+)*$/i.test(id) ? "#" + id.slice(3) : id;
+const taskNumber = id => { const t = findTask(id); return t ? "#" + t.number : id; };
 const taskNumbers = ids => ids.map(taskNumber).join(", ");
-const taskRef = raw => { const v = raw.trim().replace(/^#(?=\d)/, ""); return /^\d+(?:\.\d+)*$/.test(v) ? "KB-" + v : /^kb-\d+(?:\.\d+)*$/i.test(v) ? v.toUpperCase() : v; };
+// A card from a typed reference: a number ("12", "#12.1") in this page's project, else an id as given.
+const taskRef = raw => {
+  const v = raw.trim().replace(/^#(?=\d)/, "");
+  if (!/^\d+(?:\.\d+)*$/.test(v)) return /^kb-\d+(?:\.\d+)*$/i.test(v) ? v.toUpperCase() : v;
+  const repo = flows().find(f => f.id === flowSel)?.repo;
+  return board?.tasks.find(t => t.number === v && (!repo || t.repo === repo))?.id ?? v;
+};
 const flows = () => (board && board.flows) || [];
 const selectedFlow = () => flows().find(f => f.id === flowSel) || null;
 const inFlow = t => !!selectedFlow() && t.flow === flowSel;
@@ -497,6 +504,7 @@ function flowMenu() {
     { icon: "wrench", label: "Concurrent tasks", sub: cur.concurrencyLimit == null ? "Unlimited" : String(cur.concurrencyLimit), action: () => showConcurrencyModal(cur) },
     { icon: "play", label: "Setup script", sub: scriptName(cur.setupScript), action: () => showScriptsModal(cur) },
     { icon: "trash", label: "Teardown script", sub: scriptName(cur.teardownScript), action: () => showScriptsModal(cur) },
+    "-", { icon: "openIn", label: "Save flow as a page", sub: "~/.kanboard/exports", action: () => saveFlow() },
     "-", { header: "Beads" },
     { icon: "file", label: "Shared memories…", sub: cur.name, action: () => showMemories() }];
 }
@@ -927,7 +935,8 @@ function confirmCleanup(t, confirmedLegacy = false) {
     : `Stops this task's managed agent, then deletes ${t.worktree}, branch ${t.branch} and its owned terminal attachment.`;
   confirmModal("Remove the worktree?", text, confirmedLegacy ? "Old session exited — remove" : "Remove worktree", async () => {
     try {
-      await act("POST", tpath(t.id, "/cleanup"), { confirmLegacy: confirmedLegacy }, "Worktree removed");
+      const r = await act("POST", tpath(t.id, "/cleanup"), { confirmLegacy: confirmedLegacy });
+      toast(r.pending ? "Its agent is still stopping; the worktree is removed once it exits" : "Worktree removed");
     } catch (e) {
       if (e.data?.requiresConfirmation === "legacySession") confirmCleanup(t, true);
     }
@@ -1632,7 +1641,9 @@ function updateAgent(t) {
   P.cleanup.hidden = t.column !== "done" || missing;
   P.health.hidden = !missing;
   P.actions.hidden = missing;
-  P.cleanupText.replaceChildren(t.merged
+  P.cleanupText.replaceChildren(t.cleanupPending
+    ? h("span", {}, h("strong", {}, "Removing the worktree"), " once its agent has exited.")
+    : t.merged
     ? h("span", {}, h("strong", {}, "Merged into " + t.base), ` ${ago(t.merged.at)} (${t.merged.sha.slice(0, 7)}). The worktree can go.`)
     : t.pr && t.pr.state === "merged"
       ? h("span", {}, h("strong", {}, `#${t.pr.number} merged`), ` into ${t.base}. The worktree can go.`)
@@ -1738,6 +1749,7 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
 <script src="/graph-layout.js"></script>
 <script src="/control-view.js"></script>
 <script src="/pipeline.js"></script>
+<script src="/flow-export.js"></script>
 <script src="/workbench.js"></script>
 <script src="/native.js"></script>
 <script>

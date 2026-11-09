@@ -1,0 +1,57 @@
+.fx :where(a){color:var(--accent)}
+html:has(body.fx),body.fx{height:auto;overflow:visible}
+body.fx{display:block;max-width:1400px;margin:0 auto;padding:36px 40px 56px}
+.fx-head{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:20px 48px;margin-bottom:12px}
+.fx-head h1{margin:0;font-size:calc(var(--font-size) * 2.2);font-weight:650;letter-spacing:-.01em;overflow-wrap:anywhere}
+.fx-head p{margin:6px 0 0;color:var(--muted)}
+.fx-stats{display:flex;flex-wrap:wrap;gap:10px;margin:0}
+.fx-stats div{display:flex;flex-direction:column-reverse;min-width:120px;padding:10px 14px;border-radius:var(--radius-lg);background:var(--surface)}
+.fx-stats dt{color:var(--muted);font-size:var(--font-size-sm)}
+.fx-stats dd{margin:0;font-size:calc(var(--font-size) * 1.6);font-weight:650;font-variant-numeric:tabular-nums;white-space:nowrap}
+.fx-stats .add{color:var(--add)}
+.fx-stats .remove{color:var(--remove)}
+.fx section h2{margin:36px 0 12px;color:var(--muted);font-size:var(--font-size-sm);font-weight:600;letter-spacing:.06em;text-transform:uppercase}
+.fx-graph{height:auto;border-radius:var(--radius-lg);background-color:var(--surface);cursor:grab;user-select:none}
+.fx-graph .pipeline-node{color:inherit;text-decoration:none;cursor:pointer;-webkit-user-drag:none}
+.fx-graph .pipeline-port{cursor:inherit}
+.fx-hint{margin:8px 2px 0;color:var(--faint);font-size:var(--font-size-sm)}
+.fx-timeline{--fx-label:minmax(180px,32%);display:grid;gap:2px}
+.fx-row{display:grid;grid-template-columns:var(--fx-label) 1fr;align-items:center;gap:14px;padding:3px 6px;border-radius:var(--radius-sm);color:inherit;text-decoration:none}
+a.fx-row:hover{background:var(--hover)}
+.fx-row-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fx-row-label .mono{color:var(--muted);font-size:var(--font-size-xs)}
+.fx-axis-row{padding-bottom:4px}
+.fx-axis{position:relative;height:1.4em;color:var(--faint);font-size:var(--font-size-xs)}
+.fx-axis span{position:absolute;transform:translateX(-50%);white-space:nowrap}
+.fx-track{position:relative;height:14px;border-radius:3px;background:var(--surface)}
+.fx-seg,.fx-work,.fx-merged{position:absolute;top:50%;transform:translateY(-50%)}
+.fx-seg{border-radius:2px}
+.fx-seg.doing{height:2px;background:var(--muted)}
+.fx-seg.doing.unrecorded{height:8px;background:color-mix(in srgb,var(--muted) 45%,transparent)}
+.fx-seg.todo{height:6px;border:1px dashed var(--faint)}
+.fx-seg.review{height:8px;background:color-mix(in srgb,var(--warning) 75%,transparent)}
+.fx-work{height:12px;min-width:2px;border-radius:2px;background:var(--add)}
+.fx-merged{width:8px;height:8px;margin-left:-4px;border-radius:50%;background:var(--add)}
+.fx-legend{padding-top:8px;color:var(--muted);font-size:var(--font-size-xs)}
+.fx-legend>span:last-child{display:flex;flex-wrap:wrap;gap:6px 18px}
+.fx-legend>span:last-child>span{display:inline-flex;align-items:center}
+.fx-swatch{position:relative;display:inline-block;width:18px;margin:0 6px 0 0;vertical-align:middle;transform:none}
+.fx-swatch.fx-work{height:10px}
+.fx-swatch.fx-merged{width:8px;height:8px}
+.fx-none{position:absolute;left:4px;top:50%;transform:translateY(-50%);color:var(--faint);font-size:var(--font-size-xs)}
+.fx-task{border-bottom:1px solid var(--line)}
+.fx-task>summary{display:flex;align-items:center;gap:10px;padding:10px 4px;cursor:pointer;list-style:none}
+.fx-task>summary::-webkit-details-marker{display:none}
+.fx-task>summary:hover{background:var(--hover)}
+.fx-task:target>summary{background:var(--accent-soft)}
+.fx-id{flex:none;min-width:3.5em;color:var(--muted)}
+.fx-task-title{flex:1;min-width:0;font-weight:550}
+.fx-task[open]{padding-bottom:16px}
+.fx-meta{display:grid;grid-template-columns:max-content 1fr;gap:4px 18px;margin:6px 4px 12px calc(3.5em + 14px)}
+.fx-meta dt{color:var(--muted)}
+.fx-meta dd{margin:0;overflow-wrap:anywhere}
+.fx-block,.fx-more{margin:10px 4px 0 calc(3.5em + 14px)}
+.fx-block h3{margin:0 0 4px;color:var(--muted);font-size:var(--font-size-sm);font-weight:600}
+.fx-more>summary{color:var(--muted);cursor:pointer}
+.fx-more .md{margin-top:6px}
+.fx footer{margin-top:40px;color:var(--faint);font-size:var(--font-size-sm)}

@@ -44,10 +44,10 @@ const ORCHESTRATOR_CONTEXT = `Orchestrator mode is on in this checkout: this ses
 - A card's loop is the Control loop its task session runs after implementing; set it with orchestrator_create/orchestrator_edit only when the user names one.
 - Keep related asks from one request in one card. Split into several cards only when the parts are large and touch independent areas, when one must land before another, or when the user asks to split; each split card's description starts with the line "Part of: <the overall need in one line>". Set dependsOn for earlier new cards that must land first, as well as existing prerequisites found by the preflight.
 - In the reply, say where each ask went: the card it was added to and whether its agent received it, the cards you created, and which cards you started or left in Backlog.
-- For existing cards, an explicit "start", "do" or "run" KB-n is one trigger for orchestrator_start (it runs in its own worktree), not a request to implement it in this session unless the user says to do it here. Explicit wording is not required for new or amended cards that meet the intent rule above. "Merge KB-n" means orchestrator_done; "drop" or "delete KB-n" means orchestrator_delete; changing a card's title or description means orchestrator_edit. To replace or remove dependencies, pass the complete desired dependsOn list to orchestrator_edit; [] clears it.
+- For existing cards, an explicit "start", "do" or "run" #n is one trigger for orchestrator_start (it runs in its own worktree), not a request to implement it in this session unless the user says to do it here. Explicit wording is not required for new or amended cards that meet the intent rule above. "Merge #n" means orchestrator_done; "drop" or "delete #n" means orchestrator_delete; changing a card's title or description means orchestrator_edit. To replace or remove dependencies, pass the complete desired dependsOn list to orchestrator_edit; [] clears it.
 - parent groups a card under another card of the same flow (an epic and its parts) when the user asks for that structure; it isn't a prerequisite, so use dependsOn for ordering, but children also inherit their parent's blockers under Beads readiness. Set it with orchestrator_create or orchestrator_edit (parent "none" clears it) and read the hierarchy with orchestrator_children.
 - When the user asks why a card hasn't started or what can run next, call orchestrator_ready: it compares Beads' dependency readiness with the board's queue, pauses and task slots, and never starts anything. orchestrator_history shows how a card's title, description, plan and status changed.
-- A started card's agent is yours to steer when the user asks. "Pause" or "hold" KB-n means orchestrator_move to Backlog, where it stays parked until resumed, or to Todo when it should continue on its own once its dependencies are done, any block inherited from its parent tree clears and a slot frees; "resume" or "continue" KB-n means orchestrator_move to doing (In Progress); "stop" KB-n means orchestrator_stop. Telling or asking its agent something means orchestrator_message; the user's verdict on its plan means orchestrator_review. Check what an agent shows with orchestrator_screen and its changes with orchestrator_diff before reporting on it.
+- A started card's agent is yours to steer when the user asks. "Pause" or "hold" #n means orchestrator_move to Backlog, where it stays parked until resumed, or to Todo when it should continue on its own once its dependencies are done, any block inherited from its parent tree clears and a slot frees; "resume" or "continue" #n means orchestrator_move to doing (In Progress); "stop" #n means orchestrator_stop. Telling or asking its agent something means orchestrator_message; the user's verdict on its plan means orchestrator_review. Check what an agent shows with orchestrator_screen and its changes with orchestrator_diff before reporting on it.
 - orchestrator_context reads the findings and outcome a card's agent recorded; a card that depends on it gets them in its brief. Record a decision from this conversation that a started card's agent and later cards need with orchestrator_publish on that card.
 - orchestrator_memory holds this repository's durable project decisions and conventions, shared by every card. Search it on demand when a decision may already exist, and remember a durable decision the user made; task outcomes go on the card with orchestrator_publish. Never load all memories each turn, and never store the user's personal omp preferences there. Forgetting one asks the user first.
 - A plan you propose in this session is for work done here; it doesn't become a card.`;
@@ -101,6 +101,8 @@ interface Task {
 	repo: string;
 	checkout: string | null;
 	flow: string;
+	/** Counted per project: "12", or "12.1" for a child. */
+	number: string;
 	merge: "local" | "pr";
 	planningMode: "auto" | "plan" | "fast";
 	planningOutcome: "plan" | "fast" | null;
@@ -186,6 +188,8 @@ interface Memories {
 
 interface Flow {
 	id: string;
+	name: string;
+	repo: string;
 	base: string;
 	checkout: string | null;
 	concurrencyLimit: number | null;
@@ -246,15 +250,22 @@ const tilde = (path: string) => (path.startsWith(homedir()) ? `~${path.slice(hom
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const reply = (text: string, isError = false) => ({ content: [{ type: "text" as const, text }], isError });
 
-/** A card id from user or agent input: "#12", "kb-12", "12" mean KB-12 and "#12.1", "kb-12.1", "12.1" mean KB-12.1; other ids (Beads' native KB-a3f8.1) stay as given. */
-function taskId(raw: string): string {
-	const id = raw.trim().replace(/^#(?=\d)/, "");
-	if (/^\d+(\.\d+)*$/.test(id)) return `KB-${id}`;
-	return /^kb-\d+(\.\d+)*$/i.test(id) ? id.toUpperCase() : id;
+/** Card numbers by id, as the latest board read gave them. */
+const cardNumbers = new Map<string, string>();
+const CARD_ID = /\bKB-\d+(?:\.\d+)*\b/g;
+
+function rememberNumbers(board: Board): void {
+	for (const t of board.tasks) cardNumbers.set(t.id, t.number);
 }
 
-/** A card id as people read it: KB-12.1 shows as #12.1; other ids stay as given. */
-const taskNumber = (id: string) => (/^KB-\d+(\.\d+)*$/i.test(id) ? `#${id.slice(3)}` : id);
+/** A card as people know it: #12, or #12.1 for a child. */
+const taskNumber = (id: string) => {
+	const n = cardNumbers.get(id);
+	return n ? `#${n}` : id;
+};
+
+/** `text` with the board's card ids replaced by their numbers. */
+const withNumbers = (text: string) => text.replace(CARD_ID, taskNumber);
 
 // --- board server -------------------------------------------------------------------------------------------------
 
@@ -385,6 +396,8 @@ async function api<T>(method: string, path: string, body?: unknown, autostart = 
 		const confirm = data && typeof data === "object" && "requiresConfirmation" in data && typeof data.requiresConfirmation === "string" ? data.requiresConfirmation : null;
 		throw new BoardError(res.status, error || `${res.status} ${res.statusText}`, confirm);
 	}
+	if (method === "GET" && path === "/api/state") rememberNumbers(data as Board);
+	else if (data && typeof data === "object" && "id" in data && "number" in data) cardNumbers.set(String(data.id), String(data.number));
 	return data as T;
 }
 
@@ -596,8 +609,8 @@ function waitsUntil(t: { dependsOn: string[]; blockedBy: string[] }): string {
 	const own = t.blockedBy.filter((b) => t.dependsOn.includes(b));
 	const inherited = t.blockedBy.filter((b) => !t.dependsOn.includes(b));
 	return [
-		own.length && `${own.join(", ")} ${own.length === 1 ? "is" : "are"} done`,
-		inherited.length && `the block on its parent tree (${inherited.join(", ")}) clears`,
+		own.length && `${own.map(taskNumber).join(", ")} ${own.length === 1 ? "is" : "are"} done`,
+		inherited.length && `the block on its parent tree (${inherited.map(taskNumber).join(", ")}) clears`,
 	]
 		.filter(Boolean)
 		.join(" and ");
@@ -928,19 +941,32 @@ export default function orchestrator(pi: ExtensionAPI) {
 		return board.flows.find((f) => f.checkout && realpath(f.checkout) === root)?.id ?? board.repo.flow;
 	};
 
+	/** The card a reference names: a number ("12", "#12.1") among this session's project's cards, else a card id as given. */
+	const cardId = async (raw: string, ctx: ExtensionContext): Promise<string> => {
+		const ref = raw.trim().replace(/^#(?=\d)/, "");
+		if (!/^\d+(\.\d+)*$/.test(ref)) return /^kb-\d+(\.\d+)*$/i.test(ref) ? ref.toUpperCase() : ref;
+		const board = await api<Board>("GET", "/api/state");
+		const flow = sessionFlow(board, ctx);
+		const repo = board.flows.find((f) => f.id === flow)?.repo ?? board.tasks.find((t) => t.flow === flow)?.repo;
+		const found = board.tasks.filter((t) => t.number === ref && (!repo || t.repo === repo));
+		if (found.length === 1) return found[0].id;
+		throw new Error(found.length ? `#${ref} names cards in several projects` : `No card #${ref}${repo ? ` in ${tilde(repo)}` : ""}`);
+	};
+	const cardIds = (refs: string[], ctx: ExtensionContext) => Promise.all(refs.map((ref) => cardId(ref, ctx)));
+
 	const tell = async (ctx: ExtensionContext, work: Promise<string>) => {
 		try {
-			ctx.ui.notify(await work, "info");
+			ctx.ui.notify(withNumbers(await work), "info");
 		} catch (e) {
-			ctx.ui.notify(errorText(e), "error");
+			ctx.ui.notify(withNumbers(errorText(e)), "error");
 		}
 	};
 
 	const answer = async (work: Promise<string>) => {
 		try {
-			return reply(await work);
+			return reply(withNumbers(await work));
 		} catch (e) {
-			return reply(errorText(e), true);
+			return reply(withNumbers(errorText(e)), true);
 		}
 	};
 
@@ -1203,6 +1229,7 @@ export default function orchestrator(pi: ExtensionAPI) {
 			const data: unknown = JSON.parse(e.data);
 			if (e.event === "snapshot") {
 				latest = data as Board; // the server's /api/state shape
+				rememberNumbers(latest);
 				watch(ctx, latest);
 				repaint?.();
 			} else if (e.event === "task_prompt" && on && !task && data && typeof data === "object" &&
@@ -1215,8 +1242,8 @@ export default function orchestrator(pi: ExtensionAPI) {
 					void answerControl(data.id, false, errorText(error));
 				}
 			} else if (e.event === "discuss" && data && typeof data === "object" && "id" in data && typeof data.id === "string") {
-				const id = taskId(data.id);
-				if (ctx.hasUI) ctx.ui.pasteToEditor(`${id} `);
+				const id = data.id;
+				if (ctx.hasUI) ctx.ui.pasteToEditor(`${taskNumber(id)} `);
 				ctx.ui.notify(`${taskNumber(id)}: say what to change; omp updates the card`, "info");
 			} else if (e.event === "control" && isControl(data) && data.task === task) {
 				void runControl(ctx, data);
@@ -1352,8 +1379,8 @@ export default function orchestrator(pi: ExtensionAPI) {
 
 	const startCards = async (ctx: ExtensionContext, raw: string[]): Promise<string> => {
 		const board = await api<Board>("GET", "/api/state");
-		let ids = raw.map(taskId);
-		if (ids.length === 1 && ids[0].toUpperCase() === "ALL") {
+		let ids = raw.length === 1 && raw[0].trim().toUpperCase() === "ALL" ? ["ALL"] : await cardIds(raw, ctx);
+		if (ids.length === 1 && ids[0] === "ALL") {
 			const flow = sessionFlow(board, ctx);
 			ids = board.tasks.filter((t) => t.column === "backlog" && t.flow === flow && t.origin?.session === sessionId).map((t) => t.id);
 			if (!ids.length) return "No backlog cards from this session to start";
@@ -1386,7 +1413,7 @@ export default function orchestrator(pi: ExtensionAPI) {
 
 	/** Commits pending changes and merges a local task: this worktree's task without an id (removing it), else the given card with a cleanup choice. */
 	const done = async (ctx: ExtensionContext, raw?: string): Promise<string> => {
-		const named = raw?.trim() ? taskId(raw) : undefined;
+		const named = raw?.trim() ? await cardId(raw, ctx) : undefined;
 		if (!ctx.hasUI) throw new Error(`Merging needs the user's confirmation: ask them to run /orchestrator done${named ? ` ${named}` : ""}`);
 		await refreshBoard();
 		const board = await api<Board>("GET", "/api/state");
@@ -1415,7 +1442,7 @@ export default function orchestrator(pi: ExtensionAPI) {
 	};
 
 	const deleteCard = async (ctx: ExtensionContext, raw: string): Promise<string> => {
-		const id = taskId(raw);
+		const id = await cardId(raw, ctx);
 		if (!ctx.hasUI) throw new Error(`Deleting needs the user's confirmation: ask them to delete ${id} on the board`);
 		const board = await api<Board>("GET", "/api/state");
 		const t = findTask(board, id);
@@ -1450,7 +1477,7 @@ export default function orchestrator(pi: ExtensionAPI) {
 
 	/** Moves a card as dragging it on the board does; the reply says what that did to its agent. */
 	const moveCard = async (ctx: ExtensionContext, raw: string, column: string, force: boolean, confirmed: boolean): Promise<string> => {
-		const id = taskId(raw);
+		const id = await cardId(raw, ctx);
 		const board = await api<Board>("GET", "/api/state");
 		const before = findTask(board, id);
 		const t = await withLegacyConfirm(
@@ -1480,7 +1507,7 @@ export default function orchestrator(pi: ExtensionAPI) {
 	};
 
 	const cleanupCard = async (ctx: ExtensionContext, raw: string): Promise<string> => {
-		const id = taskId(raw);
+		const id = await cardId(raw, ctx);
 		if (!ctx.hasUI) throw new Error(`Removing a worktree needs the user's confirmation: ask them to remove ${id}'s on the board`);
 		const t = findTask(await api<Board>("GET", "/api/state"), id);
 		if (!t.worktree) throw new Error(`${id} has no worktree`);
@@ -1495,7 +1522,7 @@ export default function orchestrator(pi: ExtensionAPI) {
 	};
 
 	const recoverCard = async (ctx: ExtensionContext, raw: string): Promise<string> => {
-		const id = taskId(raw);
+		const id = await cardId(raw, ctx);
 		if (!ctx.hasUI) throw new Error(`Returning a task to Backlog needs the user's confirmation: ask them to use Return to Backlog on ${id} in the board`);
 		const t = findTask(await api<Board>("GET", "/api/state"), id);
 		if (!t.health?.worktreeMissing) throw new Error(`${id}'s worktree isn't missing; nothing to recover`);
@@ -1659,13 +1686,13 @@ export default function orchestrator(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "orchestrator_plan",
 		label: "Orchestrator plan",
-		description: "Read an Orchestrator card by id (e.g. KB-3): its description, planning mode, parent and children, and plan when it has one.",
+		description: "Read an Orchestrator card by number (e.g. 3 or #3): its description, planning mode, parent and children, and plan when it has one.",
 		parameters: z.object({ id: z.string() }),
 		approval: "read",
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			return answer(
 				(async () => {
-					const t = findTask(await api<Board>("GET", "/api/state"), taskId(params.id));
+					const t = findTask(await api<Board>("GET", "/api/state"), await cardId(params.id, ctx));
 					const plan = t.plan.trim() ? `## Plan\n\n${t.plan.trim()}` : "No plan: Auto and Fast tasks may implement without plan review.";
 					const family = [t.parent && `Parent: ${t.parent}`, t.children.length && `Children: ${t.children.join(", ")}`].filter(Boolean).join("\n");
 					return `${t.id}: ${t.title}\nPlanning: ${t.planningOutcome ?? t.planningMode}${family ? `\n${family}` : ""}\n\n${t.description.trim() || "(no description)"}\n\n${plan}`;
@@ -1681,11 +1708,11 @@ export default function orchestrator(pi: ExtensionAPI) {
 			"Show an Orchestrator card's hierarchy: its parent and its direct children, each with column and what it waits on. Parent groups cards; use dependsOn for ordering; children also inherit their parent's blockers under Beads readiness.",
 		parameters: z.object({ id: z.string() }),
 		approval: "read",
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			return answer(
 				(async () => {
 					const board = await api<Board>("GET", "/api/state");
-					return childrenText(board, findTask(board, taskId(params.id)));
+					return childrenText(board, findTask(board, await cardId(params.id, ctx)));
 				})(),
 			);
 		},
@@ -1698,13 +1725,14 @@ export default function orchestrator(pi: ExtensionAPI) {
 			"Show an Orchestrator card's native Beads history, newest first: each recorded change to its title, status, description, plan, shared context or ticket, with long text cut. events shows the audit trail (who changed what, and when) instead of snapshots. limit is 1 to 50 entries (default 10).",
 		parameters: z.object({ id: z.string(), limit: z.number().int().min(1).max(50).optional(), events: z.boolean().optional() }),
 		approval: "read",
-		async execute(_toolCallId, params) {
-			const id = taskId(params.id);
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			return answer(
-				api<{ id: string; history: unknown; events: boolean }>("POST", `/api/tasks/${id}/history`, {
-					limit: params.limit ?? 10,
-					events: params.events === true,
-				}).then(historyText),
+				cardId(params.id, ctx)
+					.then((id) => api<{ id: string; history: unknown; events: boolean }>("POST", `/api/tasks/${id}/history`, {
+						limit: params.limit ?? 10,
+						events: params.events === true,
+					}))
+					.then(historyText),
 			);
 		},
 	});
@@ -1721,7 +1749,7 @@ export default function orchestrator(pi: ExtensionAPI) {
 			return answer(
 				(async () => {
 					const board = await api<Board>("GET", "/api/state");
-					const scope = params.id ? { id: taskId(params.id) } : params.all ? {} : { flow: sessionFlow(board, ctx) };
+					const scope = params.id ? { id: await cardId(params.id, ctx) } : params.all ? {} : { flow: sessionFlow(board, ctx) };
 					return readinessText(board, await api<Readiness>("POST", "/api/readiness", scope));
 				})(),
 			);
@@ -1734,9 +1762,14 @@ export default function orchestrator(pi: ExtensionAPI) {
 		description: "Make an Orchestrator card wait for other cards: it starts only once every dependsOn card is done.",
 		parameters: z.object({ task: z.string(), dependsOn: z.array(z.string()).min(1) }),
 		approval: "read",
-		async execute(_toolCallId, params) {
-			const id = taskId(params.task);
-			return answer(addDependencies(id, params.dependsOn.map(taskId)).then((deps) => `${id} now depends on ${deps.join(", ")}`));
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			return answer(
+				(async () => {
+					const id = await cardId(params.task, ctx);
+					const deps = await addDependencies(id, await cardIds(params.dependsOn, ctx));
+					return `${id} now depends on ${deps.join(", ")}`;
+				})(),
+			);
 		},
 	});
 
@@ -1761,8 +1794,8 @@ export default function orchestrator(pi: ExtensionAPI) {
 				(async () => {
 					const t = await api<Task>("POST", "/api/tasks", {
 						...params,
-						dependsOn: params.dependsOn?.map(taskId),
-						parent: params.parent?.trim() ? taskId(params.parent) : undefined,
+						dependsOn: params.dependsOn && (await cardIds(params.dependsOn, ctx)),
+						parent: params.parent?.trim() ? await cardId(params.parent, ctx) : undefined,
 						repo: ctx.cwd,
 						origin: { session: ctx.sessionManager.getSessionId(), terminal: await originTerminal() },
 					});
@@ -1796,8 +1829,7 @@ export default function orchestrator(pi: ExtensionAPI) {
 			after: z.string().optional(),
 		}),
 		approval: "read",
-		async execute(_toolCallId, params) {
-			const id = taskId(params.id);
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const fields = (["title", "description", "ticket", "plan", "planningMode", "loop", "merge", "base", "branch", "dependsOn", "parent"] as const).filter(
 				(k) => params[k] !== undefined,
 			);
@@ -1806,37 +1838,39 @@ export default function orchestrator(pi: ExtensionAPI) {
 			if (!fields.length && !side) {
 				return reply("Nothing to change: pass title, description, ticket, plan, planningMode, loop, merge, base, branch, dependsOn, parent, before or after", true);
 			}
-			const parent = params.parent === undefined || /^(none)?$/i.test(params.parent.trim()) ? null : taskId(params.parent);
-			const changes = Object.fromEntries(
-				fields.map((k) => [
-					k,
-					k === "dependsOn"
-						? params.dependsOn?.map(taskId)
-						: k === "parent"
-							? parent
-							: k === "loop"
-								? /^(none)?$/i.test(params.loop?.trim() ?? "")
-									? null
-									: params.loop?.trim()
-								: params[k],
-				]),
-			);
-			const edit = async () => {
-				const t = await api<Task>("PATCH", `/api/tasks/${id}`, changes);
-				const updated = `Updated ${id}: ${fields.map((k) => (k === "parent" ? (t.parent ? `parent ${t.parent}` : "parent cleared") : k)).join(", ")}`;
-				if (!t.pendingUpdate || (params.title === undefined && params.description === undefined)) return updated;
-				try {
-					const r = await api<{ reopened: boolean }>("POST", `/api/tasks/${id}/update`, {});
-					return `${updated}, and sent the change to its agent${r.reopened ? "; it moved back to In Progress" : ""}`;
-				} catch (e) {
-					return `${updated}, on the card only (${errorText(e)}). The board's task panel shows it as not sent and can send it later.`;
-				}
-			};
 			return answer(
 				(async () => {
+					const id = await cardId(params.id, ctx);
+					const parent = params.parent === undefined || /^(none)?$/i.test(params.parent.trim()) ? null : await cardId(params.parent, ctx);
+					const dependsOn = params.dependsOn && (await cardIds(params.dependsOn, ctx));
+					const changes = Object.fromEntries(
+						fields.map((k) => [
+							k,
+							k === "dependsOn"
+								? dependsOn
+								: k === "parent"
+									? parent
+									: k === "loop"
+										? /^(none)?$/i.test(params.loop?.trim() ?? "")
+											? null
+											: params.loop?.trim()
+										: params[k],
+						]),
+					);
+					const edit = async () => {
+						const t = await api<Task>("PATCH", `/api/tasks/${id}`, changes);
+						const updated = `Updated ${id}: ${fields.map((k) => (k === "parent" ? (t.parent ? `parent ${t.parent}` : "parent cleared") : k)).join(", ")}`;
+						if (!t.pendingUpdate || (params.title === undefined && params.description === undefined)) return updated;
+						try {
+							const r = await api<{ reopened: boolean }>("POST", `/api/tasks/${id}/update`, {});
+							return `${updated}, and sent the change to its agent${r.reopened ? "; it moved back to In Progress" : ""}`;
+						} catch (e) {
+							return `${updated}, on the card only (${errorText(e)}). The board's task panel shows it as not sent and can send it later.`;
+						}
+					};
 					const done: string[] = [];
 					if (side) {
-						const anchor = taskId(params[side] as string);
+						const anchor = await cardId(params[side] as string, ctx);
 						await api<Task>("POST", `/api/tasks/${id}/reorder`, { [side]: anchor });
 						done.push(`Moved ${id} ${side} ${anchor}`);
 					}
@@ -1854,8 +1888,8 @@ export default function orchestrator(pi: ExtensionAPI) {
 			"Add same-subject work to an open Orchestrator card instead of creating a card. A card that hasn't started takes it in its description; a started card's running agent also receives it, and a Review card returns to In Progress. While its agent waits for plan review or an answer, or its card is paused, only the card records it. Refuses done cards, cards still starting, and started cards whose agent isn't running.",
 		parameters: z.object({ id: z.string(), addition: z.string() }),
 		approval: "read",
-		async execute(_toolCallId, params) {
-			const id = taskId(params.id);
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const id = await cardId(params.id, ctx);
 			return answer(
 				api<{ delivered: boolean; held: string | null; reopened: boolean }>("POST", `/api/tasks/${id}/amend`, {
 					text: params.addition,
@@ -1913,8 +1947,8 @@ export default function orchestrator(pi: ExtensionAPI) {
 			"Stop a started Orchestrator card's agent when the user asks: its omp session exits and its terminal closes, while its worktree, branch and session stay. The card parks in Backlog (a Review card stays). Moving it to Todo or In Progress later reopens omp on the same session and resumes it. To only pause it, use orchestrator_move.",
 		parameters: z.object({ id: z.string() }),
 		approval: "read",
-		async execute(_toolCallId, params) {
-			const id = taskId(params.id);
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const id = await cardId(params.id, ctx);
 			return answer(
 				api<Task & { note?: string }>("POST", `/api/tasks/${id}/stop`, {}).then(
 					(t) =>
@@ -1931,8 +1965,8 @@ export default function orchestrator(pi: ExtensionAPI) {
 			"Send a message to a started Orchestrator card's agent, as if typed in its omp: an idle agent starts a turn with it, a working one gets it at its next step. Use it to tell or ask the agent something; to add work to the card itself, use orchestrator_amend. Refuses paused cards, disconnected agents, and agents waiting for plan review (answer with orchestrator_review) or for an answer to their question (the user answers in its terminal; orchestrator_tasks shows how to reach it).",
 		parameters: z.object({ id: z.string(), text: z.string() }),
 		approval: "read",
-		async execute(_toolCallId, params) {
-			const id = taskId(params.id);
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const id = await cardId(params.id, ctx);
 			return answer(
 				api<{ message: string }>("POST", `/api/tasks/${id}/message`, { text: params.text }).then(
 					(r) => `Sent to ${id}'s agent: ${r.message}`,
@@ -1952,8 +1986,8 @@ export default function orchestrator(pi: ExtensionAPI) {
 			feedback: z.string().optional(),
 		}),
 		approval: "read",
-		async execute(_toolCallId, params) {
-			const id = taskId(params.id);
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const id = await cardId(params.id, ctx);
 			return answer(
 				api<{ message: string }>("POST", `/api/tasks/${id}/review`, {
 					decision: params.decision,
@@ -1969,8 +2003,8 @@ export default function orchestrator(pi: ExtensionAPI) {
 		description: "Read the last lines of a started Orchestrator card's agent terminal: what it is doing, asking or showing now.",
 		parameters: z.object({ id: z.string() }),
 		approval: "read",
-		async execute(_toolCallId, params) {
-			const id = taskId(params.id);
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const id = await cardId(params.id, ctx);
 			return answer(api<{ text: string }>("GET", `/api/tasks/${id}/screen`).then((r) => r.text || `${id}'s screen is empty`));
 		},
 	});
@@ -1982,8 +2016,8 @@ export default function orchestrator(pi: ExtensionAPI) {
 			"Read the shared context an Orchestrator card recorded (its Beads notes): reusable findings and its outcome, each with the source task, branch@commit and time, plus the revision. Without id, this session's own task. Use it for a dependency or sibling whose work yours builds on, or to see what changed since the revision your brief shows.",
 		parameters: z.object({ id: z.string().optional() }),
 		approval: "read",
-		async execute(_toolCallId, params) {
-			const id = params.id ? taskId(params.id) : task;
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const id = params.id ? await cardId(params.id, ctx) : task;
 			if (!id) return reply("Name the card to read: this session has no task of its own", true);
 			return answer(api<TaskContext>("GET", `/api/tasks/${id}/context`).then(contextText));
 		},
@@ -2000,8 +2034,8 @@ export default function orchestrator(pi: ExtensionAPI) {
 			id: z.string().optional(),
 		}),
 		approval: "read",
-		async execute(_toolCallId, params) {
-			const id = params.id ? taskId(params.id) : task;
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const id = params.id ? await cardId(params.id, ctx) : task;
 			if (!id) return reply("Name the card to record on: this session has no task of its own", true);
 			return answer(
 				api<TaskContext>("POST", `/api/tasks/${id}/context`, { kind: params.kind, text: params.text, source: task ?? "orchestrator" }).then(
@@ -2034,8 +2068,8 @@ export default function orchestrator(pi: ExtensionAPI) {
 		description: "Show a started Orchestrator card's changes against its base branch: the diffstat, then the diff (long diffs are cut).",
 		parameters: z.object({ id: z.string() }),
 		approval: "read",
-		async execute(_toolCallId, params) {
-			const id = taskId(params.id);
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const id = await cardId(params.id, ctx);
 			return answer(
 				api<{ base: string; stat: string; diff: string; truncated: boolean }>("GET", `/api/tasks/${id}/diff`).then((d) => {
 					const cut = d.truncated || d.diff.length > DIFF_TOOL_LIMIT;

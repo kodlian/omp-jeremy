@@ -16,9 +16,12 @@ import threading
 import time
 import unicodedata
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 import agent_host
@@ -69,6 +72,7 @@ CONTROL_LOOPS_LIMIT = 200_000
 SPAWN_LOG_LIMIT = 6000
 PRESENTATION_INTERVAL = 30.0
 LEGACY_PROBE_INTERVAL = 30.0
+SWEEP_INTERVAL = 60.0
 MESSAGE_LIMIT = 2000
 TERMINAL_LIMIT = 4096
 DIFF_LIMIT = 500_000
@@ -83,7 +87,8 @@ class ApiError(Exception):
     def __init__(self, status: int, message: str, extra: Optional[Dict[str, Any]] = None):
         super().__init__(message)
         self.status = status
-        self.message = message
+        # Errors reach people and agents, who know cards by number.
+        self.message = with_numbers(message)
         self.extra = extra or {}
 
 
@@ -762,6 +767,8 @@ class Store:
             "moveRequiresConfirmation": move_requires_confirmation(t),
             "pendingUpdate": pending_update(t),
             "merged": t.get("merged"),
+            "number": task_number(t),
+            "cleanupPending": t.get("cleanupPending"),
             "createdAt": t["createdAt"],
             "updatedAt": t["updatedAt"],
             "plan": t.get("plan", ""),
@@ -862,6 +869,36 @@ store = Store()
 
 def spawned(t: Dict[str, Any]) -> bool:
     return bool(t.get("worktree"))
+
+
+TASK_REF = re.compile(r"\bKB-\d+(?:\.\d+)*\b")
+
+
+def task_number(t: Dict[str, Any]) -> str:
+    """The number people know a card by, counted per project: a child's is its parent's with its place under it, a card
+    created since numbering went per project keeps the one it got, an older one the number in its Beads id."""
+    parent = store.tasks.get(t.get("parent") or "")
+    if parent and t["id"].startswith(parent["id"] + "."):
+        return task_number(parent) + t["id"][len(parent["id"]):]
+    if t.get("number"):
+        return str(t["number"])
+    return t["id"][3:] if TASK_REF.fullmatch(t["id"]) else t["id"]
+
+
+def label(task_id: str) -> str:
+    return f"#{task_number(store.tasks[task_id])}" if task_id in store.tasks else task_id
+
+
+def with_numbers(text: str) -> str:
+    """`text` with each card's Beads id replaced by its number (reads store.tasks without its lock, as errors can be raised
+    under other locks)."""
+    return TASK_REF.sub(lambda m: label(m[0]), text) if "store" in globals() else text
+
+
+def next_number(repo: str) -> int:
+    """One past the highest card number in the project at `repo`; its first card is 1 (call under store.lock)."""
+    numbers = [int(n) for c in store.tasks.values() if same_dir(c["repo"], repo) for n in [task_number(c)] if n.isdigit()]
+    return max(numbers, default=0) + 1
 
 
 def has_started(t: Dict[str, Any]) -> bool:
@@ -1178,6 +1215,7 @@ def create_task(body: Dict[str, Any]) -> Dict[str, Any]:
         t["dependsOn"] = validate_deps("", deps or [], t["repo"], t["base"], t["parent"])
         t["merge"] = validate_merge(body["merge"]) if "merge" in body else default_merge(t)
         t["branch"] = store.suggest_branch(t)
+        t["number"] = None if t["parent"] else next_number(t["repo"])
         if plan:
             store.write_plan(t, plan)
         store.create(t)
@@ -1280,6 +1318,127 @@ def set_flow_scripts(body: Dict[str, Any]) -> Dict[str, Any]:
         updated = next(f for f in store.flow_list() if f["id"] == flow_id_value)
     hub.changed()
     return {"ok": True, "flow": updated}
+
+
+SHORTSTAT = re.compile(r"(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?")
+EXPORTS_DIR = HOME / "exports"
+EXPORT_NAME = re.compile(r"[A-Za-z0-9._-]+\.html")
+OMP_SESSIONS = Path(os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".omp" / "agent") / "sessions"
+IDLE_AFTER = 300
+
+
+def merge_stats(repo: str, sha: str) -> Optional[Dict[str, int]]:
+    """What a task's merge commit brought into its base: files, lines added and removed, and the task's commits."""
+    code, out, _ = run(["git", "-C", repo, "rev-list", "--parents", "-n", "1", sha], timeout=15)
+    parents = out.split()[1:] if code == 0 else []
+    if len(parents) != 2:
+        return None
+    code, out, _ = run(["git", "-C", repo, "diff", "--shortstat", parents[0], sha], timeout=30)
+    if code != 0:
+        return None
+    m = SHORTSTAT.search(out)
+    code, count, _ = run(["git", "-C", repo, "rev-list", "--count", f"{parents[0]}..{parents[1]}"], timeout=15)
+    return {"files": int(m[1]) if m else 0, "added": int(m[2] or 0) if m else 0, "removed": int(m[3] or 0) if m else 0,
+            "commits": int(count) if code == 0 and count.strip().isdigit() else None}
+
+
+def epoch(value: str) -> float:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+
+
+def stamp(seconds: float) -> str:
+    return datetime.fromtimestamp(seconds, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def column_changes(task_id: str, created: Optional[str]) -> List[Dict[str, str]]:
+    """The columns a task moved through with when, oldest first, from its bead's audit events."""
+    changes: List[Dict[str, str]] = []
+    for event in reversed(store.workspace.history(task_id, 500, True) or []):
+        try:
+            old, new = (json.loads(event.get(k) or "null") for k in ("old_value", "new_value"))
+        except ValueError:
+            continue
+        if not isinstance(new, dict) or not new.get("status") or not event.get("created_at"):
+            continue
+        if not changes and created and isinstance(old, dict) and old.get("status"):
+            changes.append({"at": created, "column": beads.column_for(old["status"])})
+        changes.append({"at": event["created_at"], "column": beads.column_for(new["status"])})
+    return changes
+
+
+def agent_activity(branch: str, folders: List[Path], since: float, until: float) -> List[List[str]]:
+    """When an agent worked on `branch`: its omp sessions' messages (omp names a session folder after its directory, which
+    ends with the branch), merged into stretches that end after five minutes without one."""
+    suffix = "-" + branch.replace("/", "-")
+    times: List[float] = []
+    for folder in folders:
+        if not folder.name.rstrip("-").endswith(suffix):
+            continue
+        for path in folder.glob("*.jsonl"):
+            if path.stat().st_mtime < since:
+                continue
+            with path.open(encoding="utf-8", errors="replace") as lines:
+                for line in lines:
+                    if '"type":"message"' not in line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        at = epoch(entry["timestamp"])
+                    except (ValueError, KeyError, TypeError):
+                        continue
+                    if since <= at <= until and (entry.get("message") or {}).get("role") in ("user", "assistant", "toolResult"):
+                        times.append(at)
+    spans: List[List[float]] = []
+    for at in sorted(times):
+        if spans and at - spans[-1][1] <= IDLE_AFTER:
+            spans[-1][1] = at
+        else:
+            spans.append([at, at])
+    return [[stamp(a), stamp(b)] for a, b in spans]
+
+
+def flow_recap(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Per-task facts for a saved flow page: column changes, times and outcome notes from Beads, merge-commit stats from git,
+    and when agents worked from the tasks' omp sessions."""
+    flow = body.get("flow")
+    with store.lock:
+        tasks = [{"id": t["id"], "repo": t["repo"], "branch": t["branch"], "merged": t.get("merged") or {}}
+                 for t in store.tasks.values() if flow_id(t["repo"], t["base"]) == flow]
+    if not tasks:
+        raise ApiError(404, f"No tasks in flow {flow}")
+    folders = [p for p in OMP_SESSIONS.iterdir() if p.is_dir()] if OMP_SESSIONS.is_dir() else []
+
+    def facts(t: Dict[str, Any], bead: Dict[str, Any], columns: List[Dict[str, str]]) -> Dict[str, Any]:
+        began = next((c["at"] for c in columns if c["column"] in ("todo", "doing")), None) or bead.get("started_at")
+        ended = bead.get("closed_at") or t["merged"].get("at")
+        outcomes = [e["text"] for e in context_entries(bead.get("notes") or "") if e["kind"] == "outcome"]
+        return {"startedAt": bead.get("started_at"), "closedAt": bead.get("closed_at"), "columns": columns,
+                "activity": agent_activity(t["branch"], folders, epoch(began), epoch(ended) if ended else time.time()) if began else [],
+                "outcome": "\n\n".join(outcomes) or None,
+                "merge": merge_stats(t["repo"], t["merged"]["sha"]) if t["merged"].get("sha") else None}
+
+    try:
+        listed = {b["id"]: b for b in store.workspace.list_all() if b.get("id")}
+        # One bd call at a time: concurrent calls only queue on the Beads database, delaying the board's own reads.
+        columns = [column_changes(t["id"], (listed.get(t["id"]) or {}).get("created_at")) for t in tasks]
+    except beads.BeadsError as e:
+        raise beads_api_error(e)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        found = list(pool.map(lambda t, c: facts(t, listed.get(t["id"]) or {}, c), tasks, columns))
+    return {"tasks": {t["id"]: f for t, f in zip(tasks, found)}}
+
+
+def save_export(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Writes a saved flow page into the exports folder; the board serves it at /exports/<name>."""
+    flow, page = body.get("flow"), body.get("html")
+    if not isinstance(flow, str) or not flow.strip() or not isinstance(page, str) or not page.startswith("<!doctype html>"):
+        raise ApiError(400, "Send the flow and its page")
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", flow).strip("-.") + time.strftime("-%Y-%m-%d-%H%M") + ".html"
+    path = EXPORTS_DIR / name
+    write_atomic(path, page)
+    home = str(Path.home())
+    shown = "~" + str(path)[len(home):] if str(path).startswith(home + os.sep) else str(path)
+    return {"path": shown, "url": f"/exports/{name}"}
 
 
 def set_theme(body: Dict[str, Any]) -> Dict[str, Any]:
@@ -1401,12 +1560,15 @@ def delete_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         if move_requires_confirmation(t) and body.get("confirmWorking") is not True:
             raise ApiError(409, f"{task_id} may still be working; confirm before deleting it",
                            {"requiresConfirmation": "workingTask"})
-        remove_worktree = body.get("cleanup") is True and spawned(t)
+        removing = body.get("cleanup") is True and spawned(t)
         directory = host_dir(t)
     # With cleanup, the agent stops and the worktree goes first through the removeWorktree command or teardown script; a failure keeps the card.
-    output = cleanup_task(task_id, body)["output"] if remove_worktree else ""
+    cleaned = cleanup_task(task_id, body) if removing else {"output": ""}
+    if cleaned.get("pending"):
+        raise ApiError(409, cleaned["output"] + "; delete the card once it is gone")
+    output = cleaned["output"]
     note = None
-    if not remove_worktree and directory and agent_host.status(directory)["alive"]:
+    if not removing and directory and agent_host.status(directory)["alive"]:
         note = f"Its agent keeps running; attach with {agent_host.command('attach', directory)}"
     with store.lock:
         store.get(task_id)
@@ -1513,7 +1675,7 @@ def reorder_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
 # --- worktree + agent ---------------------------------------------------------------
 
 def write_brief(t: Dict[str, Any], name: str, handoffs: List[Dict[str, Any]]) -> Path:
-    lines = [f"# {t['id']}: {t['title']}", ""]
+    lines = [f"# Task {task_number(t)}: {t['title']}", ""]
     if t.get("ticket"):
         lines.append(f"Ticket: {t['ticket']}")
     lands = "locally" if t["merge"] == "local" else "via pull request"
@@ -1548,7 +1710,7 @@ def write_brief(t: Dict[str, Any], name: str, handoffs: List[Dict[str, Any]]) ->
     if t.get("plan"):
         lines += ["## Draft plan", "", t["plan"], ""]
     path = store.task_dir(t["id"]) / name
-    write_atomic(path, "\n".join(lines))
+    write_atomic(path, with_numbers("\n".join(lines)))
     return path
 
 
@@ -1660,13 +1822,13 @@ def start_args(t: Dict[str, Any], brief: Path, config: Path) -> List[str]:
         finish = ("When the work is complete and verified, "
                   f"commit it, push the branch and open a pull request into {t['base']}{pr}. ")
     if t["planningMode"] == "plan":
-        approach = (f"Plan the task in the attached brief ({t['id']}) before changing any file: explore the code, then "
+        approach = (f"Plan the task in the attached brief ({label(t['id'])}) before changing any file: explore the code, then "
                     "propose the plan with xd://propose for my review; once I approve it, implement it.")
     elif t["planningMode"] == "fast":
-        approach = (f"Implement the straightforward task in the attached brief ({t['id']}) directly. Read enough to make "
+        approach = (f"Implement the straightforward task in the attached brief ({label(t['id'])}) directly. Read enough to make "
                     "the change safely, but do not request plan review unless I explicitly ask for one.")
     else:
-        approach = (f"Briefly triage the task in the attached brief ({t['id']}) before changing any file. Inspect only "
+        approach = (f"Briefly triage the task in the attached brief ({label(t['id'])}) before changing any file. Inspect only "
                     "enough to decide the route: if the implementation and acceptance are clear, implement immediately "
                     "without plan review; if you find a product decision, unclear acceptance, architectural or migration "
                     "impact, or meaningful cross-cutting risk, propose a plan with xd://propose and wait for my review. "
@@ -2191,7 +2353,7 @@ def require_agent(t: Dict[str, Any]) -> None:
 
 def message_agent(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     """Has a started task's omp session take a message as if typed there: it starts a turn, or steers the running one."""
-    text = str(body.get("text") or "").strip()
+    text = with_numbers(str(body.get("text") or "").strip())
     if not text:
         raise ApiError(400, "The message is empty")
     with store.lock:
@@ -2327,7 +2489,7 @@ def resume_task(task_id: str) -> None:
         note_briefing(t)
         snapshot = dict(t)
         update = briefing(t) if pending_update(t) else None
-        text = RESUME_TEXT.format(id=task_id)
+        text = RESUME_TEXT.format(id=label(task_id))
         if update:
             text += "\n\n" + update_message(task_id, t["briefed"], update)
     try:
@@ -2495,7 +2657,7 @@ def resume_agent(t: Dict[str, Any]) -> bool:
 
 def update_message(task_id: str, briefed: Dict[str, str], current: Dict[str, str]) -> str:
     changed = [k for k in ("title", "description") if current[k] != briefed[k]]
-    parts = [f"{task_id} was edited on the board; this replaces the {' and '.join(changed)} in your brief."]
+    parts = [f"{label(task_id)} was edited on the board; this replaces the {' and '.join(changed)} in your brief."]
     if "title" in changed:
         parts.append(f"Title: {current['title']}")
     if "description" in changed:
@@ -2573,7 +2735,7 @@ def present_diff(task_id: str) -> Dict[str, Any]:
         presentation = t.get("presentation") or {}
         target = presentation if presentation.get("capabilities", {}).get("diff") else presentation_context(t)
     try:
-        opened = terminals.open_diff(target, path, base_ref(path, base), f"{task_id} diff")
+        opened = terminals.open_diff(target, path, base_ref(path, base), f"{label(task_id)} diff")
     except RuntimeError as e:
         raise ApiError(500, str(e))
     if not opened:
@@ -2581,9 +2743,32 @@ def present_diff(task_id: str) -> Dict[str, Any]:
     return {"ok": True}
 
 
+CLEANING: set = set()  # tasks whose worktree a removal is working on (under store.lock)
+
+
+@contextmanager
+def removal_claim(task_id: str) -> Iterator[None]:
+    """One removal of a task's worktree at a time, whether the board's button, a merge or the poller asked for it."""
+    with store.lock:
+        if task_id in CLEANING:
+            raise ApiError(409, f"{task_id}'s worktree is already being removed")
+        CLEANING.add(task_id)
+    try:
+        yield
+    finally:
+        with store.lock:
+            CLEANING.discard(task_id)
+
+
 def cleanup_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    with removal_claim(task_id):
+        return remove_worktree(task_id, body)
+
+
+def remove_worktree(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     """Removes a started task's worktree and branch, stopping its agent first so nothing works in a deleted tree, then
-    closes every terminal left in it (the requester's own once replied); an unfinished task can then start again."""
+    closes every terminal left in it (the requester's own once replied); an unfinished task can then start again. An
+    agent still exiting after the stop leaves the removal pending, for the poller to finish (call under removal_claim)."""
     requester = request_terminal(body)
     with store.lock:
         t = store.get(task_id)
@@ -2607,7 +2792,17 @@ def cleanup_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         refuse_dirty()
     note = stop_agent(task_id)
     if hub.task_live(task_id) or (directory and agent_host.status(directory)["alive"]):
-        raise ApiError(409, f"{task_id}'s agent is still running, so its worktree stays" + (f": {note}" if note else ""))
+        # The agent can take a few seconds more to exit: the poller removes the worktree once it has.
+        with store.lock:
+            t = store.tasks.get(task_id)
+            if t:
+                t["cleanupPending"] = now_iso()
+                store.save(t)
+        hub.changed()
+        poller.kick()
+        after_reply(close_worktree_terminals(task_id, path, requester))
+        return {"ok": True, "pending": True,
+                "output": f"{label(task_id)}'s agent is still stopping; its worktree is removed once it exits" + (f" ({note})" if note else "")}
     if not exists:
         output = f"{path} was already removed"
     elif command:
@@ -2642,7 +2837,7 @@ def forget_worktree(t: Dict[str, Any], park: Tuple[str, ...]) -> None:
     """Drops a task's worktree, agent and terminal records and its live state (call under store.lock). An unfinished
     task is no longer started, so starting it checks its branch out anew; a card in `park` moves to Backlog."""
     task_id = t["id"]
-    t.update(worktree=None, presentation=None, execution=None, agent=None, git=None)
+    t.update(worktree=None, presentation=None, execution=None, agent=None, git=None, cleanupPending=None)
     if not t.get("merged") and t["column"] != "done":
         t["spawn"] = {"state": "none", "error": None, "log": ""}
         if t["column"] in park:
@@ -2652,6 +2847,18 @@ def forget_worktree(t: Dict[str, Any], park: Tuple[str, ...]) -> None:
     store.resuming.pop(task_id, None)
     store.hosts.pop(task_id, None)
     hub.cancel_queued(task_id)
+
+
+def merged_leftover(t: Dict[str, Any]) -> bool:
+    """A Done card's worktree that its local merge left behind and nobody chose to keep: clean, with its HEAD in the merge."""
+    path, merged = t.get("worktree"), t.get("merged") or {}
+    if t["column"] != "done" or not merged.get("sha") or t.get("keptWorktree") or not path or not Path(path).is_dir():
+        return False
+    code, status, _ = run(["git", "-C", path, "status", "--porcelain"], timeout=30)
+    if code != 0 or status.strip():
+        return False
+    code, head, _ = run(["git", "-C", path, "rev-parse", "HEAD"], timeout=10)
+    return code == 0 and run(["git", "-C", path, "merge-base", "--is-ancestor", head.strip(), merged["sha"]], timeout=15)[0] == 0
 
 
 def recoverable(t: Dict[str, Any]) -> Optional[Path]:
@@ -2721,7 +2928,7 @@ def commit_task_changes(path: str, branch: str, task_id: str, title: str) -> Opt
         raise ApiError(409, "The worktree has changes Git cannot commit", {"output": status})
     if code != 1:
         raise ApiError(409, "Could not inspect the staged task changes", {"output": (out + error).strip()})
-    subject = f"{task_id}: {' '.join(plain(title).splitlines()).strip() or 'Orchestrator task'}"
+    subject = f"Task {task_number(store.tasks[task_id])}: {' '.join(plain(title).splitlines()).strip() or 'Orchestrator task'}"
     code, out, error = run(["git", "-C", path, "commit", "-m", subject], timeout=120)
     if code != 0:
         raise ApiError(409, "Could not commit the task changes", {"output": (out + error).strip()})
@@ -2735,6 +2942,14 @@ MERGE_LOCK = threading.Lock()
 
 
 def merge_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    if not body.get("cleanup"):
+        return merge_into_base(task_id, body)
+    # Claimed for the whole merge, so the poller's sweep never removes the worktree under it.
+    with removal_claim(task_id):
+        return merge_into_base(task_id, body)
+
+
+def merge_into_base(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     """Commits a task, rebases it after a conflict, and merges it into its base; `cleanup` removes the worktree."""
     with store.lock:
         t = store.get(task_id)
@@ -2762,13 +2977,13 @@ def merge_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         if not ahead.strip().isdigit() or int(ahead) == 0:
             # A merge that landed without being recorded (an interrupted /orchestrator done) finishes the task instead of failing.
             _, already, _ = run(["git", "-C", target, "log", "-1", "--format=%H", "--fixed-strings",
-                                 f"--grep=Merge {branch} ({task_id}:", base], timeout=15)
+                                 f"--grep=Merge {branch} (", base], timeout=15)
             if not already.strip():
                 raise ApiError(409, f"Nothing to merge: {branch} has no commits that {base} lacks")
         # Already merged: `--ff-only` on an ancestor is a successful no-op, so the shared completion below records it.
         merge_command = ["git", "-C", target, "merge", "--ff-only", branch] if already else [
             "git", "-C", target, "merge", "--no-ff", "--no-edit", "-m",
-            f"Merge {branch} ({task_id}: {title})", branch,
+            f"Merge {branch} (task {task_number(store.tasks[task_id])}: {title})", branch,
         ]
         code, out, err = run(merge_command, timeout=120)
         if code != 0:
@@ -2850,6 +3065,7 @@ def merge_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         t = store.tasks.get(task_id)
         if t:
             t["merged"] = merged
+            t["keptWorktree"] = not body.get("cleanup")
             if t["column"] != "done":
                 t["column"], t["order"] = "done", store.next_order("done")
             store.save(t)
@@ -2865,7 +3081,7 @@ def merge_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     requester = request_terminal(body)
     if body.get("cleanup"):
         try:
-            output += "\n" + cleanup_task(task_id, {"terminal": body.get("terminal")})["output"]
+            output += "\n" + remove_worktree(task_id, {"terminal": body.get("terminal")})["output"]
         except ApiError as e:
             # Done either way: its terminals close as when keeping the worktree, the requester's staying to show why.
             close_worktree_terminals(task_id, path, requester)
@@ -2891,6 +3107,8 @@ class Poller:
         self.last_pr = 0.0
         self.last_presentation = 0.0
         self.last_legacy = 0.0
+        self.last_sweep = 0.0
+        self.sweep_failed: set = set()
 
     def kick(self, full: bool = False) -> None:
         self.forced = self.forced or full
@@ -2920,9 +3138,46 @@ class Poller:
             if forced or now - self.last_pr >= 60:
                 self.last_pr = now
                 changed |= self.check_prs([t for t in tracked if t["column"] != "done" or not t.get("pr")])
+            sweep = forced or now - self.last_sweep >= SWEEP_INTERVAL
+            if sweep:
+                self.last_sweep = now
+            self.check_cleanups(tracked, sweep)
         changed |= self.check_queue()
         if changed:
             hub.changed()
+
+    def check_cleanups(self, tracked: List[Dict[str, Any]], sweep: bool) -> None:
+        """Removes the worktrees whose removal waited for their agent to exit, and on `sweep` the ones a local merge left
+        behind; each runs in its own thread once no agent of the task is connected or hosted."""
+        for t in tracked:
+            task_id = t["id"]
+            if not (t.get("cleanupPending") or (sweep and task_id not in self.sweep_failed and merged_leftover(t))):
+                continue
+            directory = host_dir(t)
+            if hub.task_live(task_id) or (directory and agent_host.status(directory)["alive"]):
+                continue
+            with store.lock:
+                if task_id in CLEANING:
+                    continue
+                CLEANING.add(task_id)
+            threading.Thread(target=self.finish_cleanup, args=(task_id,), daemon=True).start()
+
+    def finish_cleanup(self, task_id: str) -> None:
+        """Removes a worktree claimed by check_cleanups; a failure is logged and not swept again until the board restarts."""
+        try:
+            print(f"orchestrator: {remove_worktree(task_id, {})['output']}", file=sys.stderr)
+        except ApiError as e:
+            print(f"orchestrator: couldn't remove {task_id}'s worktree: {e.message}", file=sys.stderr)
+            self.sweep_failed.add(task_id)
+            with store.lock:
+                t = store.tasks.get(task_id)
+                if t and t.get("cleanupPending"):
+                    t["cleanupPending"] = None
+                    store.save(t)
+            hub.changed()
+        finally:
+            with store.lock:
+                CLEANING.discard(task_id)
 
     def check_beads(self) -> bool:
         """Takes in task edits made with bd outside the board."""
@@ -3279,7 +3534,7 @@ def readiness(body: Dict[str, Any]) -> Dict[str, Any]:
             tasks.append({"id": t["id"], "title": t["title"], "column": t["column"], "status": status,
                           "queued": queued, "blockedBy": blocked_by(t), "waitingForSlot": waiting_for_slot(t),
                           "paused": paused(t), "native": state, "nativeBlockedBy": native_blockers,
-                          "reason": f"{why}. {said}"})
+                          "reason": with_numbers(f"{why}. {said}")})
     summary = {"total_ready": len(ready), "total_blocked": len(blocked),
                "cycle_count": (native.get("summary") or {}).get("cycle_count", 0)}
     return {"flow": flow or None, "native": {"ready": ready, "blocked": blocked, "summary": summary},
@@ -3381,6 +3636,8 @@ ROUTES = [
     ("POST", r"/api/context", lambda m, b: set_context(b)),
     ("POST", r"/api/flows", lambda m, b: register_flow(b)),
     ("POST", r"/api/flows/prompt", lambda m, b: prompt_task(b)),
+    ("POST", r"/api/flows/recap", lambda m, b: flow_recap(b)),
+    ("POST", r"/api/exports", lambda m, b: save_export(b)),
     ("PATCH", r"/api/flows", lambda m, b: set_flow_concurrency(b)),
     ("PATCH", r"/api/flows/scripts", lambda m, b: set_flow_scripts(b)),
     ("PATCH", r"/api/flows/control-loops", lambda m, b: set_flow_control_loops(b)),
@@ -3446,13 +3703,21 @@ class Handler(BaseHTTPRequestHandler):
                 if not page.exists():
                     raise ApiError(404, "index.html is missing")
                 return self.serve_bytes(page.read_bytes(), "text/html; charset=utf-8")
-            if self.command == "GET" and path in ("/design-system.css", "/markdown.js", "/graph-layout.js", "/pipeline.js", "/pipeline.css", "/workbench.js", "/workbench.css", "/native.js", "/native.css", "/control-view.js", "/control-view.css"):
+            if self.command == "GET" and path in ("/design-system.css", "/markdown.js", "/graph-layout.js", "/pipeline.js", "/pipeline.css", "/workbench.js", "/workbench.css", "/native.js", "/native.css", "/control-view.js", "/control-view.css", "/flow-export.js", "/flow-export.css"):
                 asset = ROOT / path.lstrip("/")
                 content_type = "text/javascript" if path.endswith(".js") else "text/css"
                 return self.serve_bytes(asset.read_bytes(), content_type + "; charset=utf-8")
             if self.command == "GET" and path == "/appearance.css":
                 flow = parse_qs(urlparse(self.path).query).get("flow", [""])[0]
                 return self.serve_bytes(appearance_css(flow).encode(), "text/css; charset=utf-8")
+            if self.command == "GET" and path.startswith("/exports/"):
+                name = path[len("/exports/"):]
+                page = EXPORTS_DIR / name
+                if not EXPORT_NAME.fullmatch(name) or not page.is_file():
+                    raise ApiError(404, "No saved flow page with that name")
+                # Saved pages run in an opaque origin: their script can't reach the board's API.
+                return self.serve_bytes(page.read_bytes(), "text/html; charset=utf-8",
+                                        {"Content-Security-Policy": "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox"})
             if self.command == "GET" and path == "/api/events":
                 return self.serve_events()
             for method, pattern, handler in ROUTES:
@@ -3489,10 +3754,12 @@ class Handler(BaseHTTPRequestHandler):
 
     do_GET = do_POST = do_PATCH = do_DELETE = handle_any
 
-    def serve_bytes(self, body: bytes, content_type: str) -> None:
+    def serve_bytes(self, body: bytes, content_type: str, headers: Optional[Dict[str, str]] = None) -> None:
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)

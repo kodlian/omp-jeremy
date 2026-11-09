@@ -34,6 +34,13 @@ function pipelineHalfDash(path) {
   const length = path.getTotalLength();
   return `${length / 2} 7` + " 8 7".repeat(Math.ceil(length / 2 / 15));
 }
+function pipelineEdgeState(source) {
+  return { complete: source.column === "done", started: source.column === "doing" || source.column === "review", active: source.column === "doing" && !!source.agent && !!AGENT_LABEL[source.agent.state] };
+}
+function pipelineNodeParts(t) {
+  const info = statusOf(t);
+  return [h("div", { class: "pipeline-node-head" }, taskNumber(t.id), h("span", {}, colTitle(t.column))), h("strong", { class: "pipeline-title" }, t.title), info ? stateEl(info) : h("span", {}, colTitle(t.column))];
+}
 function pipelineDrawEdges() {
   for (const edge of pipeline.edges.values()) {
     const a = pipeline.positions.get(edge.from), b = pipeline.positions.get(edge.to);
@@ -194,8 +201,8 @@ function renderPipeline() {
     const content = JSON.stringify([t.title, t.column, t.agent, t.spawn, t.blockedBy, t.waitingForSlot, t.paused, t.plan, t.merged, t.base]);
     if (node.dataset.content !== content) {
       node.dataset.content = content;
-      const info = statusOf(t), line = cardLine(t);
-      node.replaceChildren(h("div", { class: "pipeline-node-head" }, taskNumber(t.id), h("span", {}, colTitle(t.column))), h("strong", { class: "pipeline-title" }, t.title), info ? stateEl(info) : h("span", {}, colTitle(t.column)), h("div", { class: "pipeline-step", title: line?.text || "" }, line?.text || ""));
+      const line = cardLine(t);
+      node.replaceChildren(...pipelineNodeParts(t), h("div", { class: "pipeline-step", title: line?.text || "" }, line?.text || ""));
       for (const port of ["in", "out"]) node.append(h("button", { class: "pipeline-port " + port, "data-port": port, title: port === "in" ? "Drag to choose a prerequisite" : "Drag to a dependent task", "aria-label": port === "in" ? "Prerequisite connection" : "Dependent connection" }));
     }
     node.dataset.column = t.column;
@@ -224,10 +231,8 @@ function renderPipeline() {
       group.append(path, hit); pipeline.svg.append(group);
       edge = { key, from, to: t.id, group, path, hit }; pipeline.edges.set(key, edge);
     }
-    const source = findTask(from);
-    const complete = source.column === "done";
-    edge.group.classList.toggle("started", source.column === "doing" || source.column === "review");
-    const active = source.column === "doing" && !!source.agent && !!AGENT_LABEL[source.agent.state];
+    const { complete, started, active } = pipelineEdgeState(findTask(from));
+    edge.group.classList.toggle("started", started);
     edge.group.classList.toggle("active", active);
     edge.group.classList.toggle("complete", complete);
     edge.group.classList.toggle("history", t.column === "done");
