@@ -397,9 +397,17 @@ function elapsed(iso) {
 }
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const isTyping = () => { const a = document.activeElement; return !!a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.isContentEditable); };
+// Preferences saved before the rename from Kanboard move to the new prefix once.
+try {
+  for (const key of Object.keys(localStorage).filter(k => k.startsWith("kanboard."))) {
+    const moved = "orchestrator." + key.slice("kanboard.".length);
+    if (localStorage.getItem(moved) === null) localStorage.setItem(moved, localStorage.getItem(key));
+    localStorage.removeItem(key);
+  }
+} catch {}
 const LS = {
-  get: k => { try { return localStorage.getItem("kanboard." + k); } catch { return null; } },
-  set: (k, v) => { try { localStorage.setItem("kanboard." + k, v); } catch {} },
+  get: k => { try { return localStorage.getItem("orchestrator." + k); } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem("orchestrator." + k, v); } catch {} },
 };
 function autosize(el, max = 400) {
   el.style.height = "auto";
@@ -504,7 +512,7 @@ function flowMenu() {
     { icon: "wrench", label: "Concurrent tasks", sub: cur.concurrencyLimit == null ? "Unlimited" : String(cur.concurrencyLimit), action: () => showConcurrencyModal(cur) },
     { icon: "play", label: "Setup script", sub: scriptName(cur.setupScript), action: () => showScriptsModal(cur) },
     { icon: "trash", label: "Teardown script", sub: scriptName(cur.teardownScript), action: () => showScriptsModal(cur) },
-    "-", { icon: "openIn", label: "Save flow as a page", sub: "~/.kanboard/exports", action: () => saveFlow() },
+    "-", { icon: "openIn", label: "Save flow as a page", sub: "~/.orchestrator/exports", action: () => saveFlow() },
     "-", { header: "Beads" },
     { icon: "file", label: "Shared memories…", sub: cur.name, action: () => showMemories() }];
 }
@@ -602,8 +610,13 @@ async function loadState() { try { setBoard(await api("GET", "/api/state")); } c
 // MARK: status
 const AGENT_LABEL = { working: "Working", thinking: "Thinking", planning: "Planning" };
 const hasStarted = t => !!t.worktree || t.spawn.state === "running" || t.spawn.state === "done" || !!t.merged;
+const INTENT_LABEL = { start: "Creating worktree", resume: "Resuming agent", stop: "Stopping agent", remove: "Removing worktree", delete: "Deleting" };
+const OP_LABEL = { start: "Start", resume: "Resume", stop: "Stop", merge: "Merge", remove: "Worktree removal", delete: "Delete" };
 function statusOf(t) {
-  if (t.spawn.state === "running") return { tone: "busy", spin: true, text: "Creating worktree" };
+  if (t.intent) {
+    const op = t.intent.op, text = op === "merge" ? "Merging into " + t.base : INTENT_LABEL[op] || "Working";
+    return t.intent.attempt > 0 ? { tone: "busy", spin: true, text: text + " · retrying", title: t.intent.lastError || "" } : { tone: "busy", spin: true, text };
+  }
   if (t.spawn.state === "failed") return { tone: "err", icon: "alert", text: "Start failed" };
   if (t.column === "done") return { tone: "ok", icon: t.merged ? "merge" : "check", text: t.merged ? "Merged into " + t.base : "Done" };
   if (t.paused) {
@@ -627,7 +640,7 @@ function statusOf(t) {
   return null;
 }
 function stateEl(info) {
-  const el = h("span", { class: `state ${info.tone}` });
+  const el = h("span", { class: `state ${info.tone}`, title: info.title || null });
   if (info.spin) el.append(frag(spinner(12)));
   else if (info.icon) el.append(I(info.icon, 12));
   else if (info.dot) el.append(h("span", { class: "dot" }));
@@ -785,7 +798,7 @@ async function requestMove(id, col, order) {
   if (col !== t.column && t.moveRequiresConfirmation) { confirmWorkingMove(t, col, order); return; }
   await doMove(t, col, order);
 }
-async function doMove(t, col, order, force, confirmedWorking = false, confirmedLegacy = false) {
+async function doMove(t, col, order, force, confirmedWorking = false) {
   const prev = { column: t.column, order: t.order };
   t.column = col;
   t.order = order ?? Math.max(0, ...colTasks(col).filter(x => x !== t).map(x => x.order)) + 1000;
@@ -795,18 +808,13 @@ async function doMove(t, col, order, force, confirmedWorking = false, confirmedL
   if (order != null) body.order = order;
   if (force) body.force = true;
   if (confirmedWorking) body.confirmWorking = true;
-  if (confirmedLegacy) body.confirmLegacy = true;
   try {
     const r = await act("POST", tpath(t.id, "/move"), body);
     if (r && r.note) toast(`${taskNumber(t.id)} paused · ${r.note}`);
     if (r && r.id) { delete r.note; Object.assign(t, r); }
   }
-  catch (e) {
+  catch {
     Object.assign(t, prev);
-    if (e.data?.requiresConfirmation === "legacySession") {
-      confirmModal("Replace the legacy session?", "First exit omp in the old terminal. Its process cannot be verified; continuing while it is running could start a second agent in the same worktree.", "Old session exited — continue",
-        () => doMove(t, col, order, force, confirmedWorking, true));
-    }
   }
   renderBoard();
   if (openId === t.id) updatePanel();
@@ -890,7 +898,7 @@ function confirmWorkingMove(t, col, order) {
 function confirmStop(t) {
   const where = t.column === "review" ? "The card stays in Review" : "The card parks in Backlog";
   confirmModal(`Stop ${taskNumber(t.id)}'s agent?`,
-    `Its omp session exits; the worktree, branch and saved session stay. ${where}; moving it to Todo or In Progress resumes it. Closing only its terminal attachment does not stop a managed agent.`,
+    `Its omp session exits; the worktree, branch and saved session stay. ${where}; moving it to Todo or In Progress resumes it. Closing only its terminal attachment does not stop the agent.`,
     "Stop agent", async () => {
       try { const r = await act("POST", tpath(t.id, "/stop"), {}, `${taskNumber(t.id)} stopped`); if (r && r.note) toast(r.note, true); } catch {}
     });
@@ -926,20 +934,19 @@ function confirmDelete(t) {
     ? "This task may still be working. Deleting it removes board tracking, but omp, its terminal attachment, worktree and branch stay."
     : t.worktree ? "The board forgets this task. Its worktree, branch and terminal attachment stay." : "The task and its plan are deleted.";
   confirmModal(`Delete ${taskNumber(t.id)}?`, text, "Delete task", async () => {
-    try { await act("DELETE", tpath(t.id), { confirmWorking: t.moveRequiresConfirmation === true }); board.tasks = board.tasks.filter(x => x.id !== t.id); closePanel(); renderBoard(); } catch {}
+    try {
+      const r = await act("DELETE", tpath(t.id), { confirmWorking: t.moveRequiresConfirmation === true });
+      if (r && r.pending) { toast(r.message || `${taskNumber(t.id)} is deleted once its worktree is gone`); return; }
+      board.tasks = board.tasks.filter(x => x.id !== t.id); closePanel(); renderBoard();
+    } catch {}
   });
 }
-function confirmCleanup(t, confirmedLegacy = false) {
-  const text = confirmedLegacy
-    ? "First exit omp in the old terminal. Only continue once it has ended; the board cannot stop or verify that legacy process."
-    : `Stops this task's managed agent, then deletes ${t.worktree}, branch ${t.branch} and its owned terminal attachment.`;
-  confirmModal("Remove the worktree?", text, confirmedLegacy ? "Old session exited — remove" : "Remove worktree", async () => {
+function confirmCleanup(t) {
+  confirmModal("Remove the worktree?", `Stops this task's agent, then deletes ${t.worktree}, branch ${t.branch} and its owned terminal attachment.`, "Remove worktree", async () => {
     try {
-      const r = await act("POST", tpath(t.id, "/cleanup"), { confirmLegacy: confirmedLegacy });
-      toast(r.pending ? "Its agent is still stopping; the worktree is removed once it exits" : "Worktree removed");
-    } catch (e) {
-      if (e.data?.requiresConfirmation === "legacySession") confirmCleanup(t, true);
-    }
+      const r = await act("POST", tpath(t.id, "/cleanup"), {});
+      toast(r.pending ? r.message || r.output || "Its agent is still stopping; the worktree is removed once it exits" : "Worktree removed");
+    } catch {}
   });
 }
 function confirmRecover(t) {
@@ -962,7 +969,10 @@ function showMergeModal(t) {
     `${plural(t.git.commits, "commit")} on ${t.branch} (+${t.git.added} \u2212${t.git.removed} in ${plural(t.git.files, "file")}). Runs git merge --no-ff in the checkout of ${t.base}.`,
     "Merge", async () => {
       LS.set("mergeCleanup", cleanup.checked ? "1" : "0");
-      try { const r = await act("POST", tpath(t.id, "/merge"), { cleanup: cleanup.checked }, `Merged into ${t.base}`); if (r.cleanupError) toast(r.cleanupError, true); } catch {}
+      try {
+        const r = await act("POST", tpath(t.id, "/merge"), { cleanup: cleanup.checked }, `Merged into ${t.base}`);
+        if (r.pending) toast(cleanup.checked ? "Its worktree is removed once its agent has stopped" : "Its agent is stopping");
+      } catch {}
     }, { cls: "primary", extra: h("label", { class: "check" }, cleanup, "Stop the agent and remove its worktree") });
 }
 
@@ -1082,7 +1092,7 @@ async function openWorkspace() {
     if (r.attachCommand && (!r.presentation?.capabilities?.focus || r.presentation.kind === "plain")) {
       const command = h("textarea", { class: "field mono", rows: "3", readonly: true, "aria-label": "Terminal attach command" }, r.attachCommand);
       openModal([h("div", { class: "m-body" }, h("h2", {}, `Connect to ${id}`),
-        h("p", { class: "m-text" }, "Run this command in a terminal. Closing that attachment leaves the managed agent running."), command),
+        h("p", { class: "m-text" }, "Run this command in a terminal. Detach with Ctrl-b d; the agent keeps running."), command),
         h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Close"),
           h("button", { class: "btn primary", onclick: () => copyText(r.attachCommand, "Attach command copied") }, "Copy command"))]);
     }
@@ -1312,13 +1322,16 @@ function buildPanel() {
   const health = h("div", { class: "banner" }, I("alert", 16),
     h("div", { class: "txt" }, h("strong", {}, "Worktree missing"), " The recorded worktree was deleted outside the board, so the task can't resume or start. Return it to Backlog to start it again; its plan, description and branch are kept."),
     h("button", { class: "btn sm", onclick: () => confirmRecover(findTask(openId)) }, "Return to Backlog"));
+  const opFailText = h("div", { class: "txt" });
+  const opFail = h("div", { class: "banner" }, I("alert", 16), opFailText);
+  const syncChip = h("span", { class: "chip", title: "The column change reaches Beads once it is reachable" }, "not yet saved to Beads");
   const term = h("pre", { class: "term" });
   term.addEventListener("scroll", () => { if (P) P.termPinned = term.scrollHeight - term.scrollTop - term.clientHeight < 8; });
   const closed = h("div", { class: "empty" }, h("strong", {}, I("terminal", 14), "Session disconnected"),
     h("span", {}, "The board cannot confirm the agent's current state. A missing terminal attachment does not mean the agent stopped."),
     h("button", { class: "btn sm", onclick: openWorkspace }, I("openIn", 12), "Connect terminal"));
   const removed = h("div", { class: "empty" }, h("strong", {}, I("check", 14), "Worktree removed"), h("span", {}, "The task's worktree and branch were cleaned up."));
-  const live = h("div", { class: "sec" }, health, agentHead, agentStep, agentMsg, gitRow, actions, cleanup, term, closed);
+  const live = h("div", { class: "sec" }, health, opFail, syncChip, agentHead, agentStep, agentMsg, gitRow, actions, cleanup, term, closed);
   const agentPane = h("div", { class: "pane" }, spawn.el, live, removed);
 
   // loop pane
@@ -1340,7 +1353,7 @@ function buildPanel() {
     h("div", { class: "p-scroll" }, taskPane, agentPane, loopPane), composer);
   P = { id, status, primary, openBtn, title, tabTask, taskDot, tabAgent, agentDot, tabLoop, loopDot, ticket, branch, base, mergeChip, planningChip, loopChip, loopLabel, repo, deps, depsAdd, desc, unsent, unsentText, unsentDismiss, unsentSend,
         planMeta, editBtn, copyBtn, discussBtn, discussTip, emptyDiscuss, emptyDiscussTip,
-        planView, planEmpty, planEmptyText, planEdit, editBar, taskPane, spawn, agentHead, agentStep, agentMsg, gitRow, actions, cleanup, cleanupText, health, term, closed, removed, live, agentPane,
+        planView, planEmpty, planEmptyText, planEdit, editBar, taskPane, spawn, agentHead, agentStep, agentMsg, gitRow, actions, cleanup, cleanupText, health, opFail, opFailText, syncChip, term, closed, removed, live, agentPane,
         loopPane, loopView, loopOpen, loopKey: null,
         composer, ta, hint, send, cmode: null, planSrc: null, editing: false, termPinned: true, sending: false, sendingUpdate: false };
   P.native = nativePanel(props, taskPane);
@@ -1633,16 +1646,20 @@ function updateAgent(t) {
   P.gitRow.replaceChildren(h("span", { class: "branch", title: t.branch }, I("branch", 12), h("span", {}, t.branch)), I("arrowRight", 11, "to"), h("span", { class: "branch" }, h("span", {}, t.base)));
   if (t.git && (t.git.added || t.git.removed)) P.gitRow.append(diffstat(t.git));
   if (t.git && t.git.dirty > 0) P.gitRow.append(h("span", {}, plural(t.git.dirty, "uncommitted file")));
-  const readable = t.execution?.kind === "managed" || sessionConnected(t);
+  const readable = t.execution?.kind === "tmux" || sessionConnected(t);
   P.term.hidden = !readable;
   const missing = !!t.health?.worktreeMissing;
   P.closed.hidden = missing || sessionConnected(t) || t.agent?.state === "stopped";
   P.agentPane.querySelector("[data-presentation-diff]").hidden = !t.presentation?.capabilities?.diff;
   P.cleanup.hidden = t.column !== "done" || missing;
   P.health.hidden = !missing;
+  const failed = t.lastOperation && !t.lastOperation.ok && !t.intent ? t.lastOperation : null;
+  P.opFail.hidden = !failed;
+  if (failed) P.opFailText.replaceChildren(h("strong", {}, `${OP_LABEL[failed.op] || failed.op} failed ${ago(failed.at)}:`), " " + (failed.error || ""));
+  P.syncChip.hidden = !t.syncPending;
   P.actions.hidden = missing;
-  P.cleanupText.replaceChildren(t.cleanupPending
-    ? h("span", {}, h("strong", {}, "Removing the worktree"), " once its agent has exited.")
+  P.cleanupText.replaceChildren(t.intent?.op === "remove"
+    ? h("span", {}, h("strong", {}, "Removing the worktree"), t.intent.attempt > 0 ? ` · retrying: ${t.intent.lastError || ""}` : " once its agent has exited.")
     : t.merged
     ? h("span", {}, h("strong", {}, "Merged into " + t.base), ` ${ago(t.merged.at)} (${t.merged.sha.slice(0, 7)}). The worktree can go.`)
     : t.pr && t.pr.state === "merged"
@@ -1696,7 +1713,7 @@ async function submitComposer() {
 // MARK: terminal peek
 function peekWanted() {
   const t = openId && findTask(openId);
-  return !!(P && t && t.worktree && (t.execution?.kind === "managed" || sessionConnected(t)) && currentTab(t) === "agent" && document.visibilityState === "visible");
+  return !!(P && t && t.worktree && (t.execution?.kind === "tmux" || sessionConnected(t)) && currentTab(t) === "agent" && document.visibilityState === "visible");
 }
 function startPeek() {
   if (!peekWanted()) { stopPeek(); return; }

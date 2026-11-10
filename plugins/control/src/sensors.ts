@@ -32,7 +32,7 @@ export async function runCheck(exec: ExtensionAPI["exec"], node: NodeDefinition,
 function reviewerEnv(): Record<string, string> {
 	const env: Record<string, string> = {};
 	for (const [key, value] of Object.entries(process.env)) {
-		if (value !== undefined && !key.startsWith("KANBOARD_") && !key.startsWith("OMP_CONTROL_")) env[key] = value;
+		if (value !== undefined && !key.startsWith("ORCHESTRATOR_") && !key.startsWith("OMP_CONTROL_")) env[key] = value;
 	}
 	return { ...env, OMP_CONTROL_REVIEWER: "1", OMP_MCP_TIMEOUT_MS: "1000" };
 }

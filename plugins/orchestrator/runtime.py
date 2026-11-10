@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Tuple
 PRIVATE_USE = re.compile("[\ue000-\uf8ff\U000f0000-\U0010ffff]")
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07")
 # A caller's terminal and task identity must never become the implicit target of what the server runs.
-CALLER_ENV = re.compile(r"CMUX_(?!SOCKET_PASSWORD$).*|TMUX|TMUX_PANE|KANBOARD_TERMINAL|OMP_TERMINAL(?:_PRESENTER)?|KANBOARD_TASK"
+CALLER_ENV = re.compile(r"CMUX_(?!SOCKET_PASSWORD$).*|TMUX|TMUX_PANE|ORCHESTRATOR_TERMINAL|OMP_TERMINAL(?:_PRESENTER)?|ORCHESTRATOR_TASK"
                         r"|WT_INPLACE|WT_LAUNCHER|WT_CLOSE_ON_CANCEL")
 # The launching terminal emulator's identity is wrong for an agent PTY that any terminal may attach to.
 TERMINAL_ENV = re.compile(r"TERM_PROGRAM(?:_VERSION)?|TERM_SESSION_ID|TERMINFO|COLORTERM|COLUMNS|LINES|WINDOWID"
@@ -37,7 +37,7 @@ def child_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
 
 
 def agent_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-    """child_env for an agent in a detached PTY: no launching-terminal identity, an xterm-256color terminal."""
+    """child_env for the tmux server agents run in: no launching-terminal identity, an xterm-256color terminal."""
     env = {k: v for k, v in child_env().items() if not TERMINAL_ENV.fullmatch(k)}
     env.update(TERM="xterm-256color", COLORTERM="truecolor")
     if extra:
@@ -49,10 +49,12 @@ def which(name: str) -> Optional[str]:
     return shutil.which(name, path=child_env()["PATH"])
 
 
-def run(cmd: List[str], cwd: Optional[str] = None, timeout: float = 30, env: Optional[Dict[str, str]] = None) -> Tuple[int, str, str]:
-    """Runs a command without a shell; returns (exit code, stdout, stderr)."""
+def run(cmd: List[str], cwd: Optional[str] = None, timeout: float = 30, env: Optional[Dict[str, str]] = None,
+        inherit: bool = True) -> Tuple[int, str, str]:
+    """Runs a command without a shell; returns (exit code, stdout, stderr). `env` adds to child_env(), or with
+    `inherit` False is the whole environment."""
     try:
-        p = subprocess.run(cmd, cwd=cwd, env=child_env(env), stdin=subprocess.DEVNULL,
+        p = subprocess.run(cmd, cwd=cwd, env=child_env(env) if inherit else env, stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, timeout=timeout)
         return p.returncode, p.stdout, p.stderr
     except FileNotFoundError:

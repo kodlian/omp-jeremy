@@ -1,6 +1,6 @@
 // Orchestrator for omp: /orchestrator mode and commands, orchestrator_* tools, task mode and agent reports, a widget under the editor, and a board that starts itself.
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
@@ -10,16 +10,17 @@ import { detectTerminalContext, openBoard as openTerminalBoard, type TerminalCon
 import { currentTheme, hasThemeApi, isLightColor, resolveTheme, type Scheme } from "omp-integrations/theme";
 import { COMMAND_EVENT, type ControlReply, type Decision, LIBRARY_EVENT, type LibrarySummary, type LoopSummary, RUN_EVENT, type RunView } from "omp-control-view/protocol";
 
-const BASE = `http://127.0.0.1:${process.env.KANBOARD_PORT || "4747"}`;
-const HOME = process.env.KANBOARD_HOME || join(homedir(), ".kanboard");
-const PYTHON = process.env.KANBOARD_PYTHON || "python3";
+const BASE = `http://127.0.0.1:${process.env.ORCHESTRATOR_PORT || "4747"}`;
+const HOME = process.env.ORCHESTRATOR_HOME || join(homedir(), ".orchestrator");
+const PYTHON = process.env.ORCHESTRATOR_PYTHON || "python3";
 const SERVER = join(dirname(realpathSync(import.meta.path)), "..", "server.py");
 const SERVER_ROOT = dirname(SERVER);
-const START_TIMEOUT_MS = 5000;
+const START_TIMEOUT_MS = 30_000;
 const RECONNECT_MS = 3000;
-const MODE_FILE = "kanboard";
+const STREAM_IDLE_MS = 10_000;
+const MODE_FILE = "orchestrator";
 const STEP_MS = 2000;
-const CLEANUP_ENTRY = "kanboard.cleanup";
+const CLEANUP_ENTRY = "orchestrator.cleanup";
 const USAGE = "Orchestrator: /orchestrator on | off | status | open | start #n…|all | done [#n]";
 const ORCHESTRATOR_COMMANDS: AutocompleteItem[] = [
 	{ label: "on", value: "on", description: "Enable Orchestrator mode for this checkout" },
@@ -123,6 +124,9 @@ interface Task {
 	health?: { worktreeMissing: boolean };
 	origin: { session: string; terminal?: TerminalContext | null } | null;
 	spawn: { state: string; error: string | null };
+	intent: { op: "start" | "resume" | "stop" | "merge" | "remove" | "delete"; stage: string | null; at: string; attempt: number; lastError: string | null } | null;
+	lastOperation: { op: string; at: string; ok: boolean; error: string | null; output: string } | null;
+	syncPending: boolean;
 	agent: { state: string; step?: string | null } | null;
 	git: { commits: number; added: number; removed: number; dirty: number } | null;
 	pr: { state: string; number?: number } | null;
@@ -224,25 +228,8 @@ class BoardError extends Error {
 	constructor(
 		readonly status: number,
 		message: string,
-		readonly requiresConfirmation: string | null = null,
 	) {
 		super(message);
-	}
-}
-
-/** Runs a board call that may refuse a task whose omp may still run in a legacy terminal: asks the user, then retries with confirmLegacy; `confirmed` is the user's earlier explicit yes. */
-async function withLegacyConfirm<T>(ctx: ExtensionContext, id: string, call: (confirmLegacy: boolean) => Promise<T>, confirmed = false): Promise<T> {
-	try {
-		return await call(confirmed);
-	} catch (e) {
-		if (confirmed || !(e instanceof BoardError) || e.requiresConfirmation !== "legacySession") throw e;
-		if (!ctx.hasUI) throw new Error(`${e.message}. Ask the user to confirm that the omp in ${id}'s old terminal has exited, then retry with confirmLegacy: true.`);
-		const sure = await ctx.ui.confirm(
-			`Has ${taskNumber(id)}'s old omp exited?`,
-			`${e.message}.\n\nConfirm only once the omp that ran in its old terminal has exited: the board can't see that terminal.`,
-		);
-		if (!sure) throw new Error(`${id} unchanged: its old omp may still be running`);
-		return call(true);
 	}
 }
 
@@ -252,7 +239,8 @@ const reply = (text: string, isError = false) => ({ content: [{ type: "text" as 
 
 /** Card numbers by id, as the latest board read gave them. */
 const cardNumbers = new Map<string, string>();
-const CARD_ID = /\bKB-\d+(?:\.\d+)*\b/g;
+// A card id in prose; one inside a path or name (tasks/KB-1, orch-KB-1) stays as it is.
+const CARD_ID = /(?<![\w/-])KB-\d+(?:\.\d+)*\b/g;
 
 function rememberNumbers(board: Board): void {
 	for (const t of board.tasks) cardNumbers.set(t.id, t.number);
@@ -309,10 +297,11 @@ async function prepare(env: Record<string, string | undefined>): Promise<void> {
 
 /** Prepares the board's Beads workspace, then starts server.py detached and waits for it to answer. */
 async function launch(): Promise<void> {
-	mkdirSync(HOME, { recursive: true });
 	const env = { ...process.env };
-	delete env.KANBOARD_TASK;
+	delete env.ORCHESTRATOR_TASK;
+	// After prepare: it moves the board's data from before the rename into HOME only while HOME doesn't exist yet.
 	await prepare(env);
+	mkdirSync(HOME, { recursive: true });
 	const log = openSync(join(HOME, "server.log"), "a");
 	const spawned: { error?: Error } = {};
 	try {
@@ -353,12 +342,14 @@ async function refreshBoard(): Promise<void> {
 	const mtime = Math.max(...mtimes);
 	if (Math.floor(mtime) <= Math.floor(running.codeMtime)) return;
 	await exclusive(async () => {
-		try {
-			process.kill(running.pid, "SIGTERM");
-		} catch {
-			// already gone
-		}
-		const deadline = Date.now() + START_TIMEOUT_MS;
+		await api("POST", "/api/restart", {}, false).catch(() => {
+			try {
+				process.kill(running.pid, "SIGTERM");
+			} catch {
+				// already gone
+			}
+		});
+		const deadline = Date.now() + 60_000;
 		while (Date.now() < deadline && (await health())) await Bun.sleep(100);
 		await launch();
 	});
@@ -393,8 +384,7 @@ async function api<T>(method: string, path: string, body?: unknown, autostart = 
 	const data: unknown = await res.json().catch(() => null);
 	if (!res.ok) {
 		const error = data && typeof data === "object" && "error" in data && typeof data.error === "string" ? data.error : "";
-		const confirm = data && typeof data === "object" && "requiresConfirmation" in data && typeof data.requiresConfirmation === "string" ? data.requiresConfirmation : null;
-		throw new BoardError(res.status, error || `${res.status} ${res.statusText}`, confirm);
+		throw new BoardError(res.status, error || `${res.status} ${res.statusText}`);
 	}
 	if (method === "GET" && path === "/api/state") rememberNumbers(data as Board);
 	else if (data && typeof data === "object" && "id" in data && "number" in data) cardNumbers.set(String(data.id), String(data.number));
@@ -449,7 +439,12 @@ function worktreeTask(board: Board, cwd: string): Task | undefined {
 /** The file whose presence turns orchestrator mode on for the git checkout at cwd (in its git dir); null outside git. */
 function modeFile(cwd: string): string | null {
 	const gitDir = git(["rev-parse", "--absolute-git-dir"], cwd);
-	return gitDir ? join(gitDir, MODE_FILE) : null;
+	if (!gitDir) return null;
+	const file = join(gitDir, MODE_FILE);
+	// A checkout switched on before the rename from Kanboard keeps its mode.
+	const old = join(gitDir, "kanboard");
+	if (existsSync(old) && !existsSync(file)) renameSync(old, file);
+	return file;
 }
 
 /** What a tool call does, for its card: its intent, else the tool and its main argument. */
@@ -470,10 +465,10 @@ function inPlanMode(ctx: ExtensionContext): boolean {
 	return false;
 }
 
-const TERMINAL_OVERRIDES = ["KANBOARD_TERMINAL", "OMP_TERMINAL"];
+const TERMINAL_OVERRIDES = ["ORCHESTRATOR_TERMINAL", "OMP_TERMINAL"];
 let terminal: Promise<{ context: TerminalContext } | { error: string }> | undefined;
 
-/** This omp's terminal context, detected and validated once; an unavailable KANBOARD_TERMINAL or OMP_TERMINAL is an error. */
+/** This omp's terminal context, detected and validated once; an unavailable ORCHESTRATOR_TERMINAL or OMP_TERMINAL is an error. */
 function callerTerminal(): Promise<{ context: TerminalContext } | { error: string }> {
 	terminal ??= detectTerminalContext({ python: PYTHON, overrideEnvs: TERMINAL_OVERRIDES }).then(
 		(context) => ({ context }),
@@ -788,8 +783,18 @@ const THEME_VARS: Record<string, string> = {
 	"--cyan": "borderAccent",
 };
 
+/** What a card's operation in progress shows, or null when none runs. */
+function intentText(t: Task): string | null {
+	const i = t.intent;
+	if (!i) return null;
+	const text = { start: "starting", resume: "resuming", stop: "stopping", merge: `merging into ${t.base}`, remove: "removing worktree", delete: "deleting" }[i.op] ?? i.op;
+	return i.attempt > 0 ? `${text} (retrying: ${i.lastError ?? "unknown error"})` : text;
+}
+
 /** How an open card reads in the widget: its glyph, tone and state. */
 function cardLook(t: Task): Look {
+	const busy = intentText(t);
+	if (busy) return ["status.running", "accent", busy];
 	if (t.spawn.state === "failed") return ["status.error", "error", "didn't start"];
 	if (t.column === "review") return ["status.success", "success", t.pr ? "pull request open" : "ready to merge"];
 	if (t.paused) {
@@ -798,7 +803,7 @@ function cardLook(t: Task): Look {
 	}
 	if (t.column === "todo" && t.blockedBy.length) return ["status.pending", "muted", `starts once ${waitsUntil(t)}`];
 	if (t.column === "todo" && t.waitingForSlot) return ["status.pending", "muted", "waiting for a task slot"];
-	return (t.spawn.state !== "running" && t.agent && AGENT_LOOK[t.agent.state]) || ["status.running", "accent", "starting"];
+	return (!t.intent && t.agent && AGENT_LOOK[t.agent.state]) || ["status.running", "accent", "starting"];
 }
 
 /** The widget's lines: orchestrator mode's open cards of its flow, or task mode's own card. */
@@ -813,11 +818,14 @@ function widgetLines(p: Paint, board: Board | null, scope: { flow: string } | { 
 		const work = commits
 			? `${p.fg("muted", `${commits} commit${commits === 1 ? "" : "s"}`)} ${p.fg("success", `+${t.git?.added ?? 0}`)} ${p.fg("error", `\u2212${t.git?.removed ?? 0}`)}`
 			: p.fg("dim", "no commits yet");
-		const state = t.paused
-			? `${sep}${p.fg("warning", "paused")}`
-			: t.column === "review"
-				? `${sep}${p.fg("success", t.pr ? "pull request open" : "ready to merge")}`
-				: "";
+		const busy = intentText(t);
+		const state = busy
+			? `${sep}${p.fg("accent", busy)}`
+			: t.paused
+				? `${sep}${p.fg("warning", "paused")}`
+				: t.column === "review"
+					? `${sep}${p.fg("success", t.pr ? "pull request open" : "ready to merge")}`
+					: "";
 		return [`${head} ${t.title.replace(CONTROL, " ")} ${p.fg("muted", `\u2192 ${t.base}`)}${sep}${work}${state}`];
 	}
 	const head = ` ${icon} ${p.bold(p.fg("accent", "Orchestrator"))}`;
@@ -861,6 +869,9 @@ export default function orchestrator(pi: ExtensionAPI) {
 	let taskInfo: Task | null = null;
 	let taskLookup = false;
 	let reporting: boolean | undefined;
+	let reportRetryAt = 0;
+	let shuttingDown = false;
+	const handledControls: string[] = [];
 	let reported = "";
 	let current = "";
 	let planning = false;
@@ -982,11 +993,11 @@ export default function orchestrator(pi: ExtensionAPI) {
 		reportedStep = step;
 		sentAt = Date.now();
 		reports = reports.then(() =>
-			api("POST", "/api/agent", { path, task: task ?? process.env.KANBOARD_TASK ?? null, state, step, sessionId, sessionFile, message: lastMessage }, false).then(
+			api("POST", "/api/agent", { path, task: task ?? process.env.ORCHESTRATOR_TASK ?? null, state, step, sessionId, sessionFile, message: lastMessage }, false).then(
 				() => {},
 				(e) => {
-					if (e instanceof BoardError && e.status === 404) reporting = false;
-					else reported = "";
+					reported = "";
+					if (e instanceof BoardError && e.status === 404) reportRetryAt = Date.now() + 3000;
 				},
 			),
 		);
@@ -999,8 +1010,8 @@ export default function orchestrator(pi: ExtensionAPI) {
 		current = state;
 		currentStep = step;
 		if (state === reported && step === reportedStep) return reports;
-		reporting ??= Boolean(process.env.KANBOARD_TASK) || linkedWorktree(ctx.cwd);
-		if (!reporting) return reports;
+		reporting ??= Boolean(process.env.ORCHESTRATOR_TASK) || linkedWorktree(ctx.cwd);
+		if (!reporting || Date.now() < reportRetryAt) return reports;
 		const path = ctx.cwd;
 		const wait = sentAt + STEP_MS - Date.now();
 		if (state === reported && wait > 0) {
@@ -1118,7 +1129,8 @@ export default function orchestrator(pi: ExtensionAPI) {
 			ctx.ui.notify(`Control flow «${run.loop.name}» passed: merging ${taskNumber(id)} into ${t.base}`, "info");
 			await api("POST", `/api/tasks/${id}/merge`, { cleanup: true, commit: true, terminal: await requestTerminal() });
 		} catch (e) {
-			ctx.ui.notify(`Couldn't merge ${taskNumber(id)} automatically: ${e instanceof Error ? e.message : String(e)}`, "error");
+			const message = e instanceof Error ? e.message : String(e);
+			if (!message.includes(" is still ")) ctx.ui.notify(`Couldn't merge ${taskNumber(id)} automatically: ${message}`, "error");
 		} finally {
 			autoMerging = false;
 		}
@@ -1162,6 +1174,9 @@ export default function orchestrator(pi: ExtensionAPI) {
 
 	/** Carries out a board command for this task's agent through omp, then answers it. */
 	const runControl = async (ctx: ExtensionContext, c: Control) => {
+		if (handledControls.includes(c.id)) return answerControl(c.id, true, "Already handled");
+		handledControls.push(c.id);
+		if (handledControls.length > 50) handledControls.shift();
 		let ok = true;
 		let message: string;
 		try {
@@ -1172,14 +1187,6 @@ export default function orchestrator(pi: ExtensionAPI) {
 				void report(ctx, review ? "plan_ready" : "idle");
 				message = running ? "Interrupted its turn" : "It was idle";
 				ctx.ui.notify(`Orchestrator paused ${taskNumber(c.task)}; moving its card back to In Progress resumes it`, "warning");
-			} else if (c.action === "resume") {
-				if (review) message = "Its plan is waiting for review";
-				else if (!ctx.isIdle()) message = "It was already working";
-				else {
-					pi.sendUserMessage(c.text ?? "");
-					message = "Resumed";
-				}
-				ctx.ui.notify(`Orchestrator resumed ${taskNumber(c.task)}`, "info");
 			} else if (c.action === "message") {
 				if (review) {
 					ok = false;
@@ -1210,6 +1217,7 @@ export default function orchestrator(pi: ExtensionAPI) {
 				ok = r.ok;
 				message = r.message;
 			} else if (c.action === "stop") {
+				if (!ctx.isIdle()) ctx.abort();
 				await answerControl(c.id, true, "Its omp session is exiting");
 				ctx.shutdown();
 				return;
@@ -1290,17 +1298,37 @@ export default function orchestrator(pi: ExtensionAPI) {
 						terminalWarned = true;
 						ctx.ui.notify(`Orchestrator: ${where.error}`, "warning");
 					}
-					const res = await fetch(`${BASE}/api/events?${query}`, { signal: ctl.signal });
-					if (res.ok && res.body) {
-						themeEpoch = null;
-						syncTheme();
-						if (current) {
+					const conn = new AbortController();
+					const cancel = () => conn.abort();
+					ctl.signal.addEventListener("abort", cancel, { once: true });
+					let watchdog: Timer | undefined;
+					const arm = () => {
+						clearTimeout(watchdog);
+						watchdog = setTimeout(cancel, STREAM_IDLE_MS);
+					};
+					try {
+						arm();
+						const res = await fetch(`${BASE}/api/events?${query}`, { signal: conn.signal });
+						if (res.ok && res.body) {
+							themeEpoch = null;
+							syncTheme();
 							reported = "";
-							void report(ctx, current, currentStep);
-						}
-						void syncControl();
-						for await (const e of serverEvents(res.body)) onEvent(ctx, e);
-					} else await res.body?.cancel();
+							void report(ctx, current || "idle", currentStep);
+							void syncControl();
+							const body = res.body.pipeThrough(
+								new TransformStream<Uint8Array, Uint8Array>({
+									transform(chunk, out) {
+										arm();
+										out.enqueue(chunk);
+									},
+								}),
+							);
+							for await (const e of serverEvents(body)) onEvent(ctx, e);
+						} else await res.body?.cancel();
+					} finally {
+						clearTimeout(watchdog);
+						ctl.signal.removeEventListener("abort", cancel);
+					}
 				} catch {
 					// reconnects below
 				}
@@ -1324,21 +1352,48 @@ export default function orchestrator(pi: ExtensionAPI) {
 		syncTheme();
 	};
 
-	/** Task mode: KANBOARD_TASK, else a board task whose worktree is this checkout (asked once; never starts the board). */
-	const detectTask = async (ctx: ExtensionContext) => {
-		const env = process.env.KANBOARD_TASK;
-		if (!env && !linkedWorktree(ctx.cwd)) return;
+	/** Sends the "continue where you stopped" message the board left for a resumed session, then tells the board it went out. */
+	const nudge = (id: string) => {
+		const file = process.env.ORCHESTRATOR_RESUME_FILE;
+		if (!file || !existsSync(file)) return;
+		let text: string;
 		try {
-			const board = await api<Board>("GET", "/api/state", undefined, false);
-			taskInfo = (env ? board.tasks.find((t) => t.id === env) : worktreeTask(board, ctx.cwd)) ?? null;
+			const data: unknown = JSON.parse(readFileSync(file, "utf8"));
+			if (!data || typeof data !== "object" || !("text" in data) || typeof data.text !== "string" || !data.text) return;
+			text = data.text;
 		} catch {
-			taskInfo = null;
+			return;
 		}
-		task = env || taskInfo?.id || null;
-		if (!task) return;
+		setTimeout(async () => {
+			pi.sendUserMessage(text);
+			await api("POST", `/api/tasks/${id}/resumed`, {}, false).catch(() => {});
+		}, 1500);
+	};
+
+	const enterTask = (ctx: ExtensionContext, id: string) => {
+		task = id;
 		showWidget(ctx);
 		stopStream();
 		syncStream(ctx);
+		nudge(id);
+	};
+
+	/** Task mode: ORCHESTRATOR_TASK, else a board task whose worktree is this checkout (retried while the board is down; never starts the board). */
+	const detectTask = async (ctx: ExtensionContext) => {
+		const env = process.env.ORCHESTRATOR_TASK;
+		if (!env && !linkedWorktree(ctx.cwd)) return;
+		if (env) enterTask(ctx, env);
+		while (!shuttingDown) {
+			try {
+				const board = await api<Board>("GET", "/api/state", undefined, false);
+				taskInfo = (env ? board.tasks.find((t) => t.id === env) : worktreeTask(board, ctx.cwd)) ?? null;
+				break;
+			} catch {
+				taskInfo = null;
+				await Bun.sleep(RECONNECT_MS);
+			}
+		}
+		if (!env && taskInfo && !shuttingDown) enterTask(ctx, taskInfo.id);
 	};
 
 	const restore = (_event: unknown, ctx: ExtensionContext) => {
@@ -1371,8 +1426,9 @@ export default function orchestrator(pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (ctx.agent?.kind === "sub") return;
+		shuttingDown = true;
 		stopStream();
-		await report(ctx, "idle");
+		await report(ctx, "exited");
 	});
 
 	// --- cards
@@ -1415,7 +1471,6 @@ export default function orchestrator(pi: ExtensionAPI) {
 	const done = async (ctx: ExtensionContext, raw?: string): Promise<string> => {
 		const named = raw?.trim() ? await cardId(raw, ctx) : undefined;
 		if (!ctx.hasUI) throw new Error(`Merging needs the user's confirmation: ask them to run /orchestrator done${named ? ` ${named}` : ""}`);
-		await refreshBoard();
 		const board = await api<Board>("GET", "/api/state");
 		const own = task ? board.tasks.find((t) => t.id === task) : worktreeTask(board, ctx.cwd);
 		const id = named ?? own?.id;
@@ -1437,8 +1492,20 @@ export default function orchestrator(pi: ExtensionAPI) {
 				pi.appendEntry(CLEANUP_ENTRY, { cleanup });
 			}
 		}
-		const r = await api<{ output: string; cleanupError?: string }>("POST", `/api/tasks/${id}/merge`, { cleanup, commit: true, terminal: await requestTerminal() });
-		return r.cleanupError ? `${r.output}\n${r.cleanupError}` : r.output;
+		const r = await api<{ output: string; merged?: { into: string; sha: string } | null; pending?: boolean }>("POST", `/api/tasks/${id}/merge`, {
+			cleanup,
+			commit: true,
+			terminal: await requestTerminal(),
+		});
+		if (own?.id === id && task === id) {
+			const ends = `Merged ${t.branch} \u2192 ${t.base} (${r.merged?.sha.slice(0, 7) ?? "?"}) \u00b7 this session ends${r.pending ? "; the worktree is removed once this session has exited" : ""}`;
+			setTimeout(() => {
+				ctx.ui.notify(ends, "info");
+				ctx.shutdown();
+			}, 0);
+		}
+		if (!r.pending || (own?.id === id && task === id)) return r.output;
+		return `${r.output}\n${taskNumber(id)} ${cleanup ? "has its worktree removed once its agent has stopped" : "is stopping its agent"}`;
 	};
 
 	const deleteCard = async (ctx: ExtensionContext, raw: string): Promise<string> => {
@@ -1469,23 +1536,17 @@ export default function orchestrator(pi: ExtensionAPI) {
 			if (!(await ctx.ui.confirm(`Delete ${taskNumber(id)}?`, `${t.title} (${column})\n\n${detail}${unlinks}`))) return `${id} kept`;
 		}
 		const terminal = await requestTerminal();
-		const r = await withLegacyConfirm(ctx, id, (confirmLegacy) =>
-			api<{ output?: string }>("DELETE", `/api/tasks/${id}`, { confirmWorking: t.moveRequiresConfirmation, cleanup, confirmLegacy, terminal }),
-		);
+		const r = await api<{ output?: string; pending?: boolean; message?: string }>("DELETE", `/api/tasks/${id}`, { confirmWorking: t.moveRequiresConfirmation, cleanup, terminal });
+		if (r.pending) return r.message ?? `${id} is deleted once its worktree is gone`;
 		return r.output ? `Deleted ${id}\n${r.output}` : `Deleted ${id}`;
 	};
 
 	/** Moves a card as dragging it on the board does; the reply says what that did to its agent. */
-	const moveCard = async (ctx: ExtensionContext, raw: string, column: string, force: boolean, confirmed: boolean): Promise<string> => {
+	const moveCard = async (ctx: ExtensionContext, raw: string, column: string, force: boolean): Promise<string> => {
 		const id = await cardId(raw, ctx);
 		const board = await api<Board>("GET", "/api/state");
 		const before = findTask(board, id);
-		const t = await withLegacyConfirm(
-			ctx,
-			id,
-			(confirmLegacy) => api<Task & { note?: string }>("POST", `/api/tasks/${id}/move`, { column, confirmWorking: true, force, confirmLegacy }),
-			confirmed,
-		);
+		const t = await api<Task & { note?: string }>("POST", `/api/tasks/${id}/move`, { column, confirmWorking: true, force });
 		const title = (c: string) => board.columns.find((x) => x.id === c)?.title ?? c;
 		const waits = t.blockedBy.length
 			? `once ${waitsUntil(t)}`
@@ -1501,7 +1562,7 @@ export default function orchestrator(pi: ExtensionAPI) {
 		if (before.paused && t.column === "doing") {
 			return `Resumed ${id}: its agent continues${before.session?.connected ? "" : " once omp reopens on its session"}.`;
 		}
-		if (!before.worktree && t.spawn.state === "running") return `${id} starting`;
+		if (!before.worktree && t.intent?.op === "start") return `${id} starting`;
 		if (!before.worktree && t.column === "todo" && waits) return `${id} queued: it starts ${waits}`;
 		return `Moved ${id} to ${title(t.column)}`;
 	};
@@ -1517,8 +1578,8 @@ export default function orchestrator(pi: ExtensionAPI) {
 		);
 		if (!sure) return `${id}'s worktree kept`;
 		const terminal = await requestTerminal();
-		const done = await withLegacyConfirm(ctx, id, (confirmLegacy) => api<{ output: string }>("POST", `/api/tasks/${id}/cleanup`, { confirmLegacy, terminal }));
-		return done.output;
+		const done = await api<{ output: string; pending?: boolean }>("POST", `/api/tasks/${id}/cleanup`, { terminal });
+		return done.pending ? `${done.output ? `${done.output}\n` : ""}${id}'s worktree is removed once its agent has stopped` : done.output;
 	};
 
 	const recoverCard = async (ctx: ExtensionContext, raw: string): Promise<string> => {
@@ -1642,7 +1703,7 @@ export default function orchestrator(pi: ExtensionAPI) {
 		}
 		if (on) parts.push(ORCHESTRATOR_CONTEXT);
 		if (!parts.length) return;
-		return { message: { customType: "kanboard.context", content: parts.join("\n\n"), display: false, attribution: "agent" } };
+		return { message: { customType: "orchestrator.context", content: parts.join("\n\n"), display: false, attribution: "agent" } };
 	});
 
 	pi.on("plan_review_requested", (event, ctx) => {
@@ -1927,16 +1988,10 @@ export default function orchestrator(pi: ExtensionAPI) {
 			id: z.string(),
 			column: z.enum(["backlog", "todo", "doing", "review", "done"]),
 			force: z.boolean().optional(),
-			confirmLegacy: z
-				.boolean()
-				.optional()
-				.describe(
-					"Only when resuming a task whose omp may still run in its old terminal, and only after the user explicitly confirmed in this conversation that that omp has exited. Never set it on your own.",
-				),
 		}),
 		approval: "read",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			return answer(moveCard(ctx, params.id, params.column, params.force === true, params.confirmLegacy === true));
+			return answer(moveCard(ctx, params.id, params.column, params.force === true));
 		},
 	});
 

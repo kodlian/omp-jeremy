@@ -61,7 +61,7 @@ function wbPaint(term, view) {
   });
   term.replaceChildren(...nodes);
 }
-const wbRunning = t => !t.health?.worktreeMissing && t.execution?.kind === "managed" && t.execution.state === "running";
+const wbRunning = t => !t.health?.worktreeMissing && t.execution?.state === "running";
 const wbExecutionKey = t => JSON.stringify([t?.execution, t?.session?.id]);
 
 function wbKind(t) {
@@ -151,8 +151,8 @@ function wbTerminalNote(t) {
   if (!t.worktree || t.spawn.state !== "done" && t.spawn.state !== "none") return null;
   const ex = t.execution;
   if (!ex) return null;
-  if (ex.kind === "legacy") return "Runs in a terminal the board doesn't manage; its screen shows only there.";
-  if (!wbRunning(t)) return ex.exitCode != null ? `Agent host exited (code ${ex.exitCode}). The screen no longer updates.` : "Agent host stopped. The screen no longer updates.";
+  if (ex.kind === "external") return "Runs outside the board's tmux; its screen shows only there.";
+  if (!wbRunning(t)) return typeof ex.exitCode === "number" ? `Agent exited (code ${ex.exitCode}). The screen no longer updates.` : "Agent stopped. The screen no longer updates.";
   return null;
 }
 function wbTile(t) {
@@ -276,7 +276,7 @@ function renderWorkbench() {
   if (backlog) summary.push(h("span", { class: "wb-count faint", title: "Other backlog tasks show on the Board" }, `${backlog} other backlog`));
   summary.push(h("span", { class: "spacer" }), h("span", { class: "wb-hint" }, eligible.length
     ? `Terminal previews are read-only and refresh while this tab is visible (${Math.min(eligible.length, WB_PREVIEWS)} of ${eligible.length})`
-    : "No managed agent terminals are running"));
+    : "No agent terminals are running"));
   const sumKey = JSON.stringify([groups.handoff.length, working, groups.ready.length, groups.queued.length, groups.done.length, backlog, eligible.length]);
   if (wb.summary.dataset.key !== sumKey) { wb.summary.dataset.key = sumKey; wb.summary.replaceChildren(...summary); }
 

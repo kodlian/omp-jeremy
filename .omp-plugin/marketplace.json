@@ -10,7 +10,7 @@
       "name": "orchestrator",
       "description": "Beads-backed task orchestration, worktrees and agent sessions",
       "source": "./plugins/orchestrator",
-      "version": "0.4.0"
+      "version": "0.5.0"
     },
     {
       "name": "git-diff-review",
@@ -22,7 +22,7 @@
       "name": "control",
       "description": "Control loops: checks and focused reviewer agents verify each change before the agent finishes",
       "source": "./plugins/control",
-      "version": "0.1.0"
+      "version": "0.1.1"
     }
   ]
 }

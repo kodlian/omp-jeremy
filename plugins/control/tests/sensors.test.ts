@@ -49,14 +49,14 @@ cat "$FAKE_DIR/lines.jsonl"
 	await chmod(join(dir, "omp"), 0o755);
 	process.env.PATH = `${dir}:${savedPath}`;
 	process.env.FAKE_DIR = dir;
-	process.env.KANBOARD_TASK = "KB-1";
+	process.env.ORCHESTRATOR_TASK = "KB-1";
 });
 
 afterAll(async () => {
 	process.env.PATH = savedPath;
 	delete process.env.FAKE_DIR;
 	delete process.env.FAKE_MODE;
-	delete process.env.KANBOARD_TASK;
+	delete process.env.ORCHESTRATOR_TASK;
 	await rm(dir, { recursive: true, force: true });
 });
 
@@ -75,7 +75,7 @@ test("a reviewer runs omp read-only with its prompt files, a scrubbed env, and i
 	expect(argv.find((a) => a.startsWith("@"))).toEndWith("/packet.md");
 	const env = await readFile(join(dir, "env"), "utf8");
 	expect(env).toContain("OMP_CONTROL_REVIEWER=1");
-	expect(env).not.toContain("KANBOARD_TASK");
+	expect(env).not.toContain("ORCHESTRATOR_TASK");
 });
 
 test("a failing reviewer is an error with its stderr tail", async () => {

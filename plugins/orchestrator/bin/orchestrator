@@ -14,10 +14,10 @@ while [ -L "$src" ]; do
 done
 root=$(cd -P "$(dirname "$src")/.." && pwd)
 
-home=${KANBOARD_HOME:-$HOME/.kanboard}
-port=${KANBOARD_PORT:-4747}
+home=${ORCHESTRATOR_HOME:-$HOME/.orchestrator}
+port=${ORCHESTRATOR_PORT:-4747}
 url="http://127.0.0.1:$port"
-python=${KANBOARD_PYTHON:-python3}
+python=${ORCHESTRATOR_PYTHON:-python3}
 pidfile=$home/server.pid
 log=$home/server.log
 
@@ -34,12 +34,13 @@ require_beads() {
 
 start() {
   require_beads
-  mkdir -p "$home"
+  # Prepare first: it moves the data from before the rename into $home only while $home doesn't exist yet.
   "$python" "$root/server.py" --prepare
+  mkdir -p "$home"
   nohup "$python" "$root/server.py" >>"$log" 2>&1 &
   echo $! >"$pidfile"
   disown
-  for _ in $(seq 50); do
+  for _ in $(seq 600); do
     if health >/dev/null; then return 0; fi
     sleep 0.1
   done
@@ -53,16 +54,17 @@ stop() {
   if status=$(health); then pid=$(json_field pid <<<"$status"); fi
   if [ -z "$pid" ] && [ -f "$pidfile" ]; then pid=$(cat "$pidfile"); fi
   if [ -n "$pid" ] && kill "$pid" 2>/dev/null; then
-    for _ in $(seq 50); do
+    for _ in $(seq 600); do
       if ! kill -0 "$pid" 2>/dev/null; then break; fi
       sleep 0.1
     done
+    if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid" 2>/dev/null; fi
   fi
   rm -f "$pidfile"
 }
 
 open_board() {
-  "$python" -c 'import sys; sys.path.insert(0, sys.argv[1]); from integrations import terminals; raise SystemExit(terminals.main(sys.argv[2:]))' "$root" --override-env KANBOARD_TERMINAL --override-env OMP_TERMINAL board "$board_url"
+  "$python" -c 'import sys; sys.path.insert(0, sys.argv[1]); from integrations import terminals; raise SystemExit(terminals.main(sys.argv[2:]))' "$root" --override-env ORCHESTRATOR_TERMINAL --override-env OMP_TERMINAL board "$board_url"
 }
 
 # The checkout orchestrator starts from becomes the board's context and its registered flow, which the board opens on: new tasks branch from its branch and merge back into it.

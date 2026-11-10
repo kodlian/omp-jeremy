@@ -1805,7 +1805,7 @@ ${node.command ?? ""}`;
 function reviewerEnv() {
   const env = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && !key.startsWith("KANBOARD_") && !key.startsWith("OMP_CONTROL_"))
+    if (value !== undefined && !key.startsWith("ORCHESTRATOR_") && !key.startsWith("OMP_CONTROL_"))
       env[key] = value;
   }
   return { ...env, OMP_CONTROL_REVIEWER: "1", OMP_MCP_TIMEOUT_MS: "1000" };

@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """A stand-in `cmux` CLI for lifecycle tests: one window whose workspaces live in the JSON file $FAKE_CMUX_STATE.
 A workspace created with --close-waits-for <file> records whether that file existed when it closed (waiting for it a
-while), so a test can tell a close after the board's reply from one before it."""
+while), so a test can tell a close after the board's reply from one before it. While $HOME/local-tmux exists, `local-tmux`
+runs its sessions on a real tmux server beside the state file and records each attach and close; $HOME/local-tmux-start-fails
+makes one start report an error after starting its session, as cmux does when its registry refuses the name."""
 import fcntl
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 import uuid
@@ -12,6 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 STATE = Path(os.environ["FAKE_CMUX_STATE"])
+LOCAL_TMUX = str(STATE.with_name("local-tmux.sock"))
 WINDOW = "00000000-0000-4000-8000-000000000001"
 WAIT = 3.0
 
@@ -59,6 +64,37 @@ def close(args):
     print("OK")
 
 
+def local_tmux(args):
+    if not (Path.home() / "local-tmux").exists():
+        sys.exit("fake cmux: local-tmux is off")
+    tmux = [shutil.which("tmux"), "-S", LOCAL_TMUX]
+    action, name = args[0], args[1] if len(args) > 1 else None
+    if action == "list":
+        print(json.dumps({"count": 0, "sessions": [], "socket_path": LOCAL_TMUX}))
+    elif action == "start":
+        subprocess.run(tmux + ["new-session", "-d", "-s", name, "-c", option(args, "--cwd", os.getcwd()),
+                               "/bin/sh", "-c", option(args, "--command")], check=True)
+        fails = Path.home() / "local-tmux-start-fails"
+        if fails.exists():
+            fails.unlink()
+            sys.exit(f"Error: local-tmux session identity changed; refusing to operate on replacement session: {name}")
+        print(f"OK session={name} state=detached socket={LOCAL_TMUX}")
+    elif action == "attach":
+        with state() as data:
+            wid = find(data, option(args, "--workspace"))
+            if not wid:
+                sys.exit("Error: workspace not found")
+            data["log"].append({"op": "attach", "workspace": wid, "session": name})
+        print("OK")
+    elif action == "close":
+        subprocess.run(tmux + ["kill-session", "-t", f"={name}"])
+        with state() as data:
+            data["log"].append({"op": "local-tmux close", "session": name})
+        print("OK")
+    else:
+        sys.exit(f"fake cmux: unsupported local-tmux {action}")
+
+
 def main(argv):
     args, rest = [], iter(argv)
     for arg in rest:
@@ -89,6 +125,8 @@ def main(argv):
         close(tail)
     elif command in (["select-workspace"], ["focus-panel"], ["workspace", "select"]):
         print("OK")
+    elif command == ["local-tmux"]:
+        local_tmux(tail)
     else:
         sys.exit(f"fake cmux: unsupported {' '.join(argv)}")
 

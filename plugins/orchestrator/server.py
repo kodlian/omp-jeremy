@@ -17,15 +17,16 @@ import time
 import unicodedata
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
-import agent_host
 import beads_store as beads
+import detach
+import lease
+import screen
 from cmux import cmux_config, ghostty_cli, terminal_appearance
 from gitops import (base_ref, checkout_info, default_branch, drop_missing_worktrees, find_worktree, git_toplevel,
                     has_ref, merge_base, prepare_branch, unmerged_files)
@@ -33,12 +34,11 @@ from integrations import PACKAGE_ROOT, terminals
 from runtime import ANSI, child_env, now_iso, plain, run, same_dir, tail, which, within, write_atomic
 
 ROOT = Path(__file__).resolve().parent
-HOME = Path(os.environ.get("KANBOARD_HOME", "~/.kanboard")).expanduser()
+HOME = Path(os.environ.get("ORCHESTRATOR_HOME", "~/.orchestrator")).expanduser()
 TASKS_DIR = HOME / "tasks"
-HOSTS_DIR = HOME / "hosts"
 HOST = "127.0.0.1"
-PORT = int(os.environ.get("KANBOARD_PORT", "4747"))
-BRANCH_PREFIX = os.environ.get("KANBOARD_BRANCH_PREFIX", "feature/")
+PORT = int(os.environ.get("ORCHESTRATOR_PORT", "4747"))
+BRANCH_PREFIX = os.environ.get("ORCHESTRATOR_BRANCH_PREFIX", "feature/")
 APPEARANCE_TTL = 30.0
 THEME_COLOR = re.compile(r"#(?:[0-9a-fA-F]{3}){1,2}")
 THEME_VARS = {"--bg", "--fg", "--accent", "--accent-fg", "--muted", "--add", "--remove", "--warning", "--cyan"}
@@ -63,15 +63,22 @@ MOVE_GUARDED_AGENT_STATES = {"planning", "thinking", "working", "needs_input", "
 PAUSED_COLUMNS = ("todo", "backlog")
 CONTROL_TIMEOUT = 10.0
 STOP_TIMEOUT = 8.0
-RESUME_GRACE = 180.0
+RESUME_GRACE = float(os.environ.get("ORCHESTRATOR_RESUME_GRACE", "180"))
 RESUME_TEXT = "Orchestrator moved {id} back to In Progress: continue where you stopped."
+INTENT_BACKOFF = (2.0, 5.0, 15.0, 60.0)
+INTENT_ATTEMPTS = 4
+INTENT_WAIT = 15.0
+MERGE_WAIT = 600.0
+SCREEN_LINES = 500
+BEADS_BACKOFF = (5.0, 15.0, 60.0)
+VERB = {"start": "starting", "resume": "resuming", "stop": "stopping", "merge": "merging",
+        "remove": "removing its worktree", "delete": "being deleted"}
 PLANNING_MODES = {"auto", "plan", "fast"}
 LOOP_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 CONTROL_VIEW_LIMIT = 262_144
 CONTROL_LOOPS_LIMIT = 200_000
 SPAWN_LOG_LIMIT = 6000
 PRESENTATION_INTERVAL = 30.0
-LEGACY_PROBE_INTERVAL = 30.0
 SWEEP_INTERVAL = 60.0
 MESSAGE_LIMIT = 2000
 TERMINAL_LIMIT = 4096
@@ -107,7 +114,7 @@ def slugify(text: str, limit: int = 40) -> str:
 
 
 def initial_context() -> Dict[str, str]:
-    for candidate in (os.environ.get("KANBOARD_REPO"), os.getcwd()):
+    for candidate in (os.environ.get("ORCHESTRATOR_REPO"), os.getcwd()):
         if candidate and Path(candidate).expanduser().is_dir():
             info = checkout_info(str(Path(candidate).expanduser()))
             if info:
@@ -203,8 +210,8 @@ def run_script(label: str, script: str, cwd: str, timeout: float, env: Dict[str,
 
 
 def script_env(t: Dict[str, Any], worktree: str) -> Dict[str, str]:
-    return {"KANBOARD_TASK": t["id"], "KANBOARD_REPO": t["repo"], "KANBOARD_BRANCH": t["branch"],
-            "KANBOARD_BASE": t["base"], "KANBOARD_WORKTREE": worktree}
+    return {"ORCHESTRATOR_TASK": t["id"], "ORCHESTRATOR_REPO": t["repo"], "ORCHESTRATOR_BRANCH": t["branch"],
+            "ORCHESTRATOR_BASE": t["base"], "ORCHESTRATOR_WORKTREE": worktree}
 
 
 # --- event hub ------------------------------------------------------------------
@@ -215,23 +222,19 @@ def sse(event: str, data: Any) -> str:
 
 class Hub:
     """Fans server-sent events out to every connected board and omp session; snapshots are coalesced. A task's omp session
-    also takes commands (pause, resume, message, plan review, stop) and answers each one."""
+    also takes commands (pause, message, plan review, stop) and answers each one."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.subscribers: Dict["queue.Queue[str]", Dict[str, Any]] = {}
         self.dirty = threading.Event()
         self.answers: Dict[str, Dict[str, Any]] = {}
-        self.queued: Dict[str, Dict[str, Any]] = {}
 
     def subscribe(self, meta: Dict[str, Any]) -> "queue.Queue[str]":
         """`meta`: the stream's session, flow, task (a task's own session) and validated terminal context (each optional)."""
         q: "queue.Queue[str]" = queue.Queue(maxsize=2000)
         with self.lock:
             self.subscribers[q] = {**meta, "at": time.time()}
-            waiting = self.queued.get(meta.get("task") or "")
-            if waiting:
-                q.put_nowait(sse("control", waiting))
         return q
 
     def unsubscribe(self, q: "queue.Queue[str]") -> None:
@@ -269,9 +272,14 @@ class Hub:
         streams = [(meta["at"], q) for q, meta in self.subscribers.items() if meta.get("task") == task_id]
         return max(streams, key=lambda s: s[0])[1] if streams else None
 
-    def task_live(self, task_id: str) -> bool:
+    def task_meta(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """The meta of the omp session stream that connected last for `task_id`; None without one."""
         with self.lock:
-            return self.task_stream(task_id) is not None
+            q = self.task_stream(task_id)
+            return dict(self.subscribers[q]) if q is not None else None
+
+    def task_live(self, task_id: str) -> bool:
+        return self.task_meta(task_id) is not None
 
     def session_terminal(self, session: str) -> Optional[Dict[str, Any]]:
         """The terminal context of `session`'s most recently connected stream."""
@@ -279,12 +287,6 @@ class Hub:
             streams = sorted((m for m in self.subscribers.values() if m.get("session") == session and m.get("terminal")),
                              key=lambda m: m["at"], reverse=True)
         return streams[0]["terminal"] if streams else None
-
-    def wait_gone(self, task_id: str, timeout: float) -> None:
-        """Waits until no omp session of `task_id` is connected, or `timeout` passes."""
-        deadline = time.time() + timeout
-        while self.task_live(task_id) and time.time() < deadline:
-            time.sleep(0.2)
 
     def control(self, task_id: str, action: str, payload: Optional[Dict[str, Any]] = None) -> str:
         """Has `task_id`'s omp session carry out `action` and returns its answer; raises when no session is connected,
@@ -308,40 +310,14 @@ class Hub:
             raise ApiError(409, answer["message"] or f"{task_id}'s omp session refused to {action}")
         return answer["message"]
 
-    def queue_control(self, task_id: str, action: str, payload: Dict[str, Any],
-                      then: Callable[[bool, str], None]) -> None:
-        """Sends `action` to `task_id`'s omp session now, and again whenever one connects until one answers; `then` gets the
-        answer. Replaces the command already waiting for that task."""
-        data = {"id": uuid.uuid4().hex, "task": task_id, "action": action, **payload}
-        with self.lock:
-            replaced = self.queued.pop(task_id, None)
-            if replaced:
-                self.answers.pop(replaced["id"], None)
-            self.queued[task_id] = data
-            self.answers[data["id"]] = {"task": task_id, "then": then}
-            q = self.task_stream(task_id)
-            if q is not None:
-                q.put_nowait(sse("control", data))
-
-    def cancel_queued(self, task_id: str) -> None:
-        with self.lock:
-            waiting = self.queued.pop(task_id, None)
-            if waiting:
-                self.answers.pop(waiting["id"], None)
-
     def answer(self, cid: str, ok: bool, message: str) -> bool:
         """Delivers a session's answer to command `cid`; False when nothing waits for it."""
         with self.lock:
             answer = self.answers.pop(cid, None)
-            if answer and "task" in answer:
-                self.queued.pop(answer["task"], None)
         if not answer:
             return False
-        if "done" in answer:
-            answer.update(ok=ok, message=message)
-            answer["done"].set()
-        else:
-            answer["then"](ok, message)
+        answer.update(ok=ok, message=message)
+        answer["done"].set()
         return True
 
     def changed(self) -> None:
@@ -388,9 +364,8 @@ class Store:
         self.blocked_at: Optional[Tuple[Any, ...]] = None
         self.context: Dict[str, str] = {}
         self.flows: List[Dict[str, Any]] = []
-        self.activity: Dict[str, str] = {}
-        self.resuming: Dict[str, float] = {}
-        self.hosts: Dict[str, Dict[str, Any]] = {}
+        self.activity: Dict[str, Dict[str, Any]] = {}
+        self.facts: Dict[str, Dict[str, Any]] = {}
         self.themes: Dict[str, Dict[str, Any]] = {}
         self.theme_version = 0
 
@@ -419,20 +394,20 @@ class Store:
             self.synced = fingerprint
             self.native_blocked, self.blocked_at = blocked, fingerprint
             self.reconcile(found)
-        self.load_hosts()
+        self.sweep_hosts()
 
-    def load_hosts(self) -> None:
-        """Reads every managed host's status; removes host directories no task references once their agent is gone (a
-        running orphan, e.g. of a card deleted without cleanup, stays attachable)."""
-        referenced = set()
-        for t in self.tasks.values():
-            directory = host_dir(t)
-            if directory:
-                referenced.add(os.path.realpath(directory))
-                self.hosts[t["id"]] = agent_host.status(directory)
-        for path in sorted(HOSTS_DIR.iterdir()) if HOSTS_DIR.is_dir() else []:
-            if path.is_dir() and os.path.realpath(path) not in referenced and not agent_host.status(path)["alive"]:
-                shutil.rmtree(path, ignore_errors=True)
+    def sweep_hosts(self) -> None:
+        """Removes the directory an older board's agent host left for an external agent, once that agent is gone."""
+        with self.lock:
+            hosted = [t for t in self.tasks.values() if (t.get("execution") or {}).get("kind") == "external"
+                      and t["execution"].get("dir")]
+        for t in hosted:
+            ex = t["execution"]
+            if not detach.pid_alive(ex.get("pid"), ex.get("pidStarted")):
+                shutil.rmtree(ex["dir"], ignore_errors=True)
+                with self.lock:
+                    ex["dir"] = None
+                    self.write_record(t)
 
     def sync(self) -> bool:
         """Takes in task edits made in Beads outside the board; True when the board changed."""
@@ -510,8 +485,9 @@ class Store:
         t.update(id=task_id, column=column, createdAt=f["createdAt"], agent=None, git=None)
         if not isinstance(t["spawn"], dict):
             t["spawn"] = {"state": "none", "error": None, "log": ""}
-        if t["spawn"].get("state") == "running":
-            t["spawn"].update(state="failed", error="Interrupted: the board server restarted")
+        if t["spawn"].get("state") == "running" and not t.get("intent"):
+            t["intent"] = beads.new_intent("start", {})
+            upgraded = True
         if not t["repo"]:
             t.update(self.context)
             t.update(branchEdited=False, planningMode="auto")
@@ -579,7 +555,12 @@ class Store:
                              for k in kept)
             print(f"orchestrator: {task_id} keeps its board {what}: starting or changing a started task happens on the board",
                   file=sys.stderr)
-        if not (kept or moved or plan_changed or any(beads.differs(k, t.get(k), f.get(k)) for k in beads.FIELDS)):
+        # A column change waiting to reach Beads is retried by the poller, not written again here.
+        pending_column = (t.get("beadsPending") or {}).get("column") == t["column"]
+        if pending_column:
+            kept.pop("column", None)
+        if not (kept or moved or plan_changed or any(beads.differs(k, t.get(k), f.get(k)) for k in beads.FIELDS
+                                                     if not (pending_column and k == "column"))):
             return True
         try:
             self.save(t)
@@ -597,16 +578,33 @@ class Store:
         return self.task_dir(task_id) / "execution.json"
 
     def save(self, t: Dict[str, Any]) -> None:
-        """Writes the fields the board changed to the bead, then the runtime record; reverts the card on failure."""
+        """Writes the runtime record and the fields the board changed to the bead. A column change Beads doesn't take now
+        stays recorded as beadsPending for the poller to retry; any other failed field reverts and raises."""
         task_id = t["id"]
         changes = [k for k in beads.FIELDS if beads.differs(k, t.get(k), self.seen[task_id].get(k))]
+        t["updatedAt"] = now_iso()
+        if "column" not in changes:
+            t["beadsPending"] = None
+        elif (t.get("beadsPending") or {}).get("column") == t["column"]:
+            # Already waiting for Beads: the poller retries it, so a slow Beads doesn't hold up every later save.
+            changes.remove("column")
+        else:
+            t["beadsPending"] = {"column": t["column"]}
+            self.write_record(t)
         if changes:
             try:
                 self.push(t, changes)
             except beads.BeadsError as e:
-                self.revert(t)
-                raise beads_api_error(e)
-        t["updatedAt"] = now_iso()
+                if changes != ["column"]:
+                    for key in changes:
+                        if key != "column":
+                            t[key] = copy.deepcopy(self.seen[task_id].get(key))
+                    self.write_record(t)
+                    raise beads_api_error(e)
+                print(f"orchestrator: {task_id}'s column reaches Beads later: {e}", file=sys.stderr)
+                return
+            if "column" in changes:
+                t["beadsPending"] = None
         self.write_record(t)
 
     def write_record(self, t: Dict[str, Any]) -> None:
@@ -631,7 +629,7 @@ class Store:
                 args += [flag, t.get(key) or ""]
         config = {k: t.get(k) for k in beads.CONFIG_KEYS}
         if any(k in changes for k in beads.CONFIG_KEYS):
-            args += ["--metadata", json.dumps({"kanboard": config})]
+            args += ["--metadata", json.dumps({beads.METADATA_KEY: config})]
         status = beads.STATUS_FOR_COLUMN[t["column"]]
         want = list(t["dependsOn"])
         # Removals go first: bd refuses a parent that the task still depends on.
@@ -648,10 +646,13 @@ class Store:
             if "column" in changes:
                 seen["status"] = status
             if any(k in changes for k in beads.CONFIG_KEYS):
-                seen["metadata"] = {**seen["metadata"], "kanboard": config}
+                seen["metadata"] = {**seen["metadata"], beads.METADATA_KEY: config}
         for dep in [d for d in want if d not in seen["dependsOn"]]:
             self.workspace.add_dep(task_id, dep)
             seen["dependsOn"] = seen["dependsOn"] + [dep]
+        if fingerprint is not None and fingerprint == self.synced:
+            # Only the board's own write changed Beads since the last read: the next sync needn't list it again.
+            self.synced = self.workspace.fingerprint()
 
     def revert(self, t: Dict[str, Any]) -> None:
         seen = self.seen[t["id"]]
@@ -692,10 +693,8 @@ class Store:
         self.seen.pop(task_id, None)
         self.persisted.pop(task_id, None)
         self.activity.pop(task_id, None)
-        self.resuming.pop(task_id, None)
-        self.hosts.pop(task_id, None)
+        self.facts.pop(task_id, None)
         self.native_blocked.pop(task_id, None)
-        hub.cancel_queued(task_id)
         for other_id, other in self.tasks.items():
             if task_id in other["dependsOn"]:
                 other["dependsOn"] = [d for d in other["dependsOn"] if d != task_id]
@@ -740,8 +739,9 @@ class Store:
 
     def view(self, t: Dict[str, Any]) -> Dict[str, Any]:
         connected = hub.task_live(t["id"])
-        host = self.hosts.get(t["id"])
-        directory = host_dir(t)
+        running = (self.facts.get(t["id"]) or {}).get("agent_running", False)
+        ex = t.get("execution") or {}
+        intent = t.get("intent")
         return {
             "id": t["id"],
             "title": t["title"],
@@ -768,7 +768,9 @@ class Store:
             "pendingUpdate": pending_update(t),
             "merged": t.get("merged"),
             "number": task_number(t),
-            "cleanupPending": t.get("cleanupPending"),
+            "intent": {k: intent.get(k) for k in ("op", "stage", "at", "attempt", "lastError")} if intent else None,
+            "lastOperation": t.get("lastOperation"),
+            "syncPending": bool(t.get("beadsPending")),
             "createdAt": t["createdAt"],
             "updatedAt": t["updatedAt"],
             "plan": t.get("plan", ""),
@@ -781,9 +783,9 @@ class Store:
             "worktree": t.get("worktree"),
             "health": {"worktreeMissing": worktree_missing(t)},
             "presentation": t.get("presentation"),
-            "execution": execution_view(t, connected, host),
+            "execution": execution_view(t, connected, running),
             "session": session_view(t, connected),
-            "attachCommand": agent_host.command("attach", directory) if directory and (host or {}).get("alive") else None,
+            "attachCommand": detach.attach_command(ex) if ex.get("kind") == "tmux" and running else None,
             "agent": t.get("agent"),
             "git": t.get("git"),
             "pr": t.get("pr"),
@@ -871,7 +873,8 @@ def spawned(t: Dict[str, Any]) -> bool:
     return bool(t.get("worktree"))
 
 
-TASK_REF = re.compile(r"\bKB-\d+(?:\.\d+)*\b")
+# A card id in prose; one inside a path or name (tasks/KB-1, orch-KB-1) stays as it is.
+TASK_REF = re.compile(r"(?<![\w/-])KB-\d+(?:\.\d+)*\b")
 
 
 def task_number(t: Dict[str, Any]) -> str:
@@ -907,7 +910,8 @@ def has_started(t: Dict[str, Any]) -> bool:
 
 def paused(t: Dict[str, Any]) -> bool:
     """A started task in Todo or Backlog: its worktree and omp session stay, but its agent is stopped and holds no slot."""
-    return spawned(t) and t["column"] in PAUSED_COLUMNS and not t.get("merged")
+    return spawned(t) and t["column"] in PAUSED_COLUMNS and not t.get("merged") \
+        and (t.get("intent") or {}).get("op") != "start"
 
 
 def worktree_missing(t: Dict[str, Any]) -> bool:
@@ -915,66 +919,43 @@ def worktree_missing(t: Dict[str, Any]) -> bool:
     return spawned(t) and not t.get("merged") and t["column"] != "done" and not Path(t["worktree"]).is_dir()
 
 
-def host_dir(t: Dict[str, Any]) -> Optional[Path]:
-    """The directory of the managed host that runs (or ran) a task's agent; None without one."""
+def observe(t: Dict[str, Any]) -> Dict[str, Any]:
+    """What runs for a task now, from its execution record and the system: its tmux session, whether its agent's process
+    runs (its omp session lease, a live tmux pane, or an external agent's own process) and its newest omp stream, which
+    talks to the agent but never decides whether it runs (call without store.lock)."""
     ex = t.get("execution") or {}
-    return Path(ex["dir"]) if ex.get("kind") == "managed" and ex.get("dir") else None
+    session_id = (ex.get("session") or {}).get("id")
+    tmux = detach.status(ex) if ex.get("kind") == "tmux" else None
+    if tmux is not None:
+        running = (tmux["exists"] and not tmux["dead"]) or lease.held(session_id)
+    elif ex.get("kind") == "external":
+        running = lease.held(session_id) or detach.pid_alive(ex.get("pid"), ex.get("pidStarted"))
+    else:
+        running = False
+    return {"worktree_present": bool(t.get("worktree")) and Path(t["worktree"]).is_dir(), "tmux": tmux,
+            "agent_running": running, "stream": hub.task_meta(t["id"])}
 
 
-def legacy_unknown(t: Dict[str, Any]) -> bool:
-    """A pre-host agent in a terminal the board doesn't own, neither connected nor seen to exit: it may still run."""
-    ex = t.get("execution") or {}
-    return ex.get("kind") == "legacy" and not ex.get("stopped") and not hub.task_live(t["id"])
+def refresh_facts(task_id: str) -> Dict[str, Any]:
+    """Observes a task now and keeps it for its view, after something started or stopped its agent."""
+    with store.lock:
+        t = copy.deepcopy(store.tasks.get(task_id))
+    if not t:
+        return {"worktree_present": False, "tmux": None, "agent_running": False, "stream": None}
+    facts = observe(t)
+    with store.lock:
+        if task_id in store.tasks:
+            store.facts[task_id] = facts
+    hub.changed()
+    return facts
 
 
-def process_cwds() -> Optional[List[str]]:
-    """The working directory of every running process that runs as this user, whatever its program (omp, a wrapper, a
-    shell); None unless every one was read."""
-    uid = str(os.geteuid())
-    code, listed, _ = run(["ps", "-A", "-o", "pid=,uid=,stat="], timeout=10)
-    if code != 0:
-        return None
-    _, out, _ = run([which("lsof") or "/usr/sbin/lsof", "-n", "-P", "-w", "-a", "-u", uid, "-d", "cwd", "-Fpn"],
-                    timeout=20)
-    cwds: Dict[str, str] = {}
-    pid = None
-    for line in out.splitlines():
-        if line.startswith("p"):
-            pid = line[1:]
-        elif line.startswith("n") and pid:
-            cwds[pid] = line[1:]
-    if any(not os.path.isabs(c) or c.endswith(")") for c in cwds.values()):
-        return None
-    for fields in (line.split() for line in listed.splitlines()):
-        if len(fields) != 3:
-            return None
-        if fields[1] != uid or fields[0] in cwds or fields[2].startswith("Z"):
-            continue
-        try:
-            os.kill(int(fields[0]), 0)
-        except ProcessLookupError:
-            continue
-        except (OSError, ValueError):
-            pass
-        return None
-    return list(cwds.values())
-
-
-def agent_live(t: Dict[str, Any]) -> bool:
-    """Whether a started task's agent runs or may run: connected, its managed host running (last poll), or legacy unknown."""
-    return hub.task_live(t["id"]) or bool(host_dir(t) and (store.hosts.get(t["id"]) or {}).get("alive")) \
-        or legacy_unknown(t)
-
-
-def execution_view(t: Dict[str, Any], connected: bool, host: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def execution_view(t: Dict[str, Any], connected: bool, running: bool) -> Optional[Dict[str, Any]]:
     ex = t.get("execution")
     if not ex:
         return None
-    if ex.get("kind") == "managed":
-        state = "running" if connected or (host or {}).get("alive") else "stopped"
-        return {"kind": "managed", "state": state, "exitCode": (host or {}).get("exitCode")}
-    state = "running" if connected else "stopped" if ex.get("stopped") else "unknown"
-    return {"kind": "legacy", "state": state, "exitCode": None}
+    return {"kind": ex.get("kind"), "state": "running" if connected or running else "stopped",
+            "exitCode": ex.get("exitCode")}
 
 
 def session_view(t: Dict[str, Any], connected: bool) -> Optional[Dict[str, Any]]:
@@ -1039,13 +1020,13 @@ def has_task_slot(t: Dict[str, Any]) -> bool:
 
 
 def waiting_for_slot(t: Dict[str, Any]) -> bool:
-    queued = (paused(t) and not legacy_unknown(t)) or (not spawned(t) and t["spawn"]["state"] == "none")
-    return t["column"] == "todo" and queued and not blocked_by(t) and not has_task_slot(t)
+    queued = paused(t) or (not spawned(t) and t["spawn"]["state"] == "none")
+    return t["column"] == "todo" and queued and not t.get("intent") and not blocked_by(t) and not has_task_slot(t)
 
 
 def move_requires_confirmation(t: Dict[str, Any]) -> bool:
     state = (t.get("agent") or {}).get("state")
-    return t["column"] == "doing" or t["spawn"]["state"] == "running" or state in MOVE_GUARDED_AGENT_STATES
+    return t["column"] == "doing" or state in MOVE_GUARDED_AGENT_STATES
 
 
 def default_merge(t: Dict[str, Any]) -> str:
@@ -1554,47 +1535,73 @@ def update_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         return store.view(t)
 
 
-def delete_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+def delete_task(task_id: str, body: Dict[str, Any]) -> Any:
+    """Deletes a card. With cleanup, a started task's agent stops and its worktree goes first (the removeWorktree command
+    or teardown script), as a delete intent the card waits for; without, a running agent keeps running."""
+    requester = request_terminal(body)
     with store.lock:
         t = store.get(task_id)
         if move_requires_confirmation(t) and body.get("confirmWorking") is not True:
             raise ApiError(409, f"{task_id} may still be working; confirm before deleting it",
                            {"requiresConfirmation": "workingTask"})
         removing = body.get("cleanup") is True and spawned(t)
-        directory = host_dir(t)
-    # With cleanup, the agent stops and the worktree goes first through the removeWorktree command or teardown script; a failure keeps the card.
-    cleaned = cleanup_task(task_id, body) if removing else {"output": ""}
-    if cleaned.get("pending"):
-        raise ApiError(409, cleaned["output"] + "; delete the card once it is gone")
-    output = cleaned["output"]
+        pending = t.get("intent")
+        if not removing and pending and pending["op"] != "stop":
+            raise ApiError(409, f"{label(task_id)} is still {VERB[pending['op']]}")
+        path, ex = t.get("worktree"), dict(t.get("execution") or {})
+    if removing:
+        refuse_dirty_removal(path)
+        with store.lock:
+            intent = set_intent(store.get(task_id), "delete", {"requester": requester})
+        await_intent(task_id, intent["id"], INTENT_WAIT)
+        with store.lock:
+            t = store.tasks.get(task_id)
+            if t is not None and (t.get("intent") or {}).get("id") != intent["id"]:
+                last = t.get("lastOperation") or {}
+                raise ApiError(409, last.get("error") or f"{label(task_id)} wasn't deleted",
+                               {"output": last.get("output") or ""})
+        after_reply(lambda: replied_or_close(task_id, path, requester))
+        if t is not None:
+            return 202, {"ok": True, "pending": True,
+                         "message": f"{label(task_id)} is still stopping; the card is deleted once its worktree is gone"}
+        return {"ok": True, "output": DELETED_OUTPUT.pop(intent["id"], "")}
     note = None
-    if not removing and directory and agent_host.status(directory)["alive"]:
-        note = f"Its agent keeps running; attach with {agent_host.command('attach', directory)}"
+    if ex.get("kind") == "tmux" and detach.alive(ex):
+        note = f"Its agent keeps running; attach with {detach.attach_command(ex)}"
     with store.lock:
         store.get(task_id)
         store.delete(task_id)
     hub.changed()
-    return {"ok": True, "output": output, **({"note": note} if note else {})}
+    return {"ok": True, "output": "", **({"note": note} if note else {})}
 
 
 def start_task(t: Dict[str, Any]) -> None:
-    """Marks a task as starting in Todo (call under store.lock, then run spawn_worker on a thread)."""
+    """Starts a task: it shows as starting in Todo while its start intent sets up its worktree and agent (call under
+    store.lock)."""
     t["column"] = "todo"
     t["spawn"] = {"state": "running", "error": None, "log": ""}
     t["planningOutcome"] = t["planningMode"] if t["planningMode"] in ("plan", "fast") else None
-    store.save(t)
+    set_intent(t, "start", {})
 
 
 def move_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     """Moves a card. Starting it, or bringing a started card In Progress, needs a free task slot. A started card moved to
     Todo or Backlog pauses: its agent is interrupted and frees its slot; Todo resumes it on its turn, Backlog parks it.
-    In Progress resumes a paused or stopped agent; one that may still run in a terminal the board doesn't own resumes
-    only with confirmLegacy."""
+    In Progress resumes a paused or stopped agent. A card can't change column while an operation on it runs, except a
+    resume that a pause turns into a stop."""
     column = body.get("column")
     if column not in COLUMN_IDS:
         raise ApiError(400, f"Unknown column {column!r}")
     with store.lock:
+        before = copy.deepcopy(store.get(task_id))
+    facts = observe(before) if spawned(before) else None
+    with store.lock:
         t = store.get(task_id)
+        original = copy.deepcopy(t)
+        pending = t.get("intent")
+        if pending and column != t["column"] and (pending["op"] in ("start", "merge", "remove", "delete")
+                                                  or (pending["op"] == "stop" and column == "doing")):
+            raise ApiError(409, f"{label(task_id)} is still {VERB[pending['op']]}")
         if column in ("todo", "doing") and not body.get("force"):
             store.fresh_blocked()
         previous_column = t["column"]
@@ -1607,13 +1614,8 @@ def move_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         entering = column == "doing" and previous_column != "doing" and spawned(t)
         if entering and not has_task_slot(t):
             raise ApiError(409, f"{flow_id(t['repo'], t['base'])} is at its concurrent-task limit")
-        resume = column == "doing" and spawned(t) and not t.get("merged") and (was_paused or not agent_live(t))
-        if resume and legacy_unknown(t):
-            if body.get("confirmLegacy") is not True:
-                raise ApiError(409, f"{task_id}'s agent ran in a terminal the board doesn't manage and may still run "
-                                    "there; close that terminal, then confirm to resume it in a managed terminal",
-                               {"requiresConfirmation": "legacySession"})
-            t["execution"] = {**t["execution"], "stopped": True}
+        running = bool(facts and facts["agent_running"])
+        resume = column == "doing" and spawned(t) and not t.get("merged") and (was_paused or not running)
         pause = column in PAUSED_COLUMNS and not was_paused and spawned(t) and not t.get("merged")
         start = column in ("todo", "doing") and not spawned(t) and t["spawn"]["state"] in ("none", "failed")
         if start and not Path(t["repo"]).is_dir():
@@ -1625,20 +1627,22 @@ def move_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
             t["column"] = "todo"
             t["spawn"] = {"state": "none", "error": None, "log": ""}
             start = False
-        if resume:
-            store.resuming[task_id] = time.time()
-        if pause:
-            store.resuming.pop(task_id, None)
-        if start:
-            start_task(t)
-        else:
-            store.save(t)
+        try:
+            if start:
+                start_task(t)
+            elif resume:
+                set_intent(t, "resume", {})
+            elif pause and pending and pending["op"] == "resume":
+                set_intent(t, "stop", {})
+                pause = False
+            else:
+                store.save(t)
+        except ApiError:
+            t.clear()
+            t.update(original)
+            raise
         hub.changed()
         snapshot, view = dict(t), store.view(t)
-    if start:
-        threading.Thread(target=spawn_worker, args=(task_id,), daemon=True).start()
-    if resume:
-        threading.Thread(target=resume_task, args=(task_id,), daemon=True).start()
     if pause:
         view["note"] = pause_agent(snapshot)
     poller.kick()
@@ -1670,6 +1674,159 @@ def reorder_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         store.save(t)
         hub.changed()
         return store.view(t)
+
+
+# --- intents ------------------------------------------------------------------------
+
+# A step's outcome: ("next", None) once it moved to its next stage, ("wait", None) until a fact changes, ("retry", error)
+# after a transient failure, ("fail", error) to give up, ("chained", output) once it replaced its intent with the next
+# operation, ("finished", None) once it finished its intent itself.
+Outcome = Tuple[str, Optional[str]]
+REPLACEABLE = {("stop", "remove"), ("stop", "delete"), ("remove", "delete"), ("resume", "stop")}
+RUNNING_INTENTS: set = set()  # tasks whose intent a worker drives now (under store.lock)
+DRAINING = threading.Event()  # set once the board stops: no new worker starts
+WAIT_POLL = 0.25
+WAIT_SPAN = 2.0
+
+
+def set_intent(t: Dict[str, Any], op: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Records an operation for the reconciler to drive to its end (call under store.lock). A pending stop gives way to a
+    removal or delete, a removal to a delete and a resume to a stop; the same operation pending is returned as it is;
+    any other is refused while one runs."""
+    pending = t.get("intent")
+    if pending:
+        if pending["op"] == op:
+            return pending
+        if (pending["op"], op) not in REPLACEABLE:
+            raise ApiError(409, f"{label(t['id'])} is still {VERB[pending['op']]}")
+    intent = beads.new_intent(op, params)
+    t["intent"], t["lastOperation"] = intent, None
+    store.save(t)
+    hub.changed()
+    poller.kick()
+    return intent
+
+
+def progress(task_id: str, intent_id: str, stage: Optional[str] = None, log: str = "",
+             params: Optional[Dict[str, Any]] = None, **fields: Any) -> bool:
+    """Records a worker's progress on its intent: its next stage, log, params and task fields; False when the intent was
+    replaced or finished meanwhile."""
+    with store.lock:
+        t = store.tasks.get(task_id)
+        intent = (t or {}).get("intent")
+        if not t or not intent or intent["id"] != intent_id:
+            return False
+        if stage is not None:
+            intent.update(stage=stage, attempt=0, retryAt=None, lastError=None)
+        if log:
+            intent["log"] = tail(intent["log"] + log, SPAWN_LOG_LIMIT)
+        if params:
+            intent["params"].update(params)
+        t.update(fields)
+        if fields:
+            store.save(t)
+        else:
+            store.write_record(t)
+    hub.changed()
+    return True
+
+
+def finish_intent(task_id: str, intent_id: str, ok: bool, output: str = "", error: Optional[str] = None,
+                  next_intent: Optional[Dict[str, Any]] = None,
+                  apply: Optional[Callable[[Dict[str, Any]], None]] = None) -> bool:
+    """Ends an intent: `apply` updates the task, lastOperation records the result and `next_intent` (if any) follows."""
+    with store.lock:
+        t = store.tasks.get(task_id)
+        intent = (t or {}).get("intent")
+        if not t or not intent or intent["id"] != intent_id:
+            return False
+        if apply:
+            apply(t)
+        t["lastOperation"] = {"op": intent["op"], "at": now_iso(), "ok": ok, "error": error,
+                              "output": tail(output, SPAWN_LOG_LIMIT)}
+        t["intent"] = next_intent
+        store.save(t)
+    hub.changed()
+    poller.kick()
+    return True
+
+
+def await_intent(task_id: str, intent_id: str, timeout: float) -> None:
+    """Waits until a task's intent ended or was replaced, or `timeout` passes."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with store.lock:
+            t = store.tasks.get(task_id)
+            if not t or (t.get("intent") or {}).get("id") != intent_id:
+                return
+        time.sleep(0.1)
+
+
+def retry_intent(task_id: str, intent: Dict[str, Any], error: str) -> None:
+    """Backs an intent off after a transient failure; it fails once INTENT_ATTEMPTS ran out."""
+    attempt = intent["attempt"] + 1
+    if attempt >= INTENT_ATTEMPTS:
+        fail_intent(task_id, intent, error)
+        return
+    with store.lock:
+        t = store.tasks.get(task_id)
+        current = (t or {}).get("intent")
+        if not current or current["id"] != intent["id"]:
+            return
+        current.update(attempt=attempt, retryAt=time.time() + INTENT_BACKOFF[attempt - 1], lastError=error)
+        store.write_record(t)
+    print(f"orchestrator: {label(task_id)} {VERB[intent['op']]}, retrying: {error}", file=sys.stderr)
+    hub.changed()
+
+
+def fail_intent(task_id: str, intent: Dict[str, Any], error: str) -> None:
+    """Gives an intent up: a start shows as failed, a resume parks its card in Backlog."""
+    def failed(current: Dict[str, Any]) -> None:
+        if intent["op"] == "start":
+            current["spawn"] = {"state": "failed", "error": error,
+                                "log": tail(current["intent"]["log"] + error, SPAWN_LOG_LIMIT)}
+        elif intent["op"] == "resume":
+            current["resumedAt"] = None
+            if current["column"] == "doing":
+                current["column"], current["order"] = "backlog", store.next_order("backlog")
+    with store.lock:
+        log = ((store.tasks.get(task_id) or {}).get("intent") or {}).get("log") or ""
+    if finish_intent(task_id, intent["id"], False, output=log, error=error, apply=failed):
+        print(f"orchestrator: {label(task_id)} gave up {VERB[intent['op']]}: {error}", file=sys.stderr)
+
+
+def run_intent(task_id: str) -> None:
+    """A worker: drives a task's intent stage by stage until it ends, waits on a fact for a while, or backs off."""
+    waited = 0.0
+    try:
+        while True:
+            with store.lock:
+                t = store.tasks.get(task_id)
+                intent = copy.deepcopy((t or {}).get("intent"))
+                if not t or not intent:
+                    return
+                snapshot = copy.deepcopy(t)
+            try:
+                outcome, text = STEPS[intent["op"]](snapshot, intent)
+            except Exception as e:
+                outcome, text = "retry", error_text(e) if isinstance(e, ApiError) else repr(e)
+            if outcome == "wait":
+                if waited >= WAIT_SPAN or DRAINING.is_set():
+                    return
+                time.sleep(WAIT_POLL)
+                waited += WAIT_POLL
+                continue
+            waited = 0.0
+            if outcome == "retry":
+                retry_intent(task_id, intent, text or "failed")
+                return
+            if outcome == "fail":
+                fail_intent(task_id, intent, text or "failed")
+                return
+    finally:
+        with store.lock:
+            RUNNING_INTENTS.discard(task_id)
+        hub.changed()
 
 
 # --- worktree + agent ---------------------------------------------------------------
@@ -1840,28 +1997,56 @@ def start_args(t: Dict[str, Any], brief: Path, config: Path) -> List[str]:
 
 
 def resume_args(t: Dict[str, Any]) -> List[str]:
-    """omp's arguments to bring a task's agent back: its recorded session, else the worktree's latest one."""
-    session = (t.get("execution") or {}).get("session") or {}
+    """omp's arguments to bring a task's agent back: its recorded session, restored to what its last process left
+    unfinished unless that process exited cleanly; else the worktree's latest session."""
+    ex = t.get("execution") or {}
+    session = ex.get("session") or {}
+    flag = "--resume" if ex.get("cleanExit") else "--restore"
     if session.get("file") and Path(session["file"]).is_file():
-        return ["--resume", session["file"]]
+        return [flag, session["file"]]
     if session.get("id"):
-        return ["--resume", session["id"]]
+        return [flag, session["id"]]
     return ["--continue"]
 
 
-def agent_script(t: Dict[str, Any], name: str, args: List[str]) -> Path:
-    """Writes the script a task's host runs: the task's environment, then omp with `args`."""
+def agent_script(t: Dict[str, Any], name: str, args: List[str], resume: bool = False) -> Path:
+    """Writes the script a task's tmux session runs: the task's environment, then omp with `args`. A resumed agent's
+    omp finds the message it continues with in ORCHESTRATOR_RESUME_FILE."""
     omp = which("omp")
     if not omp:
         raise RuntimeError("omp isn't on the board's PATH")
-    env = [("KANBOARD_TASK", t["id"]), ("KANBOARD_PORT", str(PORT)), ("KANBOARD_HOME", str(HOME)),
-           ("KANBOARD_PLANNING_MODE", t["planningMode"])]
+    task_dir = store.task_dir(t["id"])
+    env = [("ORCHESTRATOR_TASK", t["id"]), ("ORCHESTRATOR_PORT", str(PORT)), ("ORCHESTRATOR_HOME", str(HOME)),
+           ("ORCHESTRATOR_PLANNING_MODE", t["planningMode"]), ("COLORTERM", "truecolor"),
+           ("OMP_TERMINAL_PRESENTER", str(task_dir / "presenter.json"))]
+    if os.environ.get("ORCHESTRATOR_LEASE_DIR"):
+        env.append(("ORCHESTRATOR_LEASE_DIR", os.environ["ORCHESTRATOR_LEASE_DIR"]))
+    if resume:
+        env.append(("ORCHESTRATOR_RESUME_FILE", str(task_dir / "resume.json")))
     if t.get("loop"):
         env += [("OMP_CONTROL_LOOP", t["loop"]), ("OMP_CONTROL_BASE", t["base"])]
     exports = " ".join(f"{k}={shlex.quote(v)}" for k, v in env)
-    path = store.task_dir(t["id"]) / name
+    path = task_dir / name
     write_atomic(path, f"#!/bin/sh\nexport {exports}\nexec {shlex.join([omp, *args])}\n")
     return path
+
+
+def write_presenter(task_id: str, presentation: Optional[Dict[str, Any]]) -> None:
+    """Names the cmux terminal showing a task's agent for its omp (OMP_TERMINAL_PRESENTER), which has no terminal of its
+    own: a page it opens goes to that cmux workspace."""
+    part = (presentation or {}).get("cmux") or {}
+    env = {k: part[key] for k, key in (("CMUX_WORKSPACE_ID", "workspace"), ("CMUX_SURFACE_ID", "surface"),
+                                       ("CMUX_SOCKET_PATH", "socket"), ("CMUX_BUNDLED_CLI_PATH", "cli")) if part.get(key)}
+    write_atomic(store.task_dir(task_id) / "presenter.json", json.dumps({"env": env}))
+
+
+def detach_mode() -> str:
+    """Where agents run (config.json's detach): auto (cmux's local-tmux in a cmux terminal, else the board's tmux), tmux or
+    cmux."""
+    mode = read_config().get("detach", "auto")
+    if mode not in detach.MODES:
+        raise ApiError(500, f"Invalid {CONFIG_FILE}: detach must be auto, tmux or cmux")
+    return mode
 
 
 def builtin_worktree(repo: str, branch: str) -> Tuple[str, str, bool]:
@@ -1881,112 +2066,144 @@ def builtin_worktree(repo: str, branch: str) -> Tuple[str, str, bool]:
     return path, log + out + err + f"Created {path}\n", True
 
 
-def checkout(t: Dict[str, Any], directory: Path) -> Tuple[str, str, bool]:
-    """Checks the task branch out in a worktree: the createWorktree hook when configured (its terminal runs a launcher
-    that starts the agent's host unless it runs, then attaches), else a built-in worktree and the setup script.
-    Returns (path, log, whether the hook ran)."""
+def worktree_hook(t: Dict[str, Any], ex: Dict[str, Any], command: str, script: Path) -> Tuple[int, str, str]:
+    """Runs the createWorktree hook for a task; the terminal it opens runs a launcher that starts the agent's tmux session
+    with `script` unless it runs, then shows it. Returns (exit code, output, failure message)."""
+    launcher = store.task_dir(t["id"]) / "agent.sh"
+    detach.write_launcher(launcher, ex, script)
+    setup = project_scripts(os.path.basename(t["repo"]))["setupScript"]
+    env = {"ORCHESTRATOR_TASK": t["id"], "ORCHESTRATOR_TITLE": t["title"], "ORCHESTRATOR_REPO": t["repo"],
+           "ORCHESTRATOR_BRANCH": t["branch"], "ORCHESTRATOR_BASE": t["base"],
+           "ORCHESTRATOR_AGENT_COMMAND": f"/bin/sh {shlex.quote(str(launcher))}",
+           "ORCHESTRATOR_SETUP_SCRIPT": os.path.expanduser(setup)}
+    return run_hook("createWorktree", command, t["repo"], 900, env)
+
+
+def checkout(t: Dict[str, Any], ex: Dict[str, Any], script: Path) -> Tuple[str, str, bool]:
+    """Checks the task branch out in a worktree: the createWorktree hook when configured (worktree_hook), else a built-in
+    worktree and the setup script. Returns (path, log, whether the hook ran)."""
     repo, branch = t["repo"], t["branch"]
     hook_command = hook("createWorktree")
-    setup = project_scripts(os.path.basename(repo))["setupScript"]
     if hook_command:
-        env = {"KANBOARD_TASK": t["id"], "KANBOARD_TITLE": t["title"], "KANBOARD_REPO": repo,
-               "KANBOARD_BRANCH": branch, "KANBOARD_BASE": t["base"],
-               "KANBOARD_AGENT_COMMAND": agent_host.command("launch", directory),
-               "KANBOARD_SETUP_SCRIPT": os.path.expanduser(setup)}
         dropped = drop_missing_worktrees(repo, branch)
-        code, log, error = run_hook("createWorktree", hook_command, repo, 900, env)
+        code, log, error = worktree_hook(t, ex, hook_command, script)
         log = dropped + log
         path = find_worktree(repo, branch)
         if code != 0:
-            # A hook failing after its terminal started the agent (e.g. in a later sidebar step) leaves a real host: adopt
-            # it rather than report a failure whose retry would start a second agent; else no late launcher may start one.
-            if not agent_host.status(directory)["alive"] and agent_host.abandon(directory):
+            # A hook failing after its terminal started the agent (e.g. in a later sidebar step) leaves a real agent: adopt
+            # it rather than report a failure whose retry would start a second one; else no late launcher may start one.
+            if not detach.alive(ex):
+                (store.task_dir(t["id"]) / "agent.sh").unlink(missing_ok=True)
                 raise RuntimeError(error)
-            path = path or agent_host.status(directory).get("cwd")
+            path = path or detach.cwd(ex)
             log += f"createWorktree failed after its terminal started the agent; adopted it: {error}\n"
         if not path:
             raise RuntimeError("createWorktree finished but the branch has no worktree")
         return path, log, True
+    setup = project_scripts(os.path.basename(repo))["setupScript"]
     path, log, created = builtin_worktree(repo, branch)
     if created and setup:
         log += run_script("Setup script", setup, path, 900, script_env(t, path))
     return path, log, False
 
 
-def spawn_worker(task_id: str) -> None:
-    with store.lock:
-        deps = list(store.get(task_id)["dependsOn"])
-    handoffs = dependency_handoffs(deps)
-    with store.lock:
-        t = store.get(task_id)
-        snapshot = dict(t)
-        repo, branch, base = t["repo"], t["branch"], t["base"]
-        brief = write_brief(t, "brief.md", handoffs)
-        t["briefed"] = briefing(t)
-        config = store.task_dir(t["id"]) / "omp.yml"
+def external_execution(session: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The record of an agent the board doesn't run in tmux: an omp started by hand, or by a createWorktree hook."""
+    return {"kind": "external", "pid": None, "pidStarted": None, "dir": None, "session": session, "cleanExit": False}
+
+
+def step_start(t: Dict[str, Any], intent: Dict[str, Any]) -> Outcome:
+    """Starts a task's agent: its brief and scripts, its worktree (reused, else checked out by the createWorktree hook or
+    the board), its tmux session, then the terminal showing it. A started agent or connected omp is adopted, never
+    doubled."""
+    task_id, iid, stage = t["id"], intent["id"], intent["stage"]
+    repo, branch, base = t["repo"], t["branch"], t["base"]
+    task_dir = store.task_dir(task_id)
+    ex = t.get("execution") or {}
+    if stage is None:
+        handoffs = dependency_handoffs(list(t["dependsOn"]))
+        with store.lock:
+            current = store.get(task_id)
+            brief = write_brief(current, "brief.md", handoffs)
+            briefed = briefing(current)
+            context = presentation_context(current)
+        config = task_dir / "omp.yml"
         write_atomic(config, f"plan:\n  defaultOnStartup: {'true' if t['planningMode'] == 'plan' else 'false'}\n")
-        directory = host_dir(t) or new_host_dir(task_id)
-        context = presentation_context(t)
-    try:
-        validate_branch(branch)
-        script = agent_script(snapshot, "launch.sh", start_args(snapshot, brief, config))
-        agent_host.prepare(directory, {"task": task_id, "repo": repo, "branch": branch, "argv": ["/bin/sh", str(script)]})
-        execution: Dict[str, Any] = {"kind": "managed", "dir": str(directory), "instance": None, "session": None}
-        # Recorded before anything can start the agent, so its first stream and reports find their task.
-        record_execution(task_id, execution)
-        presentation, hooked = None, False
-        status = agent_host.status(directory)
-        if status["alive"]:
-            path, log = status["cwd"], f"Adopted the agent already running in {status['cwd']}\n"
-        elif hub.task_live(task_id):
-            # An omp the board didn't start is connected for this task: adopt its session, never start a second agent.
-            path, log = find_worktree(repo, branch), "Adopted the omp session already connected for this task\n"
-            if not path:
-                raise RuntimeError(f"An omp session is connected for {task_id}, but {branch} has no worktree")
-            agent_host.abandon(directory)
-            execution = {"kind": "legacy", "session": None, "stopped": False}
-        else:
-            log = prepare_branch(repo, branch, base)
-            path, more, hooked = checkout(snapshot, directory)
-            log += more
-            status = agent_host.status(directory)
-            if hooked and not status["alive"] and hub.task_live(task_id):
-                log += "createWorktree started an omp the board doesn't run; adopted its session\n"
-                agent_host.abandon(directory)
-                execution = {"kind": "legacy", "session": None, "stopped": False}
-            elif not status["alive"]:
-                status = agent_host.ensure(directory, cwd=path)
-        if execution["kind"] == "managed":
-            execution["instance"] = status.get("instance")
-            if not hooked:
-                presentation, note = open_presentation(context, branch, path, directory)
-                log += note
+        try:
+            validate_branch(branch)
+            agent_script(t, "launch.sh", start_args(t, brief, config))
+            if ex.get("kind") == "tmux" and detach.alive(ex):
+                server = {k: ex.get(k) for k in ("server", "label", "socket")}
             else:
-                presentation = terminals.find_terminal(context, path)
+                server = detach.choose_server(context, detach_mode())
+        except (RuntimeError, ApiError, detach.DetachError) as e:
+            return "fail", error_text(e)
+        (task_dir / "screen.ans").unlink(missing_ok=True)
+        # Recorded before anything can start the agent, so its first stream and reports find their task.
+        progress(task_id, iid, stage="worktree", briefed=briefed,
+                 execution={"kind": "tmux", **server, "name": detach.session_name(task_id),
+                            "script": str(task_dir / "launch.sh"), "session": ex.get("session"), "cleanExit": False,
+                            "exitCode": None, "startedAt": now_iso()})
+        return "next", None
+    if stage == "worktree":
+        try:
+            if ex.get("kind") == "tmux" and detach.alive(ex):
+                path = detach.cwd(ex) or find_worktree(repo, branch)
+                log = f"Adopted the agent already running in {path}\n"
+            elif hub.task_live(task_id):
+                path = find_worktree(repo, branch)
+                if not path:
+                    return "fail", f"An omp session is connected for {task_id}, but {branch} has no worktree"
+                log = "Adopted the omp session already connected for this task\n"
+                ex = external_execution(ex.get("session"))
+            else:
+                path = find_worktree(repo, branch)
+                if path:
+                    log = f"Reusing the worktree at {path}\n"
+                else:
+                    log = prepare_branch(repo, branch, base)
+                    path, more, hooked = checkout(t, ex, task_dir / "launch.sh")
+                    log += more
+                    # The hook's own terminal shows the agent: the board opens none beside it.
+                    progress(task_id, iid, params={"hooked": hooked})
+        except (RuntimeError, ApiError) as e:
+            return "fail", error_text(e)
+        if not path:
+            return "fail", f"{branch} has no worktree"
+        progress(task_id, iid, stage="launch", log=log, worktree=path, execution=ex)
+        return "next", None
+    if stage == "launch":
+        if ex.get("kind") == "tmux" and not detach.alive(ex):
+            if hub.task_live(task_id):
+                progress(task_id, iid, log="createWorktree started an omp the board doesn't run; adopted its session\n",
+                         execution=external_execution(ex.get("session")))
+            else:
+                try:
+                    detach.start(ex, t["worktree"], task_dir / "launch.sh")
+                except detach.DetachError as e:
+                    return "retry", str(e)
+        refresh_facts(task_id)
+        progress(task_id, iid, stage="present")
+        return "next", None
+    presentation, note = None, ""
+    if ex.get("kind") == "tmux":
         with store.lock:
-            t = store.tasks.get(task_id)
-            if not t:
-                return
-            t["worktree"] = path
-            t["presentation"] = presentation
-            t["execution"] = {**execution, "session": (t.get("execution") or {}).get("session")}
-            if execution["kind"] == "managed":
-                store.hosts[task_id] = status
-            t["spawn"] = {"state": "done", "error": None, "log": tail(log, SPAWN_LOG_LIMIT)}
-            if t["column"] == "todo":
-                t["column"] = "doing"
-                t["order"] = store.next_order("doing")
-            store.save(t)
-    except (RuntimeError, ApiError, agent_host.HostError) as e:
-        message = e.message if isinstance(e, ApiError) else str(e)
-        with store.lock:
-            t = store.tasks.get(task_id)
-            if not t:
-                return
-            t["spawn"] = {"state": "failed", "error": message, "log": tail(message, SPAWN_LOG_LIMIT)}
-            store.save(t)
-    hub.changed()
-    poller.kick()
+            context = presentation_context(store.get(task_id))
+        if intent["params"].get("hooked"):
+            # The hook's own terminal runs the launcher, which attaches to the session.
+            presentation = terminals.find_terminal(context, t["worktree"])
+        else:
+            presentation, shown = show_agent(t, context, ex, t.get("presentation"), focus=False)
+            note = f"{shown}\n" if shown else ""
+        write_presenter(task_id, presentation)
+
+    def started(current: Dict[str, Any]) -> None:
+        current["presentation"] = presentation
+        current["spawn"] = {"state": "done", "error": None, "log": tail(intent["log"] + note, SPAWN_LOG_LIMIT)}
+        if current["column"] == "todo":
+            current["column"], current["order"] = "doing", store.next_order("doing")
+    finish_intent(task_id, iid, True, output=intent["log"] + note, apply=started)
+    return "finished", None
 
 
 AGENT_STATES = ("planning", "thinking", "working", "plan_ready", "needs_input", "idle")
@@ -2007,27 +2224,25 @@ def submitted_text(message: Optional[str]) -> Optional[str]:
     return text.strip() or None
 
 
-def agent_state(t: Dict[str, Any], connected: bool, host: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """What a started task's agent does: its omp's own report while its session is connected; disconnected while it may
-    run unconnected (a running managed host, or a legacy terminal's agent not seen to exit); else stopped."""
+def agent_state(t: Dict[str, Any], connected: bool, running: bool) -> Dict[str, Any]:
+    """What a started task's agent does: its omp's own report while its session is connected; disconnected while its
+    process runs unconnected; else stopped."""
     activity = store.activity.get(t["id"]) or {}
     message = activity.get("message")
     if connected:
         state = activity.get("state") or "idle"
         return {"state": state, "message": message, "step": activity.get("step") if state in STEP_STATES else None,
                 "since": activity.get("since")}
-    ex = t.get("execution") or {}
-    running = (ex.get("kind") == "managed" and bool((host or {}).get("alive"))) or \
-        (ex.get("kind") == "legacy" and not ex.get("stopped"))
     return {"state": "disconnected" if running else "stopped", "message": message, "step": None, "since": None}
 
 
 def report_agent(body: Dict[str, Any]) -> Dict[str, Any]:
     """Records the state, step and latest prompt an omp reports for its task (in memory) and its session (in the task's
-    execution record). A named task still starting is accepted before its worktree is recorded."""
+    execution record); `exited` marks a clean exit, which a later resume continues with --resume. A named task still
+    starting is accepted before its worktree is recorded."""
     state = body.get("state")
-    if state not in AGENT_STATES:
-        raise ApiError(400, "State must be planning, thinking, working, plan_ready, needs_input or idle")
+    if state not in AGENT_STATES and state != "exited":
+        raise ApiError(400, "State must be planning, thinking, working, plan_ready, needs_input, idle or exited")
     step = (plain(str(body.get("step") or "").strip())[:200] or None) if state in STEP_STATES else None
     message = submitted_text(body["message"][:MESSAGE_LIMIT]) if isinstance(body.get("message"), str) else None
     session_id = text_field(body.get("sessionId"), 200)
@@ -2047,14 +2262,24 @@ def report_agent(body: Dict[str, Any]) -> Dict[str, Any]:
             t = max(matches, key=lambda t: len(os.path.realpath(t["worktree"])))
         task_id = t["id"]
         previous = store.activity.get(task_id) or {}
-        changed = previous.get("state") != state
-        prompted = message is not None and message != previous.get("message")
-        store.activity[task_id] = {"state": state, "step": step, "since": now_iso() if changed else previous.get("since"),
-                                   "message": message if message is not None else previous.get("message")}
-        agent = t.get("agent")
-        stepped = not changed and previous.get("step") != step and bool(agent) and agent.get("state") == state
-        if stepped:
-            agent["step"] = step
+        if state == "exited":
+            if t.get("execution"):
+                t["execution"]["cleanExit"] = True
+            store.activity[task_id] = {"state": None, "step": None, "since": None, "message": previous.get("message")}
+            t["agent"] = agent_state(t, False, False)
+            store.save(t)
+            changed = prompted = True
+            stepped = False
+        else:
+            changed = previous.get("state") != state
+            prompted = message is not None and message != previous.get("message")
+            store.activity[task_id] = {"state": state, "step": step,
+                                       "since": now_iso() if changed else previous.get("since"),
+                                       "message": message if message is not None else previous.get("message")}
+            agent = t.get("agent")
+            stepped = not changed and previous.get("step") != step and bool(agent) and agent.get("state") == state
+            if stepped:
+                agent["step"] = step
     note_session(task_id, session_id, session_file)
     if changed or prompted:
         poller.kick()
@@ -2097,25 +2322,29 @@ def after_reply(action: Callable[[], None]) -> None:
         actions.append(action)
 
 
-def close_worktree_terminals(task_id: str, path: str, requester: Optional[Dict[str, Any]]) -> Callable[[], None]:
-    """Closes every terminal in a task's worktree, in any cmux window or the tmux of its terminals (a createWorktree
-    hook's included), except the requester's own; returns what closes that one, for after_reply."""
+def error_text(e: Exception) -> str:
+    return e.message if isinstance(e, ApiError) else str(e)
+
+
+def worktree_contexts(t: Dict[str, Any], requester: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The terminal servers that may show something in a task's worktree: its presentation's, its terminal context's and
+    the requester's (call under store.lock)."""
+    return [c for c in (t.get("presentation"), presentation_context(t), requester) if c]
+
+
+def replied_or_close(task_id: str, path: Optional[str], requester: Optional[Dict[str, Any]]) -> None:
+    """After a reply to a requester inside a worktree: its terminal closes now if the operation is over, else the
+    operation closes it at its end."""
+    if not requester or not path:
+        return
     with store.lock:
         t = store.tasks.get(task_id)
-        contexts = [c for c in ((t or {}).get("presentation"), presentation_context(t) if t else None, requester) if c]
-    terminals.close_terminals(path, contexts, spare=requester)
-
-    def close_requester() -> None:
-        if requester:
-            terminals.close_terminals(path, contexts)
-    return close_requester
-
-
-
-def new_host_dir(task_id: str) -> Path:
-    """A fresh host directory for a task: unique, so a reused task id never meets an older agent."""
-    agent_host.private_dir(HOSTS_DIR)
-    return HOSTS_DIR / f"{task_id}-{uuid.uuid4().hex[:8]}"
+        intent = (t or {}).get("intent")
+        if intent and intent["op"] in ("stop", "remove", "delete"):
+            intent["params"]["replied"] = True
+            store.write_record(t)
+            return
+    terminals.close_terminals(path, [requester])
 
 
 def record_execution(task_id: str, execution: Optional[Dict[str, Any]]) -> None:
@@ -2157,99 +2386,110 @@ def presentation_context(t: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def open_presentation(context: Dict[str, Any], name: str, cwd: str,
-                      directory: Path) -> Tuple[Optional[Dict[str, Any]], str]:
-    """Opens a terminal attached to a task's host in `context` (plain opens none); returns it and a log note. A failure
-    leaves the agent running and attachable."""
-    attach = agent_host.command("attach", directory)
+                      ex: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Opens a terminal attached to a task's tmux session in `context` (plain opens none); returns it and a log note. A
+    failure leaves the agent running and attachable."""
+    attach = detach.attach_command(ex)
     try:
         return terminals.open_terminal(context, name, cwd, attach), ""
     except (RuntimeError, OSError) as e:
         return None, f"Couldn't open the agent's terminal ({e}); attach with {attach}\n"
 
 
-def present(task_id: str, focus: bool) -> Dict[str, Any]:
-    """Shows a task's running managed agent: its presentation while a terminal is attached (focused on request), else a
-    new terminal attached to its host in the task's terminal context; plain opens none. Never starts an agent."""
-    with store.lock:
-        t = store.get(task_id)
-        directory = host_dir(t)
-        current, context, name, cwd = t.get("presentation"), presentation_context(t), t["branch"], t["worktree"]
-    if not directory:
-        raise ApiError(409, f"The board doesn't manage {task_id}'s agent")
-    status = agent_host.status(directory)
-    if not status["alive"]:
-        raise ApiError(409, f"{task_id}'s agent is stopped: move it to In Progress to resume it")
-    note = None
-    if current and status.get("clients") and terminals.alive(current):
-        presentation = {**current, "alive": True}
+def show_agent(t: Dict[str, Any], context: Dict[str, Any], ex: Dict[str, Any], current: Optional[Dict[str, Any]],
+               focus: bool) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Shows a task's running agent: the terminal in its worktree while one is attached to its tmux session (focused on
+    request); else, for a session on cmux's local-tmux server, the task's cmux workspace with the session attached in
+    it; else the terminal the createWorktree hook opens again for the existing worktree, where the user's own setup places
+    it; else a new terminal attached to it. A terminal that merely sits in the worktree never counts as showing the agent,
+    and a board terminal that no longer shows it is replaced. Returns the presentation and a note."""
+    cwd = t["worktree"]
+    shown = current if current and terminals.alive(current) else terminals.find_terminal(context, cwd)
+    if shown and detach.status(ex)["attached"] > 0:
+        presentation = {**shown, "alive": True}
         if focus and presentation.get("capabilities", {}).get("focus") and not terminals.focus(presentation):
-            note = "Its terminal didn't come forward"
-    else:
-        # Nothing shows the agent now: a terminal left from an earlier host or a detach is replaced.
-        if current and current.get("capabilities", {}).get("close") and terminals.alive(current):
-            terminals.close(current)
-        presentation, failed = open_presentation(context, name, cwd, directory)
-        note = failed.strip() or None
-        if presentation and focus and presentation.get("capabilities", {}).get("focus"):
-            terminals.focus(presentation)
+            return presentation, "Its terminal didn't come forward"
+        return presentation, None
+    if shown and shown.get("kind") == "cmux" and detach.attach_in_cmux(ex, shown["cmux"], focus):
+        return {**shown, "alive": True}, None
+    if current and current.get("capabilities", {}).get("close") and terminals.alive(current):
+        terminals.close(current)
+    note = None
+    try:
+        command = hook("createWorktree")
+    except ApiError as e:
+        command, note = None, e.message
+    if command:
+        script = Path(ex.get("script") or store.task_dir(t["id"]) / "resume.sh")
+        code, _, error = worktree_hook(t, ex, command, script)
+        opened = terminals.find_terminal(context, cwd) if code == 0 else None
+        if opened:
+            if focus and opened.get("capabilities", {}).get("focus"):
+                terminals.focus(opened)
+            return {**opened, "alive": True}, None
+        note = f"createWorktree didn't open its terminal: {error}" if code else None
+    presentation, failed = open_presentation(context, t["branch"], cwd, ex)
+    if presentation and focus and presentation.get("capabilities", {}).get("focus"):
+        terminals.focus(presentation)
+    return presentation, "; ".join(n for n in (note, failed.strip()) if n) or None
+
+
+def present(task_id: str, focus: bool) -> Dict[str, Any]:
+    """Shows a task's running agent in a terminal (show_agent); plain opens none. Never starts an agent."""
+    with store.lock:
+        t = copy.deepcopy(store.get(task_id))
+        context = presentation_context(t)
+    ex, current = t.get("execution") or {}, t.get("presentation")
+    if ex.get("kind") != "tmux":
+        raise ApiError(409, f"The board doesn't manage {label(task_id)}'s agent")
+    if not observe(t)["agent_running"]:
+        raise ApiError(409, f"{label(task_id)}'s agent is stopped: move it to In Progress to resume it")
+    presentation, note = show_agent(t, context, ex, current, focus)
+    write_presenter(task_id, presentation)
     with store.lock:
         t = store.tasks.get(task_id)
         if t:
             t["presentation"] = presentation
             store.save(t)
     hub.changed()
-    return {"presentation": presentation, "attachCommand": agent_host.command("attach", directory),
-            **({"note": note} if note else {})}
+    return {"presentation": presentation, "attachCommand": detach.attach_command(ex), **({"note": note} if note else {})}
 
 
-def ensure_agent(t: Dict[str, Any]) -> bool:
-    """Brings back a started task's agent unless it runs: a managed host restarts omp in the worktree, continuing its
-    recorded session. True when it restarted. A legacy agent that may still run in its own terminal never restarts."""
+def ensure_agent(t: Dict[str, Any]) -> None:
+    """Restarts a started task's stopped agent in a new tmux session, continuing its recorded omp session."""
     task_id = t["id"]
-    directory = host_dir(t)
-    if hub.task_live(task_id) or (directory and agent_host.status(directory)["alive"]):
-        return False
-    if legacy_unknown(t):
-        raise ApiError(409, f"{task_id}'s agent ran in a terminal the board doesn't manage and may still run there",
-                       {"requiresConfirmation": "legacySession"})
     path = t["worktree"]
     if not Path(path).is_dir():
         raise ApiError(409, f"The worktree {path} no longer exists")
-    directory = directory or new_host_dir(task_id)
-    session = (t.get("execution") or {}).get("session")
-    try:
-        script = agent_script(t, "resume.sh", resume_args(t))
-        agent_host.prepare(directory, {"task": task_id, "repo": t["repo"], "branch": t["branch"],
-                                       "argv": ["/bin/sh", str(script)]})
-        record_execution(task_id, {"kind": "managed", "dir": str(directory), "instance": None, "session": session})
-        status = agent_host.ensure(directory, cwd=path)
-    except (RuntimeError, agent_host.HostError) as e:
-        raise ApiError(500, f"{task_id}'s agent didn't restart: {e}")
     with store.lock:
-        current = store.tasks.get(task_id)
-        if current and host_dir(current):
-            current["execution"]["instance"] = status.get("instance")
-            store.hosts[task_id] = status
-            store.save(current)
-    return True
+        context = presentation_context(store.get(task_id))
+    old = t.get("execution") or {}
+    server = detach.choose_server(context, detach_mode())
+    script = agent_script(t, "resume.sh", resume_args(t), resume=True)
+    ex = {"kind": "tmux", **server, "name": detach.session_name(task_id), "script": str(script),
+          "session": old.get("session"), "cleanExit": False, "exitCode": None, "startedAt": now_iso()}
+    record_execution(task_id, ex)
+    (store.task_dir(task_id) / "screen.ans").unlink(missing_ok=True)
+    detach.start(ex, path, script)
+    refresh_facts(task_id)
 
 
 def open_task(task_id: str) -> Dict[str, Any]:
     """Shows a started task's agent in a terminal; presentation only: a stopped agent resumes from In Progress."""
     with store.lock:
-        t = store.get(task_id)
+        t = copy.deepcopy(store.get(task_id))
         require_spawned(t)
-        ex, presentation = t.get("execution") or {}, t.get("presentation")
-    if ex.get("kind") == "managed":
+    ex, presentation = t.get("execution") or {}, t.get("presentation")
+    if ex.get("kind") == "tmux":
         result = present(task_id, focus=True)
         poller.kick()
         return {"ok": True, **result}
-    if ex.get("kind") == "legacy" and presentation and terminals.alive(presentation):
+    if ex.get("kind") == "external" and presentation and terminals.alive(presentation):
         terminals.focus(presentation)
         return {"ok": True, "presentation": {**presentation, "alive": True}, "attachCommand": None}
-    if ex.get("kind") == "legacy" and not ex.get("stopped"):
-        raise ApiError(409, f"{task_id}'s agent runs in a terminal the board doesn't manage, and that terminal is closed")
-    raise ApiError(409, f"{task_id}'s agent is stopped: move it to In Progress to resume it")
+    if ex.get("kind") == "external" and observe(t)["agent_running"]:
+        raise ApiError(409, f"{label(task_id)}'s agent runs in a terminal the board doesn't manage, and that terminal is closed")
+    raise ApiError(409, f"{label(task_id)}'s agent is stopped: move it to In Progress to resume it")
 
 
 def open_worktree(task_id: str) -> Dict[str, Any]:
@@ -2469,7 +2709,6 @@ def set_flow_control_loops(body: Dict[str, Any]) -> Dict[str, Any]:
 
 def pause_agent(t: Dict[str, Any]) -> str:
     """Interrupts the agent of a task whose card just paused; returns what happened."""
-    hub.cancel_queued(t["id"])
     if not hub.task_live(t["id"]):
         return "Its omp session isn't connected, so nothing was interrupted"
     try:
@@ -2478,102 +2717,173 @@ def pause_agent(t: Dict[str, Any]) -> str:
         return f"Its agent wasn't interrupted: {e.message}"
 
 
-def resume_task(task_id: str) -> None:
-    """Puts a resumed task's agent back to work: restarts its stopped managed agent (continuing its omp session) and has
-    it continue with the card's edits made while it was paused. An agent that can't restart parks the card in Backlog."""
-    with store.lock:
-        t = store.tasks.get(task_id)
-        if not t or not spawned(t) or t["column"] != "doing":
-            store.resuming.pop(task_id, None)
-            return
-        note_briefing(t)
-        snapshot = dict(t)
-        update = briefing(t) if pending_update(t) else None
-        text = RESUME_TEXT.format(id=label(task_id))
-        if update:
-            text += "\n\n" + update_message(task_id, t["briefed"], update)
-    try:
-        restarted = ensure_agent(snapshot)
-    except ApiError as e:
-        print(f"orchestrator: {task_id} couldn't resume: {e.message}", file=sys.stderr)
+def step_resume(t: Dict[str, Any], intent: Dict[str, Any]) -> Outcome:
+    """Puts a resumed task's agent back to work with the card's edits made while it was paused: a running agent gets the
+    resume message now; a stopped one restarts in tmux (continuing its omp session) and its omp sends the message
+    itself from ORCHESTRATOR_RESUME_FILE, then posts /resumed. An agent that can't restart parks the card in Backlog."""
+    task_id, iid, params = t["id"], intent["id"], intent["params"]
+    stage = intent["stage"] or "launch"
+    if stage == "launch":
+        facts = observe(t)
+        if not facts["worktree_present"]:
+            return "fail", f"{label(task_id)} has no worktree"
         with store.lock:
-            store.resuming.pop(task_id, None)
-            t = store.tasks.get(task_id)
-            if t and t["column"] == "doing":
-                t["column"], t["order"] = "backlog", store.next_order("backlog")
-                store.save(t)
-        hub.changed()
-        return
-    if restarted:
+            current = store.get(task_id)
+            note_briefing(current)
+            update = briefing(current) if pending_update(current) else None
+            text = RESUME_TEXT.format(id=label(task_id))
+            if update:
+                text += "\n\n" + update_message(task_id, current["briefed"], update)
+            store.write_record(current)
+            snapshot = copy.deepcopy(current)
+        write_atomic(store.task_dir(task_id) / "resume.json", json.dumps({"text": text, "update": update}))
+        # From the process, not a stream that can outlive it; remembered so a retry presents what a failed launch started.
+        restarted = bool(params.get("restarted")) or not facts["agent_running"]
+        if restarted and not facts["agent_running"]:
+            progress(task_id, iid, params={"restarted": True})
+            try:
+                ensure_agent(snapshot)
+            except (ApiError, RuntimeError, detach.DetachError) as e:
+                return "retry", error_text(e)
+        progress(task_id, iid, stage="present", params={"restarted": restarted, "streamed": bool(facts["stream"]),
+                                                         "text": text})
+        return "next", None
+    if stage == "present":
+        log = ""
+        if params.get("restarted"):
+            try:
+                note = present(task_id, focus=False).get("note")
+                log = f"{note}\n" if note else ""
+            except ApiError as e:
+                log = f"Its terminal didn't open: {e.message}\n"
+        progress(task_id, iid, stage="nudge", log=log)
+        return "next", None
+    log = ""
+    if not params.get("restarted") and params.get("streamed"):
         try:
-            present(task_id, focus=False)
+            hub.control(task_id, "message", {"text": params["text"]})
+            resumed_task(task_id)
         except ApiError as e:
-            print(f"orchestrator: {task_id}'s terminal didn't open: {e.message}", file=sys.stderr)
-    hub.queue_control(task_id, "resume", {"text": text}, lambda ok, message: resumed(task_id, ok, message, update))
+            if e.status == 504:
+                return "retry", e.message
+            log = f"Its agent didn't take the resume message: {e.message}\n"
+    finish_intent(task_id, iid, True, output=intent["log"] + log,
+                  apply=lambda current: current.update(resumedAt=now_iso()))
+    return "finished", None
 
 
-def resumed(task_id: str, ok: bool, message: str, update: Optional[Dict[str, str]]) -> None:
-    """A resumed task's session answered; on success its agent knows the card as it is (check_ready forgets the resume once
-    the agent works)."""
-    with store.lock:
-        t = store.tasks.get(task_id)
-        if not ok:
-            store.resuming.pop(task_id, None)
-            print(f"orchestrator: {task_id} didn't resume: {message}", file=sys.stderr)
-        elif t and update:
-            t["briefed"] = update
-            store.save(t)
-    hub.changed()
-    poller.kick()
-
-
-def stop_agent(task_id: str) -> Optional[str]:
-    """Ends a started task's agent: its omp session takes the board's stop command first, then a managed host still
-    running is terminated and its terminal closed. A legacy agent counts as stopped only once its connected session
-    acknowledged and left. Returns a note for the user, if any."""
+def resumed_task(task_id: str) -> Dict[str, Any]:
+    """A resumed task's omp delivered its resume message: its agent knows the card as it is now."""
+    path = store.task_dir(task_id) / "resume.json"
     with store.lock:
         t = store.get(task_id)
-        directory, presentation = host_dir(t), t.get("presentation")
-        legacy = (t.get("execution") or {}).get("kind") == "legacy"
-    notes: List[str] = []
-    gone = False
-    if hub.task_live(task_id):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"ok": True, "consumed": False}
+        path.unlink(missing_ok=True)
+        if isinstance(data, dict) and isinstance(data.get("update"), dict):
+            t["briefed"] = data["update"]
+            store.save(t)
+    hub.changed()
+    return {"ok": True}
+
+
+def stopping(t: Dict[str, Any], intent: Dict[str, Any], prefix: str) -> Optional[Outcome]:
+    """Drives the stages that end a task's agent (`prefix` + ask, wait, kill): its omp session takes the stop command
+    first; one still running STOP_TIMEOUT later is sent SIGTERM, then its tmux session is killed. None once no agent
+    runs."""
+    task_id, iid, params = t["id"], intent["id"], intent["params"]
+    stage = (intent["stage"] or prefix + "ask")[len(prefix):]
+    facts = observe(t)
+    if stage == "ask":
+        if not facts["stream"]:
+            progress(task_id, iid, stage=prefix + "kill")
+            return "next", None
+        log = ""
         try:
             hub.control(task_id, "stop")
-            hub.wait_gone(task_id, STOP_TIMEOUT)
-            gone = not hub.task_live(task_id)
         except ApiError as e:
-            notes.append(f"Its omp session didn't take the stop command ({e.message})")
-    host = None
-    if directory:
+            log = f"Its omp session didn't take the stop command ({e.message})\n"
+        progress(task_id, iid, stage=prefix + "wait", log=log, params={"askedAt": time.time()})
+        return "next", None
+    if not facts["agent_running"]:
+        return None
+    if stage == "wait":
+        if time.time() - params.get("askedAt", 0) < STOP_TIMEOUT:
+            return "wait", None
+        progress(task_id, iid, stage=prefix + "kill")
+        return "next", None
+    ex = t.get("execution") or {}
+    signalled = params.get("signalledAt")
+    if ex.get("kind") == "tmux":
+        if signalled is None:
+            detach.signal(ex, signal.SIGTERM)
+            progress(task_id, iid, log="Its agent didn't exit; sent it SIGTERM\n", params={"signalledAt": time.time()})
+            return "wait", None
+        if time.time() - signalled < 5:
+            return "wait", None
+        if not detach.kill(ex):
+            return "retry", "its tmux session didn't stop"
+        return ("retry", "its agent is still running") if observe(t)["agent_running"] else None
+    if ex.get("kind") == "external" and detach.pid_alive(ex.get("pid"), ex.get("pidStarted")):
         try:
-            # omp that acknowledged the stop finishes its own shutdown first; only a host still running then is signalled.
-            deadline = time.time() + (STOP_TIMEOUT if gone else 0)
-            while agent_host.status(directory)["alive"] and time.time() < deadline:
-                time.sleep(0.2)
-            if agent_host.status(directory)["alive"] and not agent_host.terminate(directory):
-                notes.append("Its agent host didn't stop")
-        except agent_host.HostError as e:
-            notes.append(f"Its agent host didn't stop: {e}")
-        host = agent_host.status(directory)
-    elif legacy and not gone:
-        notes.append("Its agent ran in a terminal the board doesn't manage and wasn't seen to exit; close that terminal "
-                     "before resuming it")
-    if presentation and presentation.get("capabilities", {}).get("close") and terminals.alive(presentation):
+            if signalled is None:
+                os.killpg(ex["pid"], signal.SIGTERM)
+                progress(task_id, iid, log="Its agent didn't exit; sent it SIGTERM\n", params={"signalledAt": time.time()})
+                return "wait", None
+            if time.time() - signalled < 5:
+                return "wait", None
+            os.killpg(ex["pid"], signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except PermissionError as e:
+            return "retry", f"its agent couldn't be stopped: {e}"
+        return None
+    progress(task_id, iid, log="Its agent runs outside the board's tmux; close it there\n")
+    return None
+
+
+def finish_closing(task_id: str, intent: Dict[str, Any], path: Optional[str], requester: Optional[Dict[str, Any]],
+                   apply: Callable[[Dict[str, Any]], None]) -> Outcome:
+    """Finishes an operation whose requester may sit in the worktree: its terminal closes once the reply reached it."""
+    replied: List[bool] = []
+
+    def done(current: Dict[str, Any]) -> None:
+        replied.append(bool(current["intent"]["params"].get("replied")))
+        apply(current)
+    finish_intent(task_id, intent["id"], True, output=intent["log"], apply=done)
+    if requester and path and any(replied):
+        terminals.close_terminals(path, [requester])
+    return "finished", None
+
+
+def step_stop(t: Dict[str, Any], intent: Dict[str, Any]) -> Outcome:
+    """Stops a task's agent and closes the terminal showing it (with `terminals`, every terminal in its worktree but the
+    requester's), keeping its worktree, branch and omp session."""
+    task_id, iid, params = t["id"], intent["id"], intent["params"]
+    if intent["stage"] != "close":
+        outcome = stopping(t, intent, "")
+        if outcome:
+            return outcome
+        progress(task_id, iid, stage="close")
+        return "next", None
+    requester, path, presentation = params.get("requester"), t.get("worktree"), t.get("presentation")
+    if params.get("terminals") and path:
+        with store.lock:
+            contexts = worktree_contexts(store.get(task_id), requester)
+        terminals.close_terminals(path, contexts, spare=requester)
+    elif presentation and presentation.get("capabilities", {}).get("close") and terminals.alive(presentation):
         terminals.close(presentation)
-    with store.lock:
-        t = store.tasks.get(task_id)
-        if t:
-            ex = t.get("execution")
-            if ex and ex.get("kind") == "legacy" and gone:
-                ex["stopped"] = True
-            if t.get("presentation"):
-                t["presentation"] = {**t["presentation"], "alive": False}
-            if host is not None:
-                store.hosts[task_id] = host
-            t["agent"] = agent_state(t, hub.task_live(task_id), store.hosts.get(task_id))
-            store.save(t)
-    return "; ".join(notes) or None
+    if observe(t)["agent_running"]:
+        return "retry", "its agent is still running"
+    refresh_facts(task_id)
+
+    def stopped(current: Dict[str, Any]) -> None:
+        if current.get("presentation"):
+            current["presentation"] = {**current["presentation"], "alive": False}
+        current["agent"] = agent_state(current, False, False)
+    return finish_closing(task_id, intent, path, requester, stopped)
 
 
 def stop_task(task_id: str) -> Dict[str, Any]:
@@ -2584,22 +2894,21 @@ def stop_task(task_id: str) -> Dict[str, Any]:
         require_spawned(t)
         if t["column"] == "done" or t.get("merged"):
             raise ApiError(409, f"{task_id} is done")
-        if t["spawn"]["state"] == "running":
-            raise ApiError(409, f"{task_id} is still starting; stop it once its agent runs")
-        hub.cancel_queued(task_id)
-        store.resuming.pop(task_id, None)
+        intent = set_intent(t, "stop", {})
         # Parked first: while omp exits, an idle In Progress card would otherwise read as ready for Review.
         if t["column"] in ("todo", "doing"):
             t["column"], t["order"] = "backlog", store.next_order("backlog")
             store.save(t)
     hub.changed()
-    note = stop_agent(task_id)
+    await_intent(task_id, intent["id"], INTENT_WAIT)
     with store.lock:
-        view = store.view(store.get(task_id))
-    hub.changed()
-    poller.kick()
-    if note:
-        view["note"] = note
+        t = store.get(task_id)
+        view = store.view(t)
+        pending = (t.get("intent") or {}).get("id") == intent["id"]
+        last = t.get("lastOperation") or {}
+    view["pending"] = pending
+    if not pending and last.get("op") == "stop" and not last.get("ok"):
+        view["note"] = last.get("error")
     return view
 
 
@@ -2698,16 +3007,22 @@ def send_update(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def read_screen(task_id: str) -> Dict[str, Any]:
-    """The agent's terminal screen from its managed host, whether or not any terminal shows it."""
+    """The agent's terminal screen from its tmux session, whether or not any terminal shows it; once the agent exited,
+    the last screen the board kept."""
     with store.lock:
         t = store.get(task_id)
         require_spawned(t)
-        directory = host_dir(t)
-    if not directory:
-        raise ApiError(409, f"{task_id}'s agent runs in a terminal the board doesn't manage; its screen shows only there")
-    shown = agent_host.screen(directory, 120, styled=True)
+        ex = dict(t.get("execution") or {})
+    if ex.get("kind") != "tmux":
+        raise ApiError(409, f"{label(task_id)}'s agent runs outside the board's tmux; its screen shows only there")
+    text = detach.capture(ex, 120)
+    if text is None:
+        kept = store.task_dir(task_id) / "screen.ans"
+        if not kept.is_file():
+            raise ApiError(409, f"{label(task_id)} has no screen to show")
+        text = kept.read_text(encoding="utf-8", errors="replace")
     look = appearance()
-    return agent_host.preview(shown["text"], shown.get("rows"), look["palette"], look["nerdFont"], 120)
+    return screen.preview(screen.plain_text(text), screen.rows_from_ansi(text), look["palette"], look["nerdFont"], 120)
 
 
 def task_diff(task_id: str) -> Dict[str, Any]:
@@ -2743,110 +3058,132 @@ def present_diff(task_id: str) -> Dict[str, Any]:
     return {"ok": True}
 
 
-CLEANING: set = set()  # tasks whose worktree a removal is working on (under store.lock)
+DELETED_OUTPUT: Dict[str, str] = {}  # the log of a delete intent whose card is gone, by intent id, for its request
 
 
-@contextmanager
-def removal_claim(task_id: str) -> Iterator[None]:
-    """One removal of a task's worktree at a time, whether the board's button, a merge or the poller asked for it."""
-    with store.lock:
-        if task_id in CLEANING:
-            raise ApiError(409, f"{task_id}'s worktree is already being removed")
-        CLEANING.add(task_id)
+def refuse_dirty_removal(path: Optional[str]) -> None:
+    """Refuses removing a worktree with uncommitted changes before anything stops, unless removeWorktree decides."""
+    if not path or not Path(path).is_dir() or hook("removeWorktree"):
+        return
+    _, status, _ = run(["git", "-C", path, "status", "--porcelain"], timeout=30)
+    if status.strip():
+        raise ApiError(409, "The worktree has uncommitted changes", {"output": status})
+
+
+def remove_checkout(t: Dict[str, Any]) -> Outcome:
+    """Removes a stopped task's worktree and branch: the removeWorktree command, else the teardown script and git."""
+    task_id, path, repo, branch = t["id"], t.get("worktree"), t["repo"], t["branch"]
+    if not path or not Path(path).is_dir():
+        return "next", f"{path} was already removed\n" if path else ""
     try:
-        yield
-    finally:
+        command = hook("removeWorktree")
+        teardown = project_scripts(os.path.basename(repo))["teardownScript"]
+    except ApiError as e:
+        return "fail", e.message
+    if command:
+        env = {"ORCHESTRATOR_TASK": task_id, "ORCHESTRATOR_REPO": repo, "ORCHESTRATOR_BRANCH": branch, "ORCHESTRATOR_WORKTREE": path,
+               "ORCHESTRATOR_TEARDOWN_SCRIPT": os.path.expanduser(teardown)}
+        code, output, error = run_hook("removeWorktree", command, path, 300, env)
+        if code != 0:
+            return "retry", error
+        return "next", output.strip() + "\n" if output.strip() else ""
+    _, status, _ = run(["git", "-C", path, "status", "--porcelain"], timeout=30)
+    if status.strip():
+        return "fail", "The worktree has uncommitted changes"
+    log = run_script("Teardown script", teardown, path, 300, script_env(t, path)) if teardown else ""
+    code, out, err = run(["git", "-C", repo, "worktree", "remove", "--force", path], timeout=120)
+    if code != 0 and "is not a working tree" not in err:
+        return "retry", (err or out).strip() or f"git worktree remove exited with code {code}"
+    run(["git", "-C", repo, "branch", "-D", branch], timeout=30)
+    return "next", log + f"Removed {path} and branch {branch}\n"
+
+
+def removing(t: Dict[str, Any], intent: Dict[str, Any], delete: bool) -> Outcome:
+    """Removes a started task's worktree: stops its agent first so nothing works in a deleted tree, removes the worktree,
+    then closes every terminal left in it (the requester's own once replied) and ends its tmux session. The card then
+    forgets the worktree, so an unfinished task can start again, or with `delete` is deleted."""
+    task_id, iid, params = t["id"], intent["id"], intent["params"]
+    stage = intent["stage"] or "stop:ask"
+    if stage.startswith("stop:"):
+        outcome = stopping(t, intent, "stop:")
+        if outcome:
+            return outcome
+        progress(task_id, iid, stage="worktree")
+        return "next", None
+    if stage == "worktree":
+        outcome, text = remove_checkout(t)
+        if outcome != "next":
+            return outcome, text
+        progress(task_id, iid, stage="terminals", log=text)
+        return "next", None
+    requester, path, ex = params.get("requester"), t.get("worktree"), t.get("execution") or {}
+    if path:
+        # A removeWorktree hook runs without the caller's terminal identity, so the board closes what is left there.
         with store.lock:
-            CLEANING.discard(task_id)
+            contexts = worktree_contexts(store.get(task_id), requester)
+        terminals.close_terminals(path, contexts, spare=requester)
+    if ex.get("kind") == "tmux":
+        detach.kill(ex)
+    elif ex.get("kind") == "external" and ex.get("dir"):
+        shutil.rmtree(ex["dir"], ignore_errors=True)
+    if not delete:
+        def forgotten(current: Dict[str, Any]) -> None:
+            forget_worktree(current, park=("todo", "doing"))
+            current["control"] = None
+        return finish_closing(task_id, intent, path, requester, forgotten)
+    with store.lock:
+        current = store.tasks.get(task_id)
+        if not current or (current.get("intent") or {}).get("id") != iid:
+            return "finished", None
+        replied = bool(current["intent"]["params"].get("replied"))
+        store.delete(task_id)
+        DELETED_OUTPUT[iid] = intent["log"]
+    hub.changed()
+    if requester and path and replied:
+        terminals.close_terminals(path, [requester])
+    return "finished", None
+
+
+def step_remove(t: Dict[str, Any], intent: Dict[str, Any]) -> Outcome:
+    return removing(t, intent, delete=False)
+
+
+def step_delete(t: Dict[str, Any], intent: Dict[str, Any]) -> Outcome:
+    return removing(t, intent, delete=True)
 
 
 def cleanup_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    with removal_claim(task_id):
-        return remove_worktree(task_id, body)
-
-
-def remove_worktree(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Removes a started task's worktree and branch, stopping its agent first so nothing works in a deleted tree, then
-    closes every terminal left in it (the requester's own once replied); an unfinished task can then start again. An
-    agent still exiting after the stop leaves the removal pending, for the poller to finish (call under removal_claim)."""
+    """Removes a started task's worktree and branch as a remove intent; the reply says whether it is still pending."""
     requester = request_terminal(body)
     with store.lock:
-        t = store.get(task_id)
-        path = require_spawned(t)
-        repo, branch = t["repo"], t["branch"]
-        task_env = script_env(t, path)
-        directory = host_dir(t)
-        if legacy_unknown(t) and body.get("confirmLegacy") is not True:
-            raise ApiError(409, f"{task_id}'s agent may still run in a terminal the board doesn't manage; close that "
-                                "terminal, then confirm removing the worktree", {"requiresConfirmation": "legacySession"})
-    exists = Path(path).is_dir()
-    command = hook("removeWorktree") if exists else None
-    teardown = project_scripts(os.path.basename(repo))["teardownScript"] if exists else ""
-
-    def refuse_dirty() -> None:
-        _, status, _ = run(["git", "-C", path, "status", "--porcelain"], timeout=30)
-        if status.strip():
-            raise ApiError(409, "The worktree has uncommitted changes", {"output": status})
-
-    if exists and not command:
-        refuse_dirty()
-    note = stop_agent(task_id)
-    if hub.task_live(task_id) or (directory and agent_host.status(directory)["alive"]):
-        # The agent can take a few seconds more to exit: the poller removes the worktree once it has.
-        with store.lock:
-            t = store.tasks.get(task_id)
-            if t:
-                t["cleanupPending"] = now_iso()
-                store.save(t)
-        hub.changed()
-        poller.kick()
-        after_reply(close_worktree_terminals(task_id, path, requester))
-        return {"ok": True, "pending": True,
-                "output": f"{label(task_id)}'s agent is still stopping; its worktree is removed once it exits" + (f" ({note})" if note else "")}
-    if not exists:
-        output = f"{path} was already removed"
-    elif command:
-        env = {"KANBOARD_TASK": task_id, "KANBOARD_REPO": repo, "KANBOARD_BRANCH": branch, "KANBOARD_WORKTREE": path,
-               "KANBOARD_TEARDOWN_SCRIPT": os.path.expanduser(teardown)}
-        code, output, error = run_hook("removeWorktree", command, path, 300, env)
-        output = output.strip()
-        if code != 0:
-            raise ApiError(409, error, {"output": output})
-    else:
-        refuse_dirty()
-        log = run_script("Teardown script", teardown, path, 300, task_env) if teardown else ""
-        code, out, err = run(["git", "-C", repo, "worktree", "remove", "--force", path], timeout=120)
-        if code != 0:
-            raise ApiError(500, (err or out).strip())
-        run(["git", "-C", repo, "branch", "-D", branch], timeout=30)
-        output = log + f"Removed {path} and branch {branch}"
-    # A removeWorktree hook runs without the caller's terminal identity, so the board closes what is left in the worktree.
-    close_requester = close_worktree_terminals(task_id, path, requester)
+        path = require_spawned(store.get(task_id))
+    refuse_dirty_removal(path)
     with store.lock:
-        t = store.tasks.get(task_id)
-        if t:
-            forget_worktree(t, park=("todo", "doing"))
-    if directory:
-        shutil.rmtree(directory, ignore_errors=True)
-    hub.changed()
-    after_reply(close_requester)
-    return {"ok": True, "output": output}
+        intent = set_intent(store.get(task_id), "remove", {"requester": requester})
+    await_intent(task_id, intent["id"], INTENT_WAIT)
+    with store.lock:
+        t = store.get(task_id)
+        pending = (t.get("intent") or {}).get("id") == intent["id"]
+        last = {} if pending else (t.get("lastOperation") or {})
+    if last and not last.get("ok"):
+        raise ApiError(409, last.get("error") or f"{label(task_id)}'s worktree wasn't removed",
+                       {"output": last.get("output") or ""})
+    after_reply(lambda: replied_or_close(task_id, path, requester))
+    return {"ok": True, "output": (last.get("output") or "").strip(), "pending": pending}
 
 
 def forget_worktree(t: Dict[str, Any], park: Tuple[str, ...]) -> None:
     """Drops a task's worktree, agent and terminal records and its live state (call under store.lock). An unfinished
     task is no longer started, so starting it checks its branch out anew; a card in `park` moves to Backlog."""
     task_id = t["id"]
-    t.update(worktree=None, presentation=None, execution=None, agent=None, git=None, cleanupPending=None)
+    t.update(worktree=None, presentation=None, execution=None, agent=None, git=None)
     if not t.get("merged") and t["column"] != "done":
         t["spawn"] = {"state": "none", "error": None, "log": ""}
         if t["column"] in park:
             t["column"], t["order"] = "backlog", store.next_order("backlog")
     store.save(t)
     store.activity.pop(task_id, None)
-    store.resuming.pop(task_id, None)
-    store.hosts.pop(task_id, None)
-    hub.cancel_queued(task_id)
+    store.facts.pop(task_id, None)
 
 
 def merged_leftover(t: Dict[str, Any]) -> bool:
@@ -2861,9 +3198,9 @@ def merged_leftover(t: Dict[str, Any]) -> bool:
     return code == 0 and run(["git", "-C", path, "merge-base", "--is-ancestor", head.strip(), merged["sha"]], timeout=15)[0] == 0
 
 
-def recoverable(t: Dict[str, Any]) -> Optional[Path]:
-    """Refuses to return a task to Backlog unless it is unfinished, its recorded worktree is gone and no agent of it is
-    connected or may run in a terminal the board doesn't manage (call under store.lock); returns its host directory."""
+def recoverable(t: Dict[str, Any]) -> None:
+    """Refuses to return a task to Backlog unless it is unfinished and its recorded worktree is gone (call under
+    store.lock)."""
     task_id = t["id"]
     path = require_spawned(t)
     if t["column"] == "done" or t.get("merged"):
@@ -2872,35 +3209,34 @@ def recoverable(t: Dict[str, Any]) -> Optional[Path]:
         raise ApiError(409, f"{task_id} is still starting")
     if Path(path).is_dir():
         raise ApiError(409, f"{task_id}'s worktree {path} still exists; stop the task, or clean it up to remove it")
-    if hub.task_live(task_id):
-        raise ApiError(409, f"{task_id}'s omp session is still connected; stop it first")
-    if legacy_unknown(t):
-        raise ApiError(409, f"{task_id}'s agent ran in a terminal the board doesn't manage and wasn't seen to exit; "
-                            "close that terminal, then try again")
-    return host_dir(t)
 
 
 def recover_task(task_id: str) -> Dict[str, Any]:
     """Returns a started task whose worktree was deleted outside the board to a restartable Backlog card: forgets its
-    worktree, agent and terminal records, keeping the card, its notes and its branch. It never stops, starts or resumes
-    an agent, so one that may still run is refused."""
-    with store.lock:
-        directory = recoverable(store.get(task_id))
-    if directory and directory.is_dir():
-        try:
-            idle = agent_host.abandon(directory)
-        except (OSError, agent_host.HostError) as e:
-            raise ApiError(409, f"{task_id}'s agent host couldn't be checked ({e}); try again")
-        if not idle:
-            raise ApiError(409, f"{task_id}'s agent is still running; stop it first")
+    worktree, agent and terminal records and any operation left on it, keeping the card, its notes and its branch. It
+    never stops, starts or resumes an agent, so one that still runs is refused."""
     with store.lock:
         t = store.get(task_id)
-        if recoverable(t) != directory:
-            raise ApiError(409, f"{task_id}'s agent changed meanwhile; try again")
+        recoverable(t)
+        snapshot = copy.deepcopy(t)
+    facts = observe(snapshot)
+    if facts["stream"]:
+        raise ApiError(409, f"{label(task_id)}'s omp session is still connected; stop it first")
+    if facts["agent_running"]:
+        raise ApiError(409, f"{label(task_id)}'s agent is still running; stop it first")
+    ex = snapshot.get("execution") or {}
+    if ex.get("kind") == "tmux":
+        detach.kill(ex)
+    with store.lock:
+        t = store.get(task_id)
+        recoverable(t)
+        if t.get("execution") != snapshot.get("execution"):
+            raise ApiError(409, f"{label(task_id)}'s agent changed meanwhile; try again")
+        t["intent"] = None
         forget_worktree(t, park=("todo", "doing", "review"))
         view = store.view(t)
-    if directory:
-        shutil.rmtree(directory, ignore_errors=True)
+    if ex.get("kind") == "external" and ex.get("dir"):
+        shutil.rmtree(ex["dir"], ignore_errors=True)
     hub.changed()
     poller.kick()
     return view
@@ -2942,19 +3278,58 @@ MERGE_LOCK = threading.Lock()
 
 
 def merge_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    if not body.get("cleanup"):
-        return merge_into_base(task_id, body)
-    # Claimed for the whole merge, so the poller's sweep never removes the worktree under it.
-    with removal_claim(task_id):
-        return merge_into_base(task_id, body)
-
-
-def merge_into_base(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Commits a task, rebases it after a conflict, and merges it into its base; `cleanup` removes the worktree."""
+    """Merges a local task into its base as a merge intent, then (as the intent it chains into) removes its worktree with
+    `cleanup`, else stops its agent and closes its worktree's terminals. Replies once the merge itself is over."""
+    requester = request_terminal(body)
     with store.lock:
         t = store.get(task_id)
         path = require_spawned(t)
-        repo, branch, base, checkout, title = t["repo"], t["branch"], t["base"], t["checkout"], t["title"]
+        intent = set_intent(t, "merge", {"cleanup": bool(body.get("cleanup")), "commit": body.get("commit") is True,
+                                         "requester": requester})
+    await_intent(task_id, intent["id"], MERGE_WAIT)
+    with store.lock:
+        t = store.get(task_id)
+        current, last = t.get("intent"), t.get("lastOperation") or {}
+        if current and current["id"] == intent["id"]:
+            raise ApiError(504, f"{label(task_id)} is still merging; the board shows when it is done")
+        if last.get("op") == "merge" and not last.get("ok"):
+            raise ApiError(409, last.get("error") or "The merge failed", {"output": last.get("output") or ""})
+        output = current["log"] if current else last.get("output") or ""
+        merged = t.get("merged")
+    after_reply(lambda: replied_or_close(task_id, path, requester))
+    return {"ok": True, "output": output.strip(), "merged": merged, "pending": current is not None}
+
+
+def step_merge(t: Dict[str, Any], intent: Dict[str, Any]) -> Outcome:
+    """Merges a task into its base and records it, then chains into removing its worktree (`cleanup`) or stopping its
+    agent with every terminal in its worktree."""
+    task_id, params = t["id"], intent["params"]
+    try:
+        output, merged = merge_branch(t, params)
+    except ApiError as e:
+        progress(task_id, intent["id"], log=str(e.extra.get("output") or ""))
+        return "fail", e.message
+    output += "\n"
+
+    def recorded(current: Dict[str, Any]) -> None:
+        current["merged"] = merged
+        current["keptWorktree"] = not params.get("cleanup")
+        if current["column"] != "done":
+            current["column"], current["order"] = "done", store.next_order("done")
+    after = beads.new_intent("remove" if params.get("cleanup") else "stop",
+                             {"requester": params.get("requester"), "terminals": True})
+    after["log"] = output
+    finish_intent(task_id, intent["id"], True, output=output, next_intent=after, apply=recorded)
+    poller.kick(full=True)
+    return "chained", output
+
+
+def merge_branch(t: Dict[str, Any], body: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    """Commits a task's pending changes (`commit`), rebases its branch after a conflict, and merges it into its base;
+    returns the output and the merge record. A merge that landed without being recorded is recorded again."""
+    task_id = t["id"]
+    path = require_spawned(t)
+    repo, branch, base, checkout, title = t["repo"], t["branch"], t["base"], t["checkout"], t["title"]
     commit_sha = None
     rebased = False
     with MERGE_LOCK:
@@ -3061,44 +3436,30 @@ def merge_into_base(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
                 raise ApiError(409, message, {"output": (out + err).strip()})
         _, sha, _ = run(["git", "-C", target, "rev-parse", "HEAD"], timeout=10)
     merged = {"at": now_iso(), "into": base, "sha": sha.strip(), "checkout": target}
-    with store.lock:
-        t = store.tasks.get(task_id)
-        if t:
-            t["merged"] = merged
-            t["keptWorktree"] = not body.get("cleanup")
-            if t["column"] != "done":
-                t["column"], t["order"] = "done", store.next_order("done")
-            store.save(t)
-    hub.changed()
-    poller.kick(full=True)
     lines = []
     if commit_sha:
         lines.append(f"Committed pending changes on {branch} ({commit_sha})")
     if rebased:
         lines.append(f"Rebased {branch} onto {base}")
     lines.append(f"Merged {branch} into {base} ({merged['sha'][:7]})")
-    output = "\n".join(lines)
-    requester = request_terminal(body)
-    if body.get("cleanup"):
-        try:
-            output += "\n" + remove_worktree(task_id, {"terminal": body.get("terminal")})["output"]
-        except ApiError as e:
-            # Done either way: its terminals close as when keeping the worktree, the requester's staying to show why.
-            close_worktree_terminals(task_id, path, requester)
-            return {"ok": True, "output": output, "merged": merged, "cleanupError": e.message}
-    else:
-        note = stop_agent(task_id)
-        if note:
-            output += "\n" + note
-        after_reply(close_worktree_terminals(task_id, path, requester))
-    return {"ok": True, "output": output, "merged": merged}
+    return "\n".join(lines), merged
+
+
+STEPS: Dict[str, Callable[[Dict[str, Any], Dict[str, Any]], Outcome]] = {
+    "start": step_start, "resume": step_resume, "stop": step_stop, "merge": step_merge, "remove": step_remove,
+    "delete": step_delete}
 
 
 # --- status poller --------------------------------------------------------------------
 
+def recently_failed_removal(t: Dict[str, Any]) -> bool:
+    last = t.get("lastOperation") or {}
+    return last.get("op") == "remove" and not last.get("ok") and time.time() - epoch(last["at"]) < 3600
+
+
 class Poller:
-    """Keeps spawned tasks' agent, git and PR status current, moves cards on PR open/merge and local readiness,
-    and starts or resumes the Todo tasks whose dependencies are done."""
+    """Keeps spawned tasks' agent, git and PR status current, moves cards on PR open/merge and local readiness, starts or
+    resumes the Todo tasks whose dependencies are done, and runs a worker for each pending intent."""
 
     def __init__(self) -> None:
         self.wake = threading.Event()
@@ -3106,9 +3467,8 @@ class Poller:
         self.last_git = 0.0
         self.last_pr = 0.0
         self.last_presentation = 0.0
-        self.last_legacy = 0.0
         self.last_sweep = 0.0
-        self.sweep_failed: set = set()
+        self.beads_retry: Dict[str, Tuple[int, float]] = {}
 
     def kick(self, full: bool = False) -> None:
         self.forced = self.forced or full
@@ -3116,7 +3476,9 @@ class Poller:
 
     def run(self) -> None:
         while True:
-            self.wake.wait(timeout=3)
+            with store.lock:
+                busy = any(t.get("intent") for t in store.tasks.values())
+            self.wake.wait(timeout=1 if busy else 3)
             self.wake.clear()
             forced, self.forced = self.forced, False
             try:
@@ -3128,9 +3490,9 @@ class Poller:
         changed = self.check_beads()
         with store.lock:
             tracked = [dict(t) for t in store.tasks.values() if spawned(t)]
+        now = time.time()
         if tracked:
             changed |= self.check_agents(tracked)
-            now = time.time()
             if forced or now - self.last_git >= 10:
                 self.last_git = now
                 changed |= self.check_git([t for t in tracked if t["column"] != "done"])
@@ -3138,46 +3500,64 @@ class Poller:
             if forced or now - self.last_pr >= 60:
                 self.last_pr = now
                 changed |= self.check_prs([t for t in tracked if t["column"] != "done" or not t.get("pr")])
-            sweep = forced or now - self.last_sweep >= SWEEP_INTERVAL
-            if sweep:
-                self.last_sweep = now
-            self.check_cleanups(tracked, sweep)
         changed |= self.check_queue()
+        sweep = forced or now - self.last_sweep >= SWEEP_INTERVAL
+        if sweep:
+            self.last_sweep = now
+            self.sweep_leftovers()
+        changed |= self.retry_beads(now)
+        self.check_intents(now)
         if changed:
             hub.changed()
 
-    def check_cleanups(self, tracked: List[Dict[str, Any]], sweep: bool) -> None:
-        """Removes the worktrees whose removal waited for their agent to exit, and on `sweep` the ones a local merge left
-        behind; each runs in its own thread once no agent of the task is connected or hosted."""
-        for t in tracked:
-            task_id = t["id"]
-            if not (t.get("cleanupPending") or (sweep and task_id not in self.sweep_failed and merged_leftover(t))):
-                continue
-            directory = host_dir(t)
-            if hub.task_live(task_id) or (directory and agent_host.status(directory)["alive"]):
-                continue
-            with store.lock:
-                if task_id in CLEANING:
-                    continue
-                CLEANING.add(task_id)
-            threading.Thread(target=self.finish_cleanup, args=(task_id,), daemon=True).start()
+    def check_intents(self, now: float) -> None:
+        """Starts a worker for each pending intent that is due and has none; none once the board stops."""
+        if DRAINING.is_set():
+            return
+        with store.lock:
+            due = [t["id"] for t in store.tasks.values() if t.get("intent") and t["id"] not in RUNNING_INTENTS
+                   and (t["intent"].get("retryAt") or 0) <= now]
+            RUNNING_INTENTS.update(due)
+        for task_id in due:
+            threading.Thread(target=run_intent, args=(task_id,), daemon=True).start()
 
-    def finish_cleanup(self, task_id: str) -> None:
-        """Removes a worktree claimed by check_cleanups; a failure is logged and not swept again until the board restarts."""
-        try:
-            print(f"orchestrator: {remove_worktree(task_id, {})['output']}", file=sys.stderr)
-        except ApiError as e:
-            print(f"orchestrator: couldn't remove {task_id}'s worktree: {e.message}", file=sys.stderr)
-            self.sweep_failed.add(task_id)
+    def sweep_leftovers(self) -> None:
+        """Removes the worktrees local merges left behind; one whose removal just failed waits an hour."""
+        with store.lock:
+            candidates = [dict(t) for t in store.tasks.values() if t["column"] == "done" and t.get("worktree")
+                          and not t.get("intent") and not recently_failed_removal(t)]
+        for t in candidates:
+            if not merged_leftover(t):
+                continue
             with store.lock:
-                t = store.tasks.get(task_id)
-                if t and t.get("cleanupPending"):
-                    t["cleanupPending"] = None
-                    store.save(t)
-            hub.changed()
-        finally:
-            with store.lock:
-                CLEANING.discard(task_id)
+                current = store.tasks.get(t["id"])
+                if current and not current.get("intent"):
+                    set_intent(current, "remove", {})
+
+    def retry_beads(self, now: float) -> bool:
+        """Writes the column changes Beads didn't take, backing off after each failure."""
+        changed = False
+        with store.lock:
+            for t in list(store.tasks.values()):
+                task_id = t["id"]
+                if not t.get("beadsPending"):
+                    self.beads_retry.pop(task_id, None)
+                    continue
+                attempts, due = self.beads_retry.setdefault(task_id, (0, now + BEADS_BACKOFF[0]))
+                if now < due or task_id in RUNNING_INTENTS:
+                    continue
+                if beads.differs("column", t["column"], store.seen[task_id].get("column")):
+                    try:
+                        store.push(t, ["column"])
+                    except beads.BeadsError as e:
+                        self.beads_retry[task_id] = (attempts + 1, now + BEADS_BACKOFF[min(attempts + 1, len(BEADS_BACKOFF) - 1)])
+                        print(f"orchestrator: {task_id}'s column still doesn't reach Beads: {e}", file=sys.stderr)
+                        continue
+                t["beadsPending"] = None
+                store.write_record(t)
+                self.beads_retry.pop(task_id, None)
+                changed = True
+        return changed
 
     def check_beads(self) -> bool:
         """Takes in task edits made with bd outside the board."""
@@ -3197,78 +3577,67 @@ class Poller:
                 except ApiError as e:
                     print(f"orchestrator: reading Beads blockers failed, starting nothing: {e.message}", file=sys.stderr)
                     return False
-            queued = sorted((t for t in store.tasks.values() if t["column"] == "todo" and not blocked_by(t) and (
-                (paused(t) and not legacy_unknown(t))
-                or (not spawned(t) and t["spawn"]["state"] == "none" and Path(t["repo"]).is_dir()))),
+            queued = sorted((t for t in store.tasks.values() if t["column"] == "todo" and not t.get("intent")
+                             and not blocked_by(t) and (paused(t) or (not spawned(t) and t["spawn"]["state"] == "none"
+                                                                      and Path(t["repo"]).is_dir()))),
                             key=lambda t: (t["order"], t["createdAt"]))
-            starting, resuming = [], []
+            moved = False
             for t in queued:
                 if not has_task_slot(t):
                     continue
                 if paused(t):
                     t["column"], t["order"] = "doing", store.next_order("doing")
-                    store.resuming[t["id"]] = time.time()
-                    store.save(t)
-                    resuming.append(t["id"])
+                    set_intent(t, "resume", {})
                 else:
                     start_task(t)
-                    starting.append(t["id"])
-        for task_id in starting:
-            threading.Thread(target=spawn_worker, args=(task_id,), daemon=True).start()
-        for task_id in resuming:
-            threading.Thread(target=resume_task, args=(task_id,), daemon=True).start()
-        return bool(starting or resuming) or refreshed
+                moved = True
+        return moved or refreshed
 
     def check_agents(self, tracked: List[Dict[str, Any]]) -> bool:
-        """Agent state from each task's own omp session (its stream and reports) and its managed host; terminals are only
-        asked now and then whether they are still open, which never decides the agent's state. A legacy agent that isn't
-        connected counts as stopped once a complete scan finds no process of this user working in its worktree."""
-        hosts = {s["id"]: agent_host.status(d) for s in tracked for d in [host_dir(s)] if d}
+        """Agent state from what runs (observe: the omp session lease, the tmux pane) and from each task's own omp session
+        (its stream and reports); terminals are only asked now and then whether they are still open, which never decides
+        the agent's state. An agent that exited leaves its last screen, then its tmux session ends."""
+        facts = {s["id"]: observe(s) for s in tracked}
         opened: Dict[str, bool] = {}
         now = time.time()
         if now - self.last_presentation >= PRESENTATION_INTERVAL:
             self.last_presentation = now
             opened = {s["id"]: terminals.alive(s["presentation"]) for s in tracked
                       if (s.get("presentation") or {}).get("kind") in ("cmux", "tmux")}
-        cwds: Optional[List[str]] = None
-        if now - self.last_legacy >= LEGACY_PROBE_INTERVAL and any(legacy_unknown(s) for s in tracked):
-            self.last_legacy = now
-            cwds = process_cwds()
+        exited: List[Tuple[str, Dict[str, Any]]] = []
         changed = False
         with store.lock:
             for snapshot in tracked:
                 t = store.tasks.get(snapshot["id"])
                 if not t:
                     continue
-                task_id, ex = t["id"], t.get("execution")
-                connected = hub.task_live(task_id)
+                task_id, ex, f = t["id"], t.get("execution"), facts[snapshot["id"]]
+                connected = f["stream"] is not None
+                seen = store.facts.get(task_id) or {}
+                if (seen.get("agent_running"), seen.get("tmux")) != (f["agent_running"], f["tmux"]):
+                    changed = True
+                store.facts[task_id] = f
                 persist = False
-                host = hosts.get(task_id)
-                if host is not None and host_dir(t):
-                    if store.hosts.get(task_id) != host:
-                        store.hosts[task_id] = host
-                        changed = True
-                    if host.get("instance") and ex.get("instance") != host["instance"]:
-                        ex["instance"] = host["instance"]
-                        persist = True
+                tmux = f["tmux"] or {}
+                if ex and ex.get("kind") == "tmux" and tmux.get("dead") and ex.get("exitCode") is None \
+                        and ex.get("startedAt") == (snapshot.get("execution") or {}).get("startedAt"):
+                    ex["exitCode"] = tmux.get("exitCode")
+                    exited.append((task_id, dict(ex)))
+                    persist = True
                 if connected and not ex:
                     # A connected omp the board didn't start (run by hand in the worktree) is adopted, never duplicated.
-                    t["execution"] = {"kind": "legacy", "session": None, "stopped": False}
+                    t["execution"] = external_execution(None)
                     persist = True
-                elif connected and ex.get("kind") == "legacy" and ex.get("stopped"):
-                    ex["stopped"] = False
-                    persist = True
-                elif cwds is not None and legacy_unknown(t) and not any(within(c, t["worktree"]) for c in cwds):
-                    ex["stopped"] = True
-                    persist = True
-                    print(f"orchestrator: {task_id}'s legacy agent is gone: no process works in {t['worktree']}",
-                          file=sys.stderr)
                 activity = store.activity.get(task_id)
-                if not connected and activity and activity.get("state"):
-                    # A lost session's last report says nothing about whatever runs next.
-                    store.activity[task_id] = {"state": None, "step": None, "since": None,
-                                               "message": activity.get("message")}
-                agent = agent_state(t, connected, store.hosts.get(task_id))
+                if connected:
+                    if activity:
+                        activity.pop("disconnectedAt", None)
+                elif activity and activity.get("state"):
+                    # A lost session's last report says nothing about whatever runs next, once a reconnect didn't follow.
+                    if now - activity.setdefault("disconnectedAt", now) >= 3:
+                        store.activity[task_id] = {"state": None, "step": None, "since": None,
+                                                   "message": activity.get("message")}
+                agent = agent_state(t, connected, f["agent_running"])
                 if agent != t.get("agent"):
                     t["agent"] = agent
                     changed = True
@@ -3279,6 +3648,9 @@ class Poller:
                 if persist:
                     store.save(t)
                     changed = True
+        for task_id, ex in exited:
+            write_atomic(store.task_dir(task_id) / "screen.ans", detach.capture(ex, SCREEN_LINES) or "")
+            detach.reap(ex)
         return changed
 
     def check_git(self, tracked: List[Dict[str, Any]]) -> bool:
@@ -3326,13 +3698,14 @@ class Poller:
         with store.lock:
             for snapshot in tracked:
                 t = store.tasks.get(snapshot["id"])
-                if not t or t["merge"] != "local" or t["column"] != "doing" or t.get("pr"):
+                if not t or t["merge"] != "local" or t["column"] != "doing" or t.get("pr") or t.get("intent"):
                     continue
-                since = store.resuming.get(t["id"])
-                if since is not None:
+                if t.get("resumedAt"):
                     # A resumed agent reads idle or closed until it picks up its resume message.
-                    if (t.get("agent") or {}).get("state") in ACTIVE_STATES or time.time() - since > RESUME_GRACE:
-                        store.resuming.pop(t["id"], None)
+                    active = (t.get("agent") or {}).get("state") in ACTIVE_STATES
+                    if active or time.time() - epoch(t["resumedAt"]) >= RESUME_GRACE:
+                        t["resumedAt"] = None
+                        store.write_record(t)
                     continue
                 agent, git = t.get("agent") or {}, t.get("git") or {}
                 # Only the agent's own connected session saying idle counts: a lost terminal or connection never does.
@@ -3379,10 +3752,13 @@ class Poller:
                 elif pr and pr["state"] in ("open", "draft") and column in ("todo", "doing"):
                     column = "review"
                 if pr != t.get("pr") or column != t["column"]:
+                    merged = column == "done" and t["column"] != "done"
                     if column != t["column"]:
                         t["column"], t["order"] = column, store.next_order(column)
                     t["pr"] = pr
                     store.save(t)
+                    if merged and spawned(t) and not t.get("intent"):
+                        set_intent(t, "stop", {})
                     changed = True
         return changed
 
@@ -3458,6 +3834,8 @@ def board_readiness(t: Dict[str, Any]) -> Tuple[bool, str]:
         return False, "Done"
     if t["spawn"]["state"] == "running":
         return False, f"{column}: starting, its worktree and agent are being set up"
+    if t.get("intent"):
+        return False, f"{column}: {VERB[t['intent']['op']]}"
     if t["column"] in ("doing", "review"):
         return False, f"{column}: started, the queue no longer applies"
     if t["column"] == "backlog":
@@ -3469,9 +3847,6 @@ def board_readiness(t: Dict[str, Any]) -> Tuple[bool, str]:
         parts = ([f"waits for {', '.join(own)} to be done"] if own else []) + \
             ([f"inherits the block on its parent tree ({', '.join(inherited)})"] if inherited else [])
         return False, "Todo: " + " and ".join(parts)
-    if paused(t) and legacy_unknown(t):
-        return False, ("Todo: paused, but its agent ran in a terminal the board doesn't manage and may still run there; "
-                       "close that terminal, then move it to In Progress confirming the resume")
     if not startable:
         if not Path(t["repo"]).is_dir():
             return False, f"Todo: its repository {t['repo']} is missing"
@@ -3557,7 +3932,7 @@ def project_memories(body: Dict[str, Any]) -> Dict[str, Any]:
     if not info:
         raise ApiError(400, f"{repo} is not a git repository")
     scope = os.path.realpath(info["repo"])
-    prefix = f"kanboard.{hashlib.sha256(scope.encode()).hexdigest()[:16]}."
+    prefix = f"{beads.MEMORY_PREFIX}{hashlib.sha256(scope.encode()).hexdigest()[:16]}."
     key = body.get("key")
     if action != "search" and (not isinstance(key, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}", key)):
         raise ApiError(400, "Memory key must be 1–80 letters, digits, dots, underscores or hyphens, starting with a letter or digit")
@@ -3600,8 +3975,22 @@ def project_memories(body: Dict[str, Any]) -> Dict[str, Any]:
     return {"scope": scope, "memories": result, "truncated": truncated}
 
 
-def stop(*_: Any) -> None:
-    raise KeyboardInterrupt
+SERVER: Optional["Server"] = None
+
+
+def drain() -> None:
+    """Stops taking requests and starting intent workers; main() exits once the running workers are done (at most 120 s),
+    so a restart never cuts an operation short."""
+    if DRAINING.is_set():
+        return
+    DRAINING.set()
+    if SERVER is not None:
+        threading.Thread(target=SERVER.shutdown, daemon=True).start()
+
+
+def restart() -> Dict[str, Any]:
+    after_reply(drain)
+    return {"ok": True}
 
 
 ROUTES = [
@@ -3629,10 +4018,12 @@ ROUTES = [
     ("POST", r"/api/tasks/([\w.-]+)/merge", lambda m, b: merge_task(m[1], b)),
     ("POST", r"/api/tasks/([\w.-]+)/discuss", lambda m, b: discuss_task(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/cleanup", lambda m, b: cleanup_task(m[1], b)),
+    ("POST", r"/api/tasks/([\w.-]+)/resumed", lambda m, b: resumed_task(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/recover", lambda m, b: recover_task(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/history", lambda m, b: task_history(m[1], b)),
     ("POST", r"/api/readiness", lambda m, b: readiness(b)),
     ("POST", r"/api/refresh", lambda m, b: refresh()),
+    ("POST", r"/api/restart", lambda m, b: restart()),
     ("POST", r"/api/context", lambda m, b: set_context(b)),
     ("POST", r"/api/flows", lambda m, b: register_flow(b)),
     ("POST", r"/api/flows/prompt", lambda m, b: prompt_task(b)),
@@ -3728,8 +4119,9 @@ class Handler(BaseHTTPRequestHandler):
                         data = handler(m, self.body() if method != "GET" else {})
                     finally:
                         deferred, REPLY.actions = REPLY.actions, None
+                    status, data = data if isinstance(data, tuple) else (200, data)
                     try:
-                        return self.send_json(200, data)
+                        return self.send_json(status, data)
                     finally:
                         self.run_after_reply(deferred)
             raise ApiError(404, f"No route {self.command} {path}")
@@ -3810,8 +4202,49 @@ class Server(ThreadingHTTPServer):
             super().handle_error(request, client_address)
 
 
+OLD_HOME = Path("~/.kanboard").expanduser()
+
+
+def adopt_old_home() -> None:
+    """Moves the board's data from its folder before the rename from Kanboard into HOME, once, with the paths and hook
+    variable names recorded in it; worktrees the board created there are reconnected to their repositories. A HOME
+    that exists without a Beads workspace (e.g. a config.json an installer wrote there first) takes the old entries
+    over its own."""
+    if "ORCHESTRATOR_HOME" in os.environ or (HOME / "beads").exists() or not OLD_HOME.is_dir():
+        return
+    if HOME.exists():
+        for entry in OLD_HOME.iterdir():
+            target = HOME / entry.name
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
+            elif target.exists() or target.is_symlink():
+                target.unlink()
+            os.rename(entry, target)
+        OLD_HOME.rmdir()
+    else:
+        os.rename(OLD_HOME, HOME)
+    old, new = str(OLD_HOME) + os.sep, str(HOME) + os.sep
+    for path in [CONFIG_FILE, BOARD_FILE, *TASKS_DIR.glob("*/execution.json")]:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        moved = text.replace(old, new).replace("KANBOARD_", "ORCHESTRATOR_")
+        if moved != text:
+            write_atomic(path, moved)
+    for record in TASKS_DIR.glob("*/execution.json"):
+        try:
+            worktree = json.loads(record.read_text(encoding="utf-8")).get("worktree")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(worktree, str) and worktree.startswith(new) and Path(worktree).is_dir():
+            run(["git", "-C", worktree, "worktree", "repair"], timeout=30)
+    print(f"orchestrator: moved {OLD_HOME} to {HOME}", file=sys.stderr, flush=True)
+
+
 def prepare() -> None:
     """`server.py --prepare`: readies the Beads workspace and imports legacy JSON tasks once."""
+    adopt_old_home()
     HOME.mkdir(parents=True, exist_ok=True)
     try:
         beads.prepare(HOME, child_env(), default_branch, lambda line: print(line, file=sys.stderr, flush=True))
@@ -3835,16 +4268,23 @@ def main() -> None:
         sys.exit(1)
     threading.Thread(target=hub.run_snapshots, daemon=True).start()
     threading.Thread(target=poller.run, daemon=True).start()
-    server = Server((HOST, PORT), Handler)
+    global SERVER
+    SERVER = Server((HOST, PORT), Handler)
     print(f"orchestrator: http://{HOST}:{PORT} (data in {HOME}; new tasks branch from "
           f"{store.context['base']} in {store.context['checkout']})", file=sys.stderr, flush=True)
-    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGTERM, lambda *_: drain())
     try:
-        server.serve_forever()
+        SERVER.serve_forever()
     except KeyboardInterrupt:
-        pass
+        DRAINING.set()
     finally:
-        server.server_close()
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            with store.lock:
+                if not RUNNING_INTENTS:
+                    break
+            time.sleep(0.2)
+        SERVER.server_close()
 
 
 if __name__ == "__main__":

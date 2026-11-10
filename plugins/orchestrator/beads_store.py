@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -14,7 +15,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from runtime import now_iso, write_atomic
 
 PREFIX = "KB"
-ACTOR = "kanboard"
+ACTOR = "orchestrator"
+METADATA_KEY = "orchestrator"
+MEMORY_PREFIX = "orchestrator."
+# Names from before the rename from Kanboard, which prepare() moves once.
+OLD_METADATA_KEY = "kanboard"
+OLD_MEMORY_PREFIX = "kanboard."
 CUSTOM_STATUSES = "todo:active,review:wip"
 STATUS_FOR_COLUMN = {"backlog": "open", "todo": "todo", "doing": "in_progress", "review": "review", "done": "closed"}
 COLUMN_FOR_STATUS = {**{s: c for c, s in STATUS_FOR_COLUMN.items()},
@@ -22,12 +28,13 @@ COLUMN_FOR_STATUS = {**{s: c for c, s in STATUS_FOR_COLUMN.items()},
 CONFIG_KEYS = ("repo", "checkout", "base", "branch", "branchEdited", "merge", "planningMode", "loop", "number")
 FIELDS = ("title", "description", "plan", "column", "dependsOn", "parent", "ticket") + CONFIG_KEYS
 RUNTIME_KEYS = ("order", "spawn", "worktree", "presentation", "execution", "pr", "merged", "planningOutcome", "origin",
-                "briefed", "updatedAt", "planUpdatedAt", "control", "cleanupPending", "keptWorktree")
+                "briefed", "updatedAt", "planUpdatedAt", "control", "keptWorktree", "intent", "lastOperation", "resumedAt",
+                "beadsPending")
 # Before managed agent hosts, a started task's agent ran directly in the cmux workspace its record names.
 LEGACY_RUNTIME_KEYS = ("order", "spawn", "worktree", "workspace", "pr", "merged", "planningOutcome", "origin", "briefed",
                        "updatedAt", "planUpdatedAt")
 LEGACY_FILES = ("task.json", "plan.md", "plan.prev.md")
-RESERVED_KEY = "kanboardReserved"
+RESERVED_KEY = "orchestratorReserved"
 CONFLICT_EXIT = 13
 BD_TIMEOUT = 60.0
 IMPORT_TIMEOUT = 600.0
@@ -72,7 +79,7 @@ def parent_of(bead: Dict[str, Any]) -> Optional[str]:
 def fields(bead: Dict[str, Any]) -> Dict[str, Any]:
     """The task fields a bead holds, plus its bookkeeping (status, createdAt, updatedAt, metadata)."""
     metadata = bead.get("metadata") if isinstance(bead.get("metadata"), dict) else {}
-    config = metadata.get("kanboard") if isinstance(metadata.get("kanboard"), dict) else {}
+    config = metadata.get(METADATA_KEY) if isinstance(metadata.get(METADATA_KEY), dict) else {}
     result = {
         "title": bead.get("title") or "",
         "description": bead.get("description") or "",
@@ -98,19 +105,26 @@ def differs(key: str, a: Any, b: Any) -> bool:
 
 
 def metadata_with(seen_metadata: Dict[str, Any], t: Dict[str, Any]) -> Dict[str, Any]:
-    """The bead metadata for `t`: its foreign keys kept, kanboard's routing replaced."""
-    return {**(seen_metadata or {}), "kanboard": {k: t.get(k) for k in CONFIG_KEYS}}
+    """The bead metadata for `t`: its foreign keys kept, the board's routing replaced."""
+    return {**(seen_metadata or {}), METADATA_KEY: {k: t.get(k) for k in CONFIG_KEYS}}
 
 
 def runtime_record(t: Dict[str, Any]) -> Dict[str, Any]:
     return {k: t.get(k) for k in RUNTIME_KEYS}
 
 
+def new_intent(op: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """An operation the board's reconciler drives to its end, stage by stage, across board restarts."""
+    return {"id": uuid.uuid4().hex, "op": op, "at": now_iso(), "stage": None, "params": params, "attempt": 0,
+            "retryAt": None, "lastError": None, "log": ""}
+
+
 def upgrade_runtime(record: Dict[str, Any], legacy_context: Callable[..., Dict[str, Any]],
                     legacy_attachment: Callable[[Dict[str, Any], str], Optional[Dict[str, Any]]]) -> bool:
-    """Moves a record from before managed agents onto presentation and execution, once: its cmux workspace becomes a
-    legacy presentation, a started task's agent a legacy execution (its terminal owns it; never restarted unasked) and
-    its origin's workspace/surface a terminal context. True when it changed."""
+    """Moves an older record onto the current shape, once: a cmux workspace from before presentations becomes a legacy
+    presentation, an agent the board didn't start in tmux (an agent host's, or a terminal's of its own) an external
+    execution, its origin's workspace/surface a terminal context, and a removal waiting for its agent a remove intent.
+    True when it changed."""
     changed = False
     if "workspace" in record and "execution" not in record:
         workspace, worktree = record.pop("workspace"), record.get("worktree")
@@ -119,6 +133,25 @@ def upgrade_runtime(record: Dict[str, Any], legacy_context: Callable[..., Dict[s
             presentation = legacy_attachment({**workspace, "alive": False}, worktree)
         record["presentation"] = presentation
         record["execution"] = {"kind": "legacy", "session": None, "stopped": False} if worktree else None
+        changed = True
+    ex = record.get("execution")
+    if isinstance(ex, dict) and ex.get("kind") == "managed":
+        try:
+            host = json.loads((Path(ex["dir"]) / "host.json").read_text(encoding="utf-8")) if ex.get("dir") else {}
+        except (OSError, ValueError):
+            host = {}
+        host = host if isinstance(host, dict) else {}
+        record["execution"] = {"kind": "external", "pid": host.get("child") or None,
+                               "pidStarted": host.get("childStarted") or None, "dir": ex.get("dir"),
+                               "session": ex.get("session"), "cleanExit": False}
+        changed = True
+    elif isinstance(ex, dict) and ex.get("kind") == "legacy":
+        record["execution"] = {"kind": "external", "pid": None, "pidStarted": None, "dir": None,
+                               "session": ex.get("session"), "cleanExit": bool(ex.get("stopped"))}
+        changed = True
+    if record.get("cleanupPending"):
+        record.pop("cleanupPending")
+        record["intent"] = new_intent("remove", {})
         changed = True
     origin = record.get("origin")
     if isinstance(origin, dict) and "terminal" not in origin:
@@ -331,7 +364,7 @@ def legacy_row(t: Dict[str, Any], plan: str, known: set, default_base: Callable[
         "id": t["id"], "title": t.get("title") or t["id"], "description": t.get("description") or "",
         "design": plan, "status": status, "priority": 2, "issue_type": "task",
         "created_at": created, "updated_at": t.get("updatedAt") or created,
-        "metadata": {"kanboard": config},
+        "metadata": {METADATA_KEY: config},
         "dependencies": [{"issue_id": t["id"], "depends_on_id": d, "type": "blocks"}
                          for d in dict.fromkeys(t.get("dependsOn") or []) if d in known and d != t["id"]],
     }
@@ -386,6 +419,7 @@ def prepare(home: Path, base_env: Dict[str, str], default_base: Callable[[str], 
     workspace.require_binary()
     tasks_dir = home / "tasks"
     if workspace.prepared():
+        rename_stored_names(workspace, log)
         log(f"orchestrator: {workspace.root} is ready")
         return
     if not workspace.initialized():
@@ -427,3 +461,23 @@ def prepare(home: Path, base_env: Dict[str, str], default_base: Callable[[str], 
     write_atomic(workspace.marker, json.dumps({"preparedAt": now_iso(), "imported": [t["id"] for _, t, _ in legacy],
                                                "backup": str(backup) if backup else None}, indent=2))
     log(f"orchestrator: {workspace.root} is ready" + (f" ({len(legacy)} tasks imported)" if legacy else ""))
+
+
+def rename_stored_names(workspace: Workspace, log: Callable[[str], None]) -> None:
+    """Moves each bead's routing metadata and the shared memories off their names from before the rename, once."""
+    renamed = [b for b in workspace.list_all() if isinstance(b.get("metadata"), dict) and OLD_METADATA_KEY in b["metadata"]]
+    if renamed:
+        log(f"orchestrator: moving {len(renamed)} tasks' metadata from the {OLD_METADATA_KEY} key to {METADATA_KEY}")
+    for bead in renamed:
+        if METADATA_KEY not in bead["metadata"]:
+            workspace.call(["update", bead["id"], "--metadata", json.dumps({METADATA_KEY: bead["metadata"][OLD_METADATA_KEY]})])
+    for start in range(0, len(renamed), 50):
+        workspace.call(["update", *[b["id"] for b in renamed[start:start + 50]], "--unset-metadata", OLD_METADATA_KEY])
+    memories = workspace.call(["memories"])
+    old = {k: v for k, v in memories.items() if k.startswith(OLD_MEMORY_PREFIX) and isinstance(v, str)} \
+        if isinstance(memories, dict) else {}
+    for key, text in old.items():
+        new = MEMORY_PREFIX + key[len(OLD_MEMORY_PREFIX):]
+        if new not in memories:
+            workspace.call(["remember", "--key", new, "--", text])
+        workspace.call(["forget", key])

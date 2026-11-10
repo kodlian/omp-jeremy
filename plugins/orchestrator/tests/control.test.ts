@@ -1,17 +1,20 @@
 import { type Subprocess } from "bun";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
-// The board also looks for Beads in Homebrew's directories when they aren't on PATH.
-const BD = Bun.which("bd", { PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin` });
-const CALLER = /^(CMUX_|TMUX|OMP_TERMINAL|KANBOARD_|WT_|OMP_CONTROL_)/;
+const EXTRA_PATH = `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`;
+// The board also looks for Beads and tmux in Homebrew's directories when they aren't on PATH.
+const BD = Bun.which("bd", { PATH: EXTRA_PATH });
+const TMUX = Bun.which("tmux", { PATH: EXTRA_PATH });
+const CALLER = /^(CMUX_|TMUX|OMP_TERMINAL|ORCHESTRATOR_|WT_|OMP_CONTROL_)/;
 
 type Task = { id: string; loop: string | null; control: unknown; worktree: string | null; spawn: { state: string; error: string | null }; flow: string };
 type Flow = { id: string; controlLoops: { id: string }[] | null };
 
 let dir = "";
+let label = "";
 let port = 0;
 let env: Record<string, string> = {};
 let server: Subprocess | undefined;
@@ -51,14 +54,14 @@ async function start(id: string): Promise<Task & { worktree: string }> {
 	throw new Error(`${id} didn't start in time`);
 }
 
-describe.skipIf(!BD)("a card's control loop", () => {
+describe.skipIf(!BD || !TMUX)("a card's control loop", () => {
 	let started: Task & { worktree: string };
 
 	beforeAll(async () => {
-		// /tmp, not the per-user temp directory: an agent host's socket path must stay under 104 bytes.
 		dir = realpathSync(mkdtempSync("/tmp/orchestrator-control-"));
-		for (const sub of ["bin", "home", "board", "repo"]) mkdirSync(join(dir, sub));
-		writeFileSync(join(dir, "bin", "omp"), "#!/bin/sh\nexec sleep 600\n");
+		label = `orch-test-${basename(dir)}`;
+		for (const sub of ["bin", "home", "board", "repo", "leases"]) mkdirSync(join(dir, sub));
+		copyFileSync(join(import.meta.dir, "fake_omp.py"), join(dir, "bin", "omp"));
 		chmodSync(join(dir, "bin", "omp"), 0o755);
 		writeFileSync(join(dir, "home", ".gitconfig"), "[user]\n\tname = Control\n\temail = control@example.com\n");
 		env = Object.fromEntries(Object.entries(process.env).filter(([k, v]) => v !== undefined && !CALLER.test(k))) as Record<string, string>;
@@ -66,8 +69,9 @@ describe.skipIf(!BD)("a card's control loop", () => {
 		port = probe.port;
 		probe.stop(true);
 		Object.assign(env, {
-			HOME: join(dir, "home"), PATH: `${join(dir, "bin")}:${process.env.PATH}`, PYTHONDONTWRITEBYTECODE: "1",
-			KANBOARD_HOME: join(dir, "board"), KANBOARD_PORT: String(port), KANBOARD_REPO: join(dir, "repo"),
+			HOME: join(dir, "home"), PATH: `${join(dir, "bin")}:${EXTRA_PATH}`, PYTHONDONTWRITEBYTECODE: "1",
+			ORCHESTRATOR_HOME: join(dir, "board"), ORCHESTRATOR_PORT: String(port), ORCHESTRATOR_REPO: join(dir, "repo"),
+			ORCHESTRATOR_TMUX_LABEL: label, ORCHESTRATOR_LEASE_DIR: join(dir, "leases"),
 		});
 		run(["git", "init", "-q", "-b", "main"], join(dir, "repo"));
 		run(["git", "commit", "-q", "--allow-empty", "-m", "init"], join(dir, "repo"));
@@ -84,7 +88,7 @@ describe.skipIf(!BD)("a card's control loop", () => {
 
 	afterAll(() => {
 		server?.kill();
-		Bun.spawnSync(["pkill", "-f", join(dir, "board", "hosts")]);
+		Bun.spawnSync([TMUX!, "-L", label, "kill-server"], { env });
 		rmSync(dir, { recursive: true, force: true });
 	});
 

@@ -1,7 +1,7 @@
 // @bun
 // plugins/orchestrator/omp/orchestrator.ts
 import { spawn, spawnSync } from "child_process";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import * as omp from "@oh-my-pi/pi-coding-agent";
@@ -72,16 +72,17 @@ var LIBRARY_EVENT = "control:library";
 var COMMAND_EVENT = "control:command";
 
 // plugins/orchestrator/omp/orchestrator.ts
-var BASE = `http://127.0.0.1:${process.env.KANBOARD_PORT || "4747"}`;
-var HOME = process.env.KANBOARD_HOME || join(homedir(), ".kanboard");
-var PYTHON = process.env.KANBOARD_PYTHON || "python3";
+var BASE = `http://127.0.0.1:${process.env.ORCHESTRATOR_PORT || "4747"}`;
+var HOME = process.env.ORCHESTRATOR_HOME || join(homedir(), ".orchestrator");
+var PYTHON = process.env.ORCHESTRATOR_PYTHON || "python3";
 var SERVER = join(dirname(realpathSync(import.meta.path)), "..", "server.py");
 var SERVER_ROOT = dirname(SERVER);
-var START_TIMEOUT_MS = 5000;
+var START_TIMEOUT_MS = 30000;
 var RECONNECT_MS = 3000;
-var MODE_FILE = "kanboard";
+var STREAM_IDLE_MS = 1e4;
+var MODE_FILE = "orchestrator";
 var STEP_MS = 2000;
-var CLEANUP_ENTRY = "kanboard.cleanup";
+var CLEANUP_ENTRY = "orchestrator.cleanup";
 var USAGE = "Orchestrator: /orchestrator on | off | status | open | start #n\u2026|all | done [#n]";
 var ORCHESTRATOR_COMMANDS = [
   { label: "on", value: "on", description: "Enable Orchestrator mode for this checkout" },
@@ -127,34 +128,16 @@ function isControl(data) {
 
 class BoardError extends Error {
   status;
-  requiresConfirmation;
-  constructor(status, message, requiresConfirmation = null) {
+  constructor(status, message) {
     super(message);
     this.status = status;
-    this.requiresConfirmation = requiresConfirmation;
-  }
-}
-async function withLegacyConfirm(ctx, id, call, confirmed = false) {
-  try {
-    return await call(confirmed);
-  } catch (e) {
-    if (confirmed || !(e instanceof BoardError) || e.requiresConfirmation !== "legacySession")
-      throw e;
-    if (!ctx.hasUI)
-      throw new Error(`${e.message}. Ask the user to confirm that the omp in ${id}'s old terminal has exited, then retry with confirmLegacy: true.`);
-    const sure = await ctx.ui.confirm(`Has ${taskNumber(id)}'s old omp exited?`, `${e.message}.
-
-Confirm only once the omp that ran in its old terminal has exited: the board can't see that terminal.`);
-    if (!sure)
-      throw new Error(`${id} unchanged: its old omp may still be running`);
-    return call(true);
   }
 }
 var tilde = (path) => path.startsWith(homedir()) ? `~${path.slice(homedir().length)}` : path;
 var errorText = (e) => e instanceof Error ? e.message : String(e);
 var reply = (text, isError = false) => ({ content: [{ type: "text", text }], isError });
 var cardNumbers = new Map;
-var CARD_ID = /\bKB-\d+(?:\.\d+)*\b/g;
+var CARD_ID = /(?<![\w/-])KB-\d+(?:\.\d+)*\b/g;
 function rememberNumbers(board) {
   for (const t of board.tasks)
     cardNumbers.set(t.id, t.number);
@@ -200,10 +183,10 @@ async function prepare(env) {
   }
 }
 async function launch() {
-  mkdirSync(HOME, { recursive: true });
   const env = { ...process.env };
-  delete env.KANBOARD_TASK;
+  delete env.ORCHESTRATOR_TASK;
   await prepare(env);
+  mkdirSync(HOME, { recursive: true });
   const log = openSync(join(HOME, "server.log"), "a");
   const spawned = {};
   try {
@@ -245,10 +228,12 @@ async function refreshBoard() {
   if (Math.floor(mtime) <= Math.floor(running.codeMtime))
     return;
   await exclusive(async () => {
-    try {
-      process.kill(running.pid, "SIGTERM");
-    } catch {}
-    const deadline = Date.now() + START_TIMEOUT_MS;
+    await api("POST", "/api/restart", {}, false).catch(() => {
+      try {
+        process.kill(running.pid, "SIGTERM");
+      } catch {}
+    });
+    const deadline = Date.now() + 60000;
     while (Date.now() < deadline && await health())
       await Bun.sleep(100);
     await launch();
@@ -283,8 +268,7 @@ async function api(method, path, body, autostart = true) {
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     const error = data && typeof data === "object" && "error" in data && typeof data.error === "string" ? data.error : "";
-    const confirm = data && typeof data === "object" && "requiresConfirmation" in data && typeof data.requiresConfirmation === "string" ? data.requiresConfirmation : null;
-    throw new BoardError(res.status, error || `${res.status} ${res.statusText}`, confirm);
+    throw new BoardError(res.status, error || `${res.status} ${res.statusText}`);
   }
   if (method === "GET" && path === "/api/state")
     rememberNumbers(data);
@@ -339,7 +323,13 @@ function worktreeTask(board, cwd) {
 }
 function modeFile(cwd) {
   const gitDir = git(["rev-parse", "--absolute-git-dir"], cwd);
-  return gitDir ? join(gitDir, MODE_FILE) : null;
+  if (!gitDir)
+    return null;
+  const file = join(gitDir, MODE_FILE);
+  const old = join(gitDir, "kanboard");
+  if (existsSync(old) && !existsSync(file))
+    renameSync(old, file);
+  return file;
 }
 function stepText(event) {
   if (event.intent)
@@ -357,7 +347,7 @@ function inPlanMode(ctx) {
   }
   return false;
 }
-var TERMINAL_OVERRIDES = ["KANBOARD_TERMINAL", "OMP_TERMINAL"];
+var TERMINAL_OVERRIDES = ["ORCHESTRATOR_TERMINAL", "OMP_TERMINAL"];
 var terminal;
 function callerTerminal() {
   terminal ??= detectTerminalContext({ python: PYTHON, overrideEnvs: TERMINAL_OVERRIDES }).then((context) => ({ context }), (e) => ({ error: errorText(e) }));
@@ -644,7 +634,17 @@ var THEME_VARS = {
   "--warning": "warning",
   "--cyan": "borderAccent"
 };
+function intentText(t) {
+  const i = t.intent;
+  if (!i)
+    return null;
+  const text = { start: "starting", resume: "resuming", stop: "stopping", merge: `merging into ${t.base}`, remove: "removing worktree", delete: "deleting" }[i.op] ?? i.op;
+  return i.attempt > 0 ? `${text} (retrying: ${i.lastError ?? "unknown error"})` : text;
+}
 function cardLook(t) {
+  const busy = intentText(t);
+  if (busy)
+    return ["status.running", "accent", busy];
   if (t.spawn.state === "failed")
     return ["status.error", "error", "didn't start"];
   if (t.column === "review")
@@ -658,7 +658,7 @@ function cardLook(t) {
     return ["status.pending", "muted", `starts once ${waitsUntil(t)}`];
   if (t.column === "todo" && t.waitingForSlot)
     return ["status.pending", "muted", "waiting for a task slot"];
-  return t.spawn.state !== "running" && t.agent && AGENT_LOOK[t.agent.state] || ["status.running", "accent", "starting"];
+  return !t.intent && t.agent && AGENT_LOOK[t.agent.state] || ["status.running", "accent", "starting"];
 }
 function widgetLines(p, board, scope) {
   const icon = p.fg("accent", BOARD_GLYPH[p.getSymbolPreset()] ?? BOARD_GLYPH.unicode);
@@ -670,7 +670,8 @@ function widgetLines(p, board, scope) {
       return [head2];
     const commits = t.git?.commits ?? 0;
     const work = commits ? `${p.fg("muted", `${commits} commit${commits === 1 ? "" : "s"}`)} ${p.fg("success", `+${t.git?.added ?? 0}`)} ${p.fg("error", `\u2212${t.git?.removed ?? 0}`)}` : p.fg("dim", "no commits yet");
-    const state = t.paused ? `${sep}${p.fg("warning", "paused")}` : t.column === "review" ? `${sep}${p.fg("success", t.pr ? "pull request open" : "ready to merge")}` : "";
+    const busy = intentText(t);
+    const state = busy ? `${sep}${p.fg("accent", busy)}` : t.paused ? `${sep}${p.fg("warning", "paused")}` : t.column === "review" ? `${sep}${p.fg("success", t.pr ? "pull request open" : "ready to merge")}` : "";
     return [`${head2} ${t.title.replace(CONTROL, " ")} ${p.fg("muted", `\u2192 ${t.base}`)}${sep}${work}${state}`];
   }
   const head = ` ${icon} ${p.bold(p.fg("accent", "Orchestrator"))}`;
@@ -713,6 +714,9 @@ function orchestrator(pi) {
   let taskInfo = null;
   let taskLookup = false;
   let reporting;
+  let reportRetryAt = 0;
+  let shuttingDown = false;
+  const handledControls = [];
   let reported = "";
   let current = "";
   let planning = false;
@@ -821,11 +825,10 @@ function orchestrator(pi) {
     reported = state;
     reportedStep = step;
     sentAt = Date.now();
-    reports = reports.then(() => api("POST", "/api/agent", { path, task: task ?? process.env.KANBOARD_TASK ?? null, state, step, sessionId, sessionFile, message: lastMessage }, false).then(() => {}, (e) => {
+    reports = reports.then(() => api("POST", "/api/agent", { path, task: task ?? process.env.ORCHESTRATOR_TASK ?? null, state, step, sessionId, sessionFile, message: lastMessage }, false).then(() => {}, (e) => {
+      reported = "";
       if (e instanceof BoardError && e.status === 404)
-        reporting = false;
-      else
-        reported = "";
+        reportRetryAt = Date.now() + 3000;
     }));
     return reports;
   };
@@ -836,8 +839,8 @@ function orchestrator(pi) {
     currentStep = step;
     if (state === reported && step === reportedStep)
       return reports;
-    reporting ??= Boolean(process.env.KANBOARD_TASK) || linkedWorktree(ctx.cwd);
-    if (!reporting)
+    reporting ??= Boolean(process.env.ORCHESTRATOR_TASK) || linkedWorktree(ctx.cwd);
+    if (!reporting || Date.now() < reportRetryAt)
       return reports;
     const path = ctx.cwd;
     const wait = sentAt + STEP_MS - Date.now();
@@ -960,7 +963,9 @@ function orchestrator(pi) {
       ctx.ui.notify(`Control flow \xAB${run.loop.name}\xBB passed: merging ${taskNumber(id)} into ${t.base}`, "info");
       await api("POST", `/api/tasks/${id}/merge`, { cleanup: true, commit: true, terminal: await requestTerminal() });
     } catch (e) {
-      ctx.ui.notify(`Couldn't merge ${taskNumber(id)} automatically: ${e instanceof Error ? e.message : String(e)}`, "error");
+      const message = e instanceof Error ? e.message : String(e);
+      if (!message.includes(" is still "))
+        ctx.ui.notify(`Couldn't merge ${taskNumber(id)} automatically: ${message}`, "error");
     } finally {
       autoMerging = false;
     }
@@ -999,6 +1004,11 @@ Merged ${t.branch} \u2192 ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info
   };
   const answerControl = (id, ok, message) => api("POST", `/api/control/${id}`, { ok, message }, false).then(() => {}, () => {});
   const runControl = async (ctx, c) => {
+    if (handledControls.includes(c.id))
+      return answerControl(c.id, true, "Already handled");
+    handledControls.push(c.id);
+    if (handledControls.length > 50)
+      handledControls.shift();
     let ok = true;
     let message;
     try {
@@ -1010,16 +1020,6 @@ Merged ${t.branch} \u2192 ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info
         report(ctx, review ? "plan_ready" : "idle");
         message = running ? "Interrupted its turn" : "It was idle";
         ctx.ui.notify(`Orchestrator paused ${taskNumber(c.task)}; moving its card back to In Progress resumes it`, "warning");
-      } else if (c.action === "resume") {
-        if (review)
-          message = "Its plan is waiting for review";
-        else if (!ctx.isIdle())
-          message = "It was already working";
-        else {
-          pi.sendUserMessage(c.text ?? "");
-          message = "Resumed";
-        }
-        ctx.ui.notify(`Orchestrator resumed ${taskNumber(c.task)}`, "info");
       } else if (c.action === "message") {
         if (review) {
           ok = false;
@@ -1050,6 +1050,8 @@ Merged ${t.branch} \u2192 ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info
         ok = r.ok;
         message = r.message;
       } else if (c.action === "stop") {
+        if (!ctx.isIdle())
+          ctx.abort();
         await answerControl(c.id, true, "Its omp session is exiting");
         ctx.shutdown();
         return;
@@ -1129,19 +1131,37 @@ Merged ${t.branch} \u2192 ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info
             terminalWarned = true;
             ctx.ui.notify(`Orchestrator: ${where.error}`, "warning");
           }
-          const res = await fetch(`${BASE}/api/events?${query}`, { signal: ctl.signal });
-          if (res.ok && res.body) {
-            themeEpoch = null;
-            syncTheme();
-            if (current) {
+          const conn = new AbortController;
+          const cancel = () => conn.abort();
+          ctl.signal.addEventListener("abort", cancel, { once: true });
+          let watchdog;
+          const arm = () => {
+            clearTimeout(watchdog);
+            watchdog = setTimeout(cancel, STREAM_IDLE_MS);
+          };
+          try {
+            arm();
+            const res = await fetch(`${BASE}/api/events?${query}`, { signal: conn.signal });
+            if (res.ok && res.body) {
+              themeEpoch = null;
+              syncTheme();
               reported = "";
-              report(ctx, current, currentStep);
-            }
-            syncControl();
-            for await (const e of serverEvents(res.body))
-              onEvent(ctx, e);
-          } else
-            await res.body?.cancel();
+              report(ctx, current || "idle", currentStep);
+              syncControl();
+              const body = res.body.pipeThrough(new TransformStream({
+                transform(chunk, out) {
+                  arm();
+                  out.enqueue(chunk);
+                }
+              }));
+              for await (const e of serverEvents(body))
+                onEvent(ctx, e);
+            } else
+              await res.body?.cancel();
+          } finally {
+            clearTimeout(watchdog);
+            ctl.signal.removeEventListener("abort", cancel);
+          }
         } catch {}
         if (!ctl.signal.aborted)
           await Bun.sleep(RECONNECT_MS);
@@ -1164,22 +1184,49 @@ Merged ${t.branch} \u2192 ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info
     themeEpoch = null;
     syncTheme();
   };
-  const detectTask = async (ctx) => {
-    const env = process.env.KANBOARD_TASK;
-    if (!env && !linkedWorktree(ctx.cwd))
+  const nudge = (id) => {
+    const file = process.env.ORCHESTRATOR_RESUME_FILE;
+    if (!file || !existsSync(file))
       return;
+    let text;
     try {
-      const board = await api("GET", "/api/state", undefined, false);
-      taskInfo = (env ? board.tasks.find((t) => t.id === env) : worktreeTask(board, ctx.cwd)) ?? null;
+      const data = JSON.parse(readFileSync(file, "utf8"));
+      if (!data || typeof data !== "object" || !("text" in data) || typeof data.text !== "string" || !data.text)
+        return;
+      text = data.text;
     } catch {
-      taskInfo = null;
-    }
-    task = env || taskInfo?.id || null;
-    if (!task)
       return;
+    }
+    setTimeout(async () => {
+      pi.sendUserMessage(text);
+      await api("POST", `/api/tasks/${id}/resumed`, {}, false).catch(() => {});
+    }, 1500);
+  };
+  const enterTask = (ctx, id) => {
+    task = id;
     showWidget(ctx);
     stopStream();
     syncStream(ctx);
+    nudge(id);
+  };
+  const detectTask = async (ctx) => {
+    const env = process.env.ORCHESTRATOR_TASK;
+    if (!env && !linkedWorktree(ctx.cwd))
+      return;
+    if (env)
+      enterTask(ctx, env);
+    while (!shuttingDown) {
+      try {
+        const board = await api("GET", "/api/state", undefined, false);
+        taskInfo = (env ? board.tasks.find((t) => t.id === env) : worktreeTask(board, ctx.cwd)) ?? null;
+        break;
+      } catch {
+        taskInfo = null;
+        await Bun.sleep(RECONNECT_MS);
+      }
+    }
+    if (!env && taskInfo && !shuttingDown)
+      enterTask(ctx, taskInfo.id);
   };
   const restore = (_event, ctx) => {
     if (ctx.agent?.kind === "sub")
@@ -1214,8 +1261,9 @@ Merged ${t.branch} \u2192 ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info
   pi.on("session_shutdown", async (_event, ctx) => {
     if (ctx.agent?.kind === "sub")
       return;
+    shuttingDown = true;
     stopStream();
-    await report(ctx, "idle");
+    await report(ctx, "exited");
   });
   const startCards = async (ctx, raw) => {
     const board = await api("GET", "/api/state");
@@ -1251,7 +1299,6 @@ Merged ${t.branch} \u2192 ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info
     const named = raw?.trim() ? await cardId(raw, ctx) : undefined;
     if (!ctx.hasUI)
       throw new Error(`Merging needs the user's confirmation: ask them to run /orchestrator done${named ? ` ${named}` : ""}`);
-    await refreshBoard();
     const board = await api("GET", "/api/state");
     const own = task ? board.tasks.find((t2) => t2.id === task) : worktreeTask(board, ctx.cwd);
     const id = named ?? own?.id;
@@ -1278,9 +1325,22 @@ Merged ${t.branch} \u2192 ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info
         pi.appendEntry(CLEANUP_ENTRY, { cleanup });
       }
     }
-    const r = await api("POST", `/api/tasks/${id}/merge`, { cleanup, commit: true, terminal: await requestTerminal() });
-    return r.cleanupError ? `${r.output}
-${r.cleanupError}` : r.output;
+    const r = await api("POST", `/api/tasks/${id}/merge`, {
+      cleanup,
+      commit: true,
+      terminal: await requestTerminal()
+    });
+    if (own?.id === id && task === id) {
+      const ends = `Merged ${t.branch} \u2192 ${t.base} (${r.merged?.sha.slice(0, 7) ?? "?"}) \xB7 this session ends${r.pending ? "; the worktree is removed once this session has exited" : ""}`;
+      setTimeout(() => {
+        ctx.ui.notify(ends, "info");
+        ctx.shutdown();
+      }, 0);
+    }
+    if (!r.pending || own?.id === id && task === id)
+      return r.output;
+    return `${r.output}
+${taskNumber(id)} ${cleanup ? "has its worktree removed once its agent has stopped" : "is stopping its agent"}`;
   };
   const deleteCard = async (ctx, raw) => {
     const id = await cardId(raw, ctx);
@@ -1310,15 +1370,17 @@ ${detail}${unlinks}`))
         return `${id} kept`;
     }
     const terminal2 = await requestTerminal();
-    const r = await withLegacyConfirm(ctx, id, (confirmLegacy) => api("DELETE", `/api/tasks/${id}`, { confirmWorking: t.moveRequiresConfirmation, cleanup, confirmLegacy, terminal: terminal2 }));
+    const r = await api("DELETE", `/api/tasks/${id}`, { confirmWorking: t.moveRequiresConfirmation, cleanup, terminal: terminal2 });
+    if (r.pending)
+      return r.message ?? `${id} is deleted once its worktree is gone`;
     return r.output ? `Deleted ${id}
 ${r.output}` : `Deleted ${id}`;
   };
-  const moveCard = async (ctx, raw, column, force, confirmed) => {
+  const moveCard = async (ctx, raw, column, force) => {
     const id = await cardId(raw, ctx);
     const board = await api("GET", "/api/state");
     const before = findTask(board, id);
-    const t = await withLegacyConfirm(ctx, id, (confirmLegacy) => api("POST", `/api/tasks/${id}/move`, { column, confirmWorking: true, force, confirmLegacy }), confirmed);
+    const t = await api("POST", `/api/tasks/${id}/move`, { column, confirmWorking: true, force });
     const title = (c) => board.columns.find((x) => x.id === c)?.title ?? c;
     const waits = t.blockedBy.length ? `once ${waitsUntil(t)}` : t.waitingForSlot ? "when a task slot frees" : "";
     const resumes = t.column === "backlog" ? "it stays parked in Backlog until moved to Todo or In Progress" : `it resumes on its own ${waits || "once it's first in Todo with a free task slot"}`;
@@ -1329,7 +1391,7 @@ ${r.output}` : `Deleted ${id}`;
     if (before.paused && t.column === "doing") {
       return `Resumed ${id}: its agent continues${before.session?.connected ? "" : " once omp reopens on its session"}.`;
     }
-    if (!before.worktree && t.spawn.state === "running")
+    if (!before.worktree && t.intent?.op === "start")
       return `${id} starting`;
     if (!before.worktree && t.column === "todo" && waits)
       return `${id} queued: it starts ${waits}`;
@@ -1346,8 +1408,9 @@ ${r.output}` : `Deleted ${id}`;
     if (!sure)
       return `${id}'s worktree kept`;
     const terminal2 = await requestTerminal();
-    const done2 = await withLegacyConfirm(ctx, id, (confirmLegacy) => api("POST", `/api/tasks/${id}/cleanup`, { confirmLegacy, terminal: terminal2 }));
-    return done2.output;
+    const done2 = await api("POST", `/api/tasks/${id}/cleanup`, { terminal: terminal2 });
+    return done2.pending ? `${done2.output ? `${done2.output}
+` : ""}${id}'s worktree is removed once its agent has stopped` : done2.output;
   };
   const recoverCard = async (ctx, raw) => {
     const id = await cardId(raw, ctx);
@@ -1485,7 +1548,7 @@ Every task in ${tilde(current2.scope)} loses this memory.`);
       parts.push(ORCHESTRATOR_CONTEXT);
     if (!parts.length)
       return;
-    return { message: { customType: "kanboard.context", content: parts.join(`
+    return { message: { customType: "orchestrator.context", content: parts.join(`
 
 `), display: false, attribution: "agent" } };
   });
@@ -1722,12 +1785,11 @@ ${plan}`;
     parameters: z.object({
       id: z.string(),
       column: z.enum(["backlog", "todo", "doing", "review", "done"]),
-      force: z.boolean().optional(),
-      confirmLegacy: z.boolean().optional().describe("Only when resuming a task whose omp may still run in its old terminal, and only after the user explicitly confirmed in this conversation that that omp has exited. Never set it on your own.")
+      force: z.boolean().optional()
     }),
     approval: "read",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return answer(moveCard(ctx, params.id, params.column, params.force === true, params.confirmLegacy === true));
+      return answer(moveCard(ctx, params.id, params.column, params.force === true));
     }
   });
   pi.registerTool({
