@@ -98,15 +98,8 @@ select.field { height: var(--field-h); }
 .run-section.needs .section-n { background: var(--warning); color: var(--bg, #000); }
 .section-body { display: flex; flex-direction: column; gap: 8px; }
 .review-shots img { max-height: 240px; object-fit: contain; }
-.review-dir { margin-top: 6px; color: var(--muted); font-family: var(--mono); font-size: var(--font-size-sm); }
-.review-file { display: flex; width: 100%; align-items: center; gap: 8px; padding: 4px 8px; border: 0; border-radius: var(--radius-sm); background: none; text-align: left; }
-.review-file:hover { background: var(--hover); }
-.review-name { display: flex; flex: 1; align-items: center; gap: 6px; font-family: var(--mono); font-size: var(--font-size-sm); }
-.review-stat { font-family: var(--mono); font-size: var(--font-size-xs); }
-.review-diff { margin: 2px 0 8px 8px; padding: 8px 10px; overflow-x: auto; border-radius: var(--radius-sm); background: var(--surface); font-family: var(--mono); font-size: var(--code-font-size-sm); line-height: 1.45; }
-.review-diff .add { color: var(--add); }
-.review-diff .remove { color: var(--remove); }
-.review-diff .hunk { color: var(--muted); }
+.change-line { display: flex; align-items: center; gap: 10px; }
+.change-line p { margin: 0; }
 .review-wait { margin: 0; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--surface); box-shadow: inset 3px 0 0 var(--warning); }
 .review-requests { margin: 0; padding-left: 18px; color: var(--muted); font-size: var(--font-size-sm); }
 .review-shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }

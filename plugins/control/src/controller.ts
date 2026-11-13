@@ -35,6 +35,8 @@ export interface Checkpoint {
 	prompts: string[];
 	plan: string | null;
 	planState: PlanState;
+	/** How many times the plan reviewer read this request's plans; at the loop's limit the plan comes to you. */
+	planRounds: number;
 	status: RunStatus;
 	history: History[];
 	note: string | null;
@@ -144,6 +146,7 @@ function fresh(baseline: Baseline): Checkpoint {
 		prompts: [],
 		plan: null,
 		planState: "unused",
+		planRounds: 0,
 		status: "idle",
 		history: [],
 		note: null,
@@ -239,12 +242,11 @@ export class Controller {
 		s.planState = state;
 		if (planText !== undefined) s.plan = cut(planText, PLAN_LIMIT);
 		if (state === "unused") s.plan = null;
-		// Your approval of the plan is omp's plan review; the plan checks reset for a new plan.
-		if (state === "planning")
-			for (const node of this.#attached.loop.planStages.flatMap((st) => st.nodes)) {
-				const view = this.#nodes[node.id];
-				if (view) Object.assign(view, { state: "waiting", detail: null, findings: 0 });
-			}
+		if (state === "unused" || state === "approved") s.planRounds = 0;
+		// The plan reviewer's tile resets for a new plan.
+		const reviewer = this.#attached.loop.planReviewer;
+		const view = reviewer && this.#nodes[reviewer.id];
+		if (state === "planning" && view) Object.assign(view, { state: "waiting", detail: null, findings: 0 });
 		if (!s.paused && s.status !== "checking" && s.status !== "deciding") s.status = state === "planning" || state === "review" ? "planning" : "implementing";
 		this.#persist();
 		this.#emit(true);
@@ -383,59 +385,61 @@ export class Controller {
 	}
 
 	/**
-	 * Runs the plan loop's machine checks on a plan omp asks to review: refine sends their findings back to planning;
-	 * wait leaves omp's plan review open for you, which is always the plan's last check.
+	 * Has the plan reviewer read a plan omp asks to review: approve once it passes, refine sends its findings back to
+	 * planning, and ask leaves omp's plan review open for you (why, or null when there's nothing to say).
 	 */
-	async checkPlan(planText: string, signal: AbortSignal): Promise<{ action: "refine"; feedback: string } | { action: "wait" }> {
+	async checkPlan(planText: string, signal: AbortSignal): Promise<{ action: "approve" } | { action: "refine"; feedback: string } | { action: "ask"; reason: string | null }> {
 		const attached = this.#attached;
-		if (!attached || this.#state.paused) return { action: "wait" };
+		const node = attached?.loop.planReviewer;
+		if (!attached || !node || this.#state.paused) return { action: "ask", reason: null };
 		const { loop } = attached;
-		const found: FindingView[] = [];
-		for (const stage of loop.planStages) {
-			await Promise.all(
-				stage.nodes.map(async (node) => {
-						const view = this.#nodes[node.id];
-						Object.assign(view, { state: "running", detail: "reading the plan", findings: 0 });
-						this.#emit();
-						const started = Date.now();
-						let outcome: NodeOutcome;
-						try {
-							outcome =
-								node.kind === "check"
-									? await this.#deps.runCheck(node, signal)
-									: await this.#deps.runReview(node, planPacketText({ loopName: loop.name, nodeName: node.name, prompts: this.#state.prompts, plan: planText }), signal, (detail) => {
-											view.detail = detail;
-											this.#emit();
-										});
-						} catch (e) {
-							outcome = { kind: "error", message: e instanceof Error ? e.message : String(e) };
-						}
-						view.durationMs = Date.now() - started;
-						view.artifacts = outcome.artifacts ?? [];
-						view.detail = null;
-						if (outcome.kind === "passed") view.state = "passed";
-						else if (outcome.kind === "findings") {
-							view.state = "findings";
-							view.findings = outcome.findings.length;
-							for (const f of outcome.findings) found.push({ id: `plan.${found.length + 1}`, node: node.id, nodeName: node.name, ...f, recurring: false, approval: false, route: "fix", decision: null });
-						} else {
-							view.state = "error";
-							view.detail = cut(outcome.message, 200);
-						}
-						this.#emit();
-					}),
-			);
-			if (found.length || signal.aborted) break;
+		const s = this.#state;
+		s.planRounds += 1;
+		const view = this.#nodes[node.id];
+		Object.assign(view, { state: "running", detail: "reading the plan", findings: 0 });
+		this.#emit();
+		const started = Date.now();
+		let outcome: NodeOutcome;
+		try {
+			outcome =
+				node.kind === "check"
+					? await this.#deps.runCheck(node, signal)
+					: await this.#deps.runReview(node, planPacketText({ loopName: loop.name, nodeName: node.name, prompts: s.prompts, plan: planText }), signal, (detail) => {
+							view.detail = detail;
+							this.#emit();
+						});
+		} catch (e) {
+			outcome = { kind: "error", message: e instanceof Error ? e.message : String(e) };
 		}
-		if (signal.aborted) return { action: "wait" };
-		if (found.length) {
-			this.#state.findings = found;
+		view.durationMs = Date.now() - started;
+		view.artifacts = outcome.artifacts ?? [];
+		view.detail = null;
+		if (signal.aborted) {
+			view.state = "waiting";
+			this.#emit(true);
+			return { action: "ask", reason: null };
+		}
+		if (outcome.kind === "passed") {
+			view.state = "passed";
+			s.findings = s.findings.filter((f) => !f.id.startsWith("plan."));
 			this.#persist();
 			this.#emit(true);
-			return { action: "refine", feedback: fixMessage(loop.name, 0, 0, found, [], 0).replace(/^.*?\n\n/, "The plan checks found problems in your plan; revise it:\n\n") };
+			return { action: "approve" };
 		}
+		if (outcome.kind !== "findings") {
+			view.state = "error";
+			view.detail = cut(outcome.message, 200);
+			this.#persist();
+			this.#emit(true);
+			return { action: "ask", reason: `${node.name} couldn't review the plan: ${cut(outcome.message, 200)}` };
+		}
+		view.state = "findings";
+		view.findings = outcome.findings.length;
+		s.findings = outcome.findings.map((f, i) => ({ id: `plan.${i + 1}`, node: node.id, nodeName: node.name, ...f, recurring: false, approval: false, route: "fix", decision: null }));
+		this.#persist();
 		this.#emit(true);
-		return { action: "wait" };
+		if (s.planRounds >= loop.maxPasses) return { action: "ask", reason: `${node.name} still finds problems in the plan after ${s.planRounds} rounds` };
+		return { action: "refine", feedback: fixMessage(loop.name, 0, 0, s.findings, [], 0).replace(/^.*?\n\n/, `${node.name} found problems in your plan; revise it:\n\n`) };
 	}
 
 	// --- pass
@@ -713,7 +717,7 @@ export class Controller {
 	/** The grouped summary your review shows: the requests, the final change by folder, what the loop fixed, what you answered. */
 	async #summary(loop: LoopSnapshot, requests: string[]): Promise<string> {
 		const s = this.#state;
-		const names = new Map([...loop.planStages, ...loop.stages].flatMap((st) => st.nodes).map((n) => [n.id, n.name]));
+		const names = new Map([...(loop.planReviewer ? [loop.planReviewer] : []), ...loop.stages.flatMap((st) => st.nodes)].map((n) => [n.id, n.name]));
 		const files = await this.#deps.changes().catch(() => []);
 		return reviewSummary({
 			requests,
@@ -760,7 +764,8 @@ export class Controller {
 	#resetNodes(changeOnly = false): void {
 		const loop = this.#attached?.loop;
 		if (!changeOnly) this.#nodes = {};
-		for (const stage of [...(changeOnly ? [] : (loop?.planStages ?? [])), ...(loop?.stages ?? [])]) for (const node of stage.nodes) this.#nodes[node.id] = { state: "waiting", detail: null, findings: 0, durationMs: null, artifacts: [] };
+		const nodes = [...(changeOnly || !loop?.planReviewer ? [] : [loop.planReviewer]), ...(loop?.stages ?? []).flatMap((st) => st.nodes)];
+		for (const node of nodes) this.#nodes[node.id] = { state: "waiting", detail: null, findings: 0, durationMs: null, artifacts: [] };
 		if (loop?.finish === "review") this.#nodes[REVIEW] = { state: "waiting", detail: null, findings: 0, durationMs: null, artifacts: [] };
 	}
 

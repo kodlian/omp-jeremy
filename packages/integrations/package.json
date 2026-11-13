@@ -10,6 +10,7 @@
     "./theme": "./src/theme.ts",
     "./appearance": "./src/appearance.ts",
     "./fonts": "./src/fonts.ts",
+    "./review": "./src/review.ts",
     "./python/terminals": "./python/omp_terminals.py"
   },
   "files": ["src", "python"],

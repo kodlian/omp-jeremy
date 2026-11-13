@@ -107,10 +107,10 @@ export function createEditor(page) {
   const root = h("div", { class: "screen editor" });
   const libNodes = () => page.payload?.library.nodes ?? [];
   const libNode = (id) => libNodes().find((n) => n.id === id);
-  const allStages = () => [...st.draft.planStages, ...st.draft.stages];
+  const allStages = () => [...(st.draft.planReviewer ? [{ nodes: [st.draft.planReviewer] }] : []), ...st.draft.stages];
   const draftNodes = () => allStages().flatMap((s) => s.nodes);
-  const stagesOf = (phase) => (phase === "plan" ? st.draft.planStages : st.draft.stages);
-  const toShape = (stages) => stages.map((s) => ({ nodes: s.nodes.map((n) => ({ id: n.id, name: n.name, kind: n.kind })) }));
+  const brief = (n) => ({ id: n.id, name: n.name, kind: n.kind });
+  const toShape = (stages) => stages.map((s) => ({ nodes: s.nodes.map(brief) }));
 
   function uniqueId(base) {
     const taken = new Set([...(st ? draftNodes().map((n) => n.id) : []), ...libNodes().map((n) => n.id)]);
@@ -124,9 +124,9 @@ export function createEditor(page) {
       name: entry.name,
       description: entry.description,
       maxPasses: entry.maxPasses,
-      plan: entry.plan === true,
+      plan: entry.plan ?? "none",
       finish: entry.finish ?? "review",
-      planStages: (entry.planStages ?? []).map((s) => ({ nodes: s.nodes.flatMap((id) => (libNode(id) ? [cleanNode(libNode(id))] : [])) })),
+      planReviewer: entry.planReviewer && libNode(entry.planReviewer) ? cleanNode(libNode(entry.planReviewer)) : null,
       stages: entry.stages.map((s) => ({ nodes: s.nodes.flatMap((id) => (libNode(id) ? [cleanNode(libNode(id))] : [])) })),
       ...extra,
     };
@@ -144,14 +144,14 @@ export function createEditor(page) {
     } else if (route[1] === "session" && p.attached) {
       const loop = p.attached.loop;
       target = { kind: "session" };
-      draft = { id: loop.id, name: loop.name, description: loop.description, maxPasses: loop.maxPasses, plan: loop.plan === true, finish: loop.finish ?? "review", planStages: (loop.planStages ?? []).map((s) => ({ nodes: s.nodes.map(cleanNode) })), stages: loop.stages.map((s) => ({ nodes: s.nodes.map(cleanNode) })) };
+      draft = { id: loop.id, name: loop.name, description: loop.description, maxPasses: loop.maxPasses, plan: loop.plan, finish: loop.finish ?? "review", planReviewer: loop.planReviewer ? cleanNode(loop.planReviewer) : null, stages: loop.stages.map((s) => ({ nodes: s.nodes.map(cleanNode) })) };
     } else if (route[1] === "loop" && p.library.loops.some((l) => l.id === route[2])) {
       const entry = p.library.loops.find((l) => l.id === route[2]);
       target = { kind: "loop", id: entry.id, source: entry.source };
       draft = loopDraft(entry);
     } else {
       target = { kind: "new" };
-      draft = { id: null, name: "New flow", description: "", maxPasses: 4, plan: false, finish: "review", planStages: [], stages: [] };
+      draft = { id: null, name: "New flow", description: "", maxPasses: 4, plan: "none", finish: "review", planReviewer: null, stages: [] };
     }
     st = { key, target, draft, dirtyNodes: new Set(), fresh: new WeakSet(), dirty: false };
   }
@@ -163,7 +163,7 @@ export function createEditor(page) {
     maxPasses: st.draft.maxPasses,
     plan: st.draft.plan,
     finish: st.draft.finish,
-    planStages: toShape(st.draft.planStages),
+    planReviewer: st.draft.planReviewer ? brief(st.draft.planReviewer) : null,
     stages: toShape(st.draft.stages),
   });
 
@@ -207,12 +207,12 @@ export function createEditor(page) {
   function saveLoopTo(level) {
     const d = st.draft;
     const stages = d.stages.filter((s) => s.nodes.length);
-    const planStages = d.planStages.filter((s) => s.nodes.length);
     if (!stages.length) return toast("Add at least one change check first", true);
+    if (d.plan === "ai" && !d.planReviewer) return toast("Pick the AI reviewer that approves the plan first", true);
     const id = d.id ?? uniqueId(slug(d.name) || "flow");
-    const nodes = [...planStages, ...stages].flatMap((s) => s.nodes).filter((n) => st.dirtyNodes.has(n.id) || !libNode(n.id));
+    const nodes = [...(d.planReviewer ? [d.planReviewer] : []), ...stages.flatMap((s) => s.nodes)].filter((n) => st.dirtyNodes.has(n.id) || !libNode(n.id));
     const ids = (list) => list.map((s) => ({ nodes: s.nodes.map((n) => n.id) }));
-    const loop = { id, name: d.name, description: d.description, maxPasses: d.maxPasses, plan: d.plan, finish: d.finish, planStages: ids(planStages), stages: ids(stages) };
+    const loop = { id, name: d.name, description: d.description, maxPasses: d.maxPasses, plan: d.plan, finish: d.finish, planReviewer: d.planReviewer?.id ?? null, stages: ids(stages) };
     void page.act("POST", "/api/library/loop", { scope: level, loop, nodes }, `Saved «${d.name}» to ${levelLabel(level)}`).then((r) => {
       if (!r) return;
       d.id = id;
@@ -237,8 +237,8 @@ export function createEditor(page) {
       { idEditable: !saved },
     );
     const remove = () => {
-      for (const s of allStages()) s.nodes = s.nodes.filter((n) => n !== node);
-      st.draft.planStages = st.draft.planStages.filter((s) => s.nodes.length);
+      if (st.draft.planReviewer === node) st.draft.planReviewer = null;
+      for (const s of st.draft.stages) s.nodes = s.nodes.filter((n) => n !== node);
       st.draft.stages = st.draft.stages.filter((s) => s.nodes.length);
       st.dirty = true;
       page.up();
@@ -265,17 +265,19 @@ export function createEditor(page) {
       edit: {
         selected,
         onSelect: (id) => page.go(id ? `${base()}/node/${encodeURIComponent(id)}` : base()),
-        onTogglePlan: () => {
-          st.draft.plan = !st.draft.plan;
-          if (!st.draft.plan) st.draft.planStages = [];
+        onPlanMode: (mode) => {
+          st.draft.plan = mode;
+          const fallback = libNode("plan-reviewer");
+          if (mode !== "ai") st.draft.planReviewer = null;
+          else if (!st.draft.planReviewer && fallback && !draftNodes().some((n) => n.id === fallback.id)) st.draft.planReviewer = cleanNode(fallback);
           touch();
         },
         onToggleFinish: () => {
           st.draft.finish = st.draft.finish === "review" ? "auto" : "review";
           touch();
         },
-        onAddStage: (phase, index) => addDialog((node) => stagesOf(phase).splice(index, 0, { nodes: [node] })),
-        onAddToStage: (phase, i) => addDialog((node) => stagesOf(phase)[i].nodes.push(node)),
+        onAddStage: (phase, index) => addDialog((node) => (phase === "plan" ? (st.draft.planReviewer = node) : st.draft.stages.splice(index, 0, { nodes: [node] }))),
+        onAddToStage: (_phase, i) => addDialog((node) => st.draft.stages[i].nodes.push(node)),
       },
     });
   }
@@ -310,8 +312,8 @@ export function createEditor(page) {
         h("button", { class: "btn primary", type: "button", disabled: !page.payload.session.repo, onclick: async () => {
           const stages = d.stages.filter((s) => s.nodes.length);
           if (!stages.length) return toast("Add at least one change check first", true);
-          const full = (list) => list.filter((s) => s.nodes.length).map((s) => ({ nodes: s.nodes.map(cleanNode) }));
-          const loop = { ...shapeOf(), planStages: full(d.planStages), stages: full(d.stages) };
+          if (d.plan === "ai" && !d.planReviewer) return toast("Pick the AI reviewer that approves the plan first", true);
+          const loop = { ...shapeOf(), planReviewer: d.planReviewer ? cleanNode(d.planReviewer) : null, stages: stages.map((s) => ({ nodes: s.nodes.map(cleanNode) })) };
           if (await page.act("PUT", "/api/session-loop", { loop }, `«${d.name}» runs in this session from now on`)) {
             st.dirty = false;
             page.go("#/");

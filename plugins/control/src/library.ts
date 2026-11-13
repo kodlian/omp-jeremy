@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import type { AskMode, Finish, LibrarySummary, LoopShape, NodeKind, Scope, Source } from "omp-control-view/protocol";
+import type { AskMode, Finish, LibrarySummary, LoopShape, NodeKind, PlanMode, Scope, Source } from "omp-control-view/protocol";
 import { parseNodeFile, serializeNode } from "./frontmatter";
 
 export interface NodeDefinition {
@@ -25,9 +25,9 @@ export interface LoopDefinition {
 	name: string;
 	description: string;
 	maxPasses: number;
-	plan: boolean;
+	plan: PlanMode;
 	finish: Finish;
-	planStages: { nodes: string[] }[];
+	planReviewer: string | null;
 	stages: { nodes: string[] }[];
 }
 
@@ -36,9 +36,9 @@ export interface LoopSnapshot {
 	name: string;
 	description: string;
 	maxPasses: number;
-	plan: boolean;
+	plan: PlanMode;
 	finish: Finish;
-	planStages: { nodes: NodeDefinition[] }[];
+	planReviewer: NodeDefinition | null;
 	stages: { nodes: NodeDefinition[] }[];
 }
 
@@ -52,6 +52,7 @@ export const ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const REVIEWER_TOOLS = ["read", "grep", "glob", "find", "ast_grep", "web_search"];
 const DEFAULT_TOOLS = ["read", "grep", "glob"];
 const ASK_MODES: AskMode[] = ["doubts", "all", "never"];
+const PLAN_MODES: PlanMode[] = ["none", "you", "ai"];
 const BUILT_IN = join(dirname(realpathSync(import.meta.path)), "..", "library");
 
 export function libraryRoots(root: string | null): Record<Scope, string | null> & { builtIn: string } {
@@ -124,42 +125,42 @@ export function nodeFrom(id: string, fields: Record<string, unknown>, body: stri
 	};
 }
 
-/** Both loops' stages; node ids are unique across them, and the plan loop may be empty. */
-function flowFrom<T>(raw: Record<string, unknown>, where: string, node: (value: unknown, where: string) => T, idOf: (n: T) => string): { planStages: { nodes: T[] }[]; stages: { nodes: T[] }[] } {
+/** The ai plan's reviewer and the change loop's stages; node ids are unique across them. */
+function flowFrom<T>(raw: Record<string, unknown>, where: string, plan: PlanMode, node: (value: unknown, where: string) => T, idOf: (n: T) => string): { planReviewer: T | null; stages: { nodes: T[] }[] } {
 	const seen = new Set<string>();
-	const parse = (value: unknown, label: string, min: number) => {
-		if (!Array.isArray(value) || value.length < min || value.length > 8) throw new Error(`${where}: ${label} must list ${min}–8 stages`);
-		return value.map((stage, i) => {
-			const nodes = stage && typeof stage === "object" && "nodes" in stage ? stage.nodes : undefined;
-			if (!Array.isArray(nodes) || nodes.length < 1 || nodes.length > 6) throw new Error(`${where}: ${label} stage ${i + 1} must hold 1–6 nodes`);
-			return {
-				nodes: nodes.map((v) => {
-					const n = node(v, `${where}: ${label} stage ${i + 1}`);
-					const id = idOf(n);
-					if (seen.has(id)) throw new Error(`${where}: node ${id} appears twice in the loop`);
-					seen.add(id);
-					return n;
-				}),
-			};
-		});
+	const unique = (n: T) => {
+		const id = idOf(n);
+		if (seen.has(id)) throw new Error(`${where}: node ${id} appears twice in the loop`);
+		seen.add(id);
+		return n;
 	};
-	const planStages = raw.planStages === undefined ? [] : parse(raw.planStages, "planStages", 0);
-	return { planStages, stages: parse(raw.stages ?? [], "stages", 0) };
+	const named = raw.planReviewer !== undefined && raw.planReviewer !== null;
+	if (named !== (plan === "ai")) throw new Error(`${where}: planReviewer names the plan's reviewer when plan is ai, and only then`);
+	const planReviewer = named ? unique(node(raw.planReviewer, `${where}: planReviewer`)) : null;
+	const stages = raw.stages ?? [];
+	if (!Array.isArray(stages) || stages.length > 8) throw new Error(`${where}: stages must list 0–8 stages`);
+	return {
+		planReviewer,
+		stages: stages.map((stage, i) => {
+			const nodes = stage && typeof stage === "object" && "nodes" in stage ? stage.nodes : undefined;
+			if (!Array.isArray(nodes) || nodes.length < 1 || nodes.length > 6) throw new Error(`${where}: stages stage ${i + 1} must hold 1–6 nodes`);
+			return { nodes: nodes.map((v) => unique(node(v, `${where}: stages stage ${i + 1}`))) };
+		}),
+	};
 }
 
-function loopHeader(raw: Record<string, unknown>, where: string): { name: string; description: string; maxPasses: number; plan: boolean; finish: Finish } {
+function loopHeader(raw: Record<string, unknown>, where: string): { name: string; description: string; maxPasses: number; plan: PlanMode; finish: Finish } {
 	const name = typeof raw.name === "string" ? raw.name.trim() : "";
 	if (name.length < 1 || name.length > 60) throw new Error(`${where}: name must be 1–60 characters`);
 	const description = raw.description ?? "";
 	if (typeof description !== "string") throw new Error(`${where}: description must be text`);
 	const maxPasses = raw.maxPasses ?? 4;
 	if (typeof maxPasses !== "number" || !Number.isInteger(maxPasses) || maxPasses < 1 || maxPasses > 10) throw new Error(`${where}: maxPasses must be 1–10`);
-	const plan = raw.plan ?? false;
-	if (typeof plan !== "boolean") throw new Error(`${where}: plan must be true or false`);
+	const plan = raw.plan ?? "none";
+	if (!PLAN_MODES.includes(plan as PlanMode)) throw new Error(`${where}: plan must be none, you or ai`);
 	const finish = raw.finish ?? "review";
 	if (finish !== "review" && finish !== "auto") throw new Error(`${where}: finish must be review or auto`);
-	// Checks on a plan mean the flow plans first.
-	return { name, description, maxPasses, plan: plan || (Array.isArray(raw.planStages) && raw.planStages.length > 0), finish };
+	return { name, description, maxPasses, plan: plan as PlanMode, finish };
 }
 
 /** A loop definition from its JSON; throws naming the path and field. */
@@ -167,9 +168,11 @@ export function loopFrom(id: string, raw: unknown, where: string): LoopDefinitio
 	checkId(id, where, "loop id");
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${where}: must be a JSON object`);
 	const value = raw as Record<string, unknown>;
+	const header = loopHeader(value, where);
 	const flow = flowFrom(
 		value,
 		where,
+		header.plan,
 		(n, at) => {
 			if (typeof n !== "string") throw new Error(`${at}: nodes must be node ids`);
 			checkId(n, at, "node id");
@@ -177,7 +180,7 @@ export function loopFrom(id: string, raw: unknown, where: string): LoopDefinitio
 		},
 		(n) => n,
 	);
-	return { id, ...loopHeader(value, where), ...flow };
+	return { id, ...header, ...flow };
 }
 
 /** A session-only loop as the Control page sends it, every node validated like a library file. */
@@ -190,9 +193,11 @@ export function validateSnapshot(value: unknown): LoopSnapshot {
 		if (typeof id !== "string") throw new Error(`${where}: id must be text`);
 		checkId(id, where, "loop id");
 	}
+	const header = loopHeader(raw, where);
 	const flow = flowFrom(
 		raw,
 		where,
+		header.plan,
 		(n, at) => {
 			if (!n || typeof n !== "object") throw new Error(`${at}: each node must be an object`);
 			const fields = n as Record<string, unknown>;
@@ -202,7 +207,15 @@ export function validateSnapshot(value: unknown): LoopSnapshot {
 		},
 		(n) => n.id,
 	);
-	return { id, ...loopHeader(raw, where), ...flow };
+	return { id, ...header, ...flow };
+}
+
+/** A session's loop as saved; ones saved before plan modes (plan on or off, plan checks) come back with you approving the plan. */
+export function savedSnapshot(loop: LoopSnapshot): LoopSnapshot {
+	const saved = loop as Omit<LoopSnapshot, "plan"> & { plan: PlanMode | boolean; planStages?: unknown };
+	if (typeof saved.plan !== "boolean") return loop;
+	const { planStages: _, ...rest } = saved;
+	return { ...rest, plan: saved.plan ? "you" : "none", planReviewer: null };
 }
 
 async function listDir(dir: string, ext: string): Promise<string[]> {
@@ -271,13 +284,18 @@ export async function saveNode(root: string | null, scope: Scope, node: NodeDefi
 	return path;
 }
 
+/** The library ids a loop needs that the library doesn't have. */
+function missingNodes(loop: LoopDefinition, library: Library): string[] {
+	return [...(loop.planReviewer ? [loop.planReviewer] : []), ...loop.stages.flatMap((s) => s.nodes)].filter((n) => !library.nodes.has(n));
+}
+
 export async function saveLoop(root: string | null, scope: Scope, loop: LoopDefinition, library: Library): Promise<string> {
 	const valid = loopFrom(loop.id, loop, `loop ${loop.id}`);
-	const missing = [...valid.planStages, ...valid.stages].flatMap((s) => s.nodes).filter((n) => !library.nodes.has(n));
+	const missing = missingNodes(valid, library);
 	if (missing.length) throw new Error(`Loop ${loop.id} needs missing nodes: ${missing.join(", ")}`);
 	const path = join(await scopeDir(root, scope), "loops", `${loop.id}.json`);
 	await mkdir(dirname(path), { recursive: true });
-	await writeFile(path, `${JSON.stringify({ name: valid.name, description: valid.description, maxPasses: valid.maxPasses, plan: valid.plan, planStages: valid.planStages, stages: valid.stages, finish: valid.finish }, null, 2)}\n`);
+	await writeFile(path, `${JSON.stringify({ name: valid.name, description: valid.description, maxPasses: valid.maxPasses, plan: valid.plan, ...(valid.planReviewer ? { planReviewer: valid.planReviewer } : {}), stages: valid.stages, finish: valid.finish }, null, 2)}\n`);
 	return path;
 }
 
@@ -308,33 +326,28 @@ export async function copyItem(root: string | null, library: Library, kind: "nod
 export function resolveLoop(library: Library, id: string): LoopSnapshot {
 	const entry = library.loops.get(id);
 	if (!entry) throw new Error(`No loop ${id} in the library`);
-	const missing = [...entry.loop.planStages, ...entry.loop.stages].flatMap((s) => s.nodes).filter((n) => !library.nodes.has(n));
+	const missing = missingNodes(entry.loop, library);
 	if (missing.length) throw new Error(`Loop ${id} needs missing nodes: ${missing.join(", ")}`);
 	const { loop } = entry;
-	const resolve = (stages: { nodes: string[] }[]) => stages.map((s) => ({ nodes: s.nodes.map((n) => library.nodes.get(n)!.node) }));
-	return { id, name: loop.name, description: loop.description, maxPasses: loop.maxPasses, plan: loop.plan, planStages: resolve(loop.planStages), stages: resolve(loop.stages), finish: loop.finish };
+	const node = (n: string) => library.nodes.get(n)!.node;
+	return { id, name: loop.name, description: loop.description, maxPasses: loop.maxPasses, plan: loop.plan, planReviewer: loop.planReviewer ? node(loop.planReviewer) : null, stages: loop.stages.map((s) => ({ nodes: s.nodes.map(node) })), finish: loop.finish };
 }
 
 export function shape(loop: LoopSnapshot): LoopShape {
+	const brief = (n: NodeDefinition) => ({ id: n.id, name: n.name, kind: n.kind });
 	return {
 		id: loop.id,
 		name: loop.name,
 		description: loop.description,
 		maxPasses: loop.maxPasses,
 		plan: loop.plan,
+		planReviewer: loop.planReviewer ? brief(loop.planReviewer) : null,
 		finish: loop.finish,
-		planStages: loop.planStages.map((s) => ({ nodes: s.nodes.map((n) => ({ id: n.id, name: n.name, kind: n.kind })) })),
-		stages: loop.stages.map((s) => ({ nodes: s.nodes.map((n) => ({ id: n.id, name: n.name, kind: n.kind })) })),
+		stages: loop.stages.map((s) => ({ nodes: s.nodes.map(brief) })),
 	};
 }
 
 export function summarize(library: Library, repo: string | null): LibrarySummary {
-	const loops = [...library.loops.values()].flatMap(({ loop, source }) => {
-		const lookup = (stages: { nodes: string[] }[]) => stages.map((s) => s.nodes.map((id) => library.nodes.get(id)?.node));
-		const [plan, change] = [lookup(loop.planStages), lookup(loop.stages)];
-		if ([...plan, ...change].some((s) => s.some((n) => !n))) return [];
-		const full = (stages: (NodeDefinition | undefined)[][]) => stages.map((s) => ({ nodes: s as NodeDefinition[] }));
-		return [{ ...shape({ ...loop, planStages: full(plan), stages: full(change) }), id: loop.id, source }];
-	});
+	const loops = [...library.loops.values()].flatMap(({ loop, source }) => (missingNodes(loop, library).length ? [] : [{ ...shape(resolveLoop(library, loop.id)), id: loop.id, source }]));
 	return { repo, loops: loops.sort((a, b) => a.name.localeCompare(b.name)) };
 }

@@ -20,53 +20,17 @@ function artifacts(run) {
   );
 }
 
-/** The final change, grouped by folder, each file opening its diff; shown while your review is due. */
+/** The change in one line, with a button to read it in git-diff-review when it's loaded, and the screenshots its checks took. */
 function changePanel(page, run) {
-  const list = h("div", { class: "review-files" }, h("p", { class: "muted small" }, "Loading the change…"));
-  const panel = h("div", { class: "section-body" }, artifacts(run), list);
+  const line = h("p", { class: "muted small" }, "Loading the change…");
   void page.act("GET", "/api/changes").then((files) => {
     if (!files) return;
-    if (!files.length) return list.replaceChildren(h("p", { class: "muted small" }, "No changes yet."));
-    const groups = new Map();
-    for (const f of files) {
-      const slash = f.path.lastIndexOf("/");
-      const dir = slash < 0 ? "" : f.path.slice(0, slash);
-      groups.set(dir, [...(groups.get(dir) ?? []), f]);
-    }
-    list.replaceChildren(
-      ...[...groups.entries()].map(([dir, group]) =>
-        h(
-          "div",
-          { class: "review-group" },
-          dir ? h("div", { class: "review-dir" }, `${dir}/`) : null,
-          group.map((f) => {
-            const diff = h("pre", { class: "review-diff", hidden: true });
-            const row = h(
-              "button",
-              {
-                type: "button",
-                class: "review-file",
-                onclick: async () => {
-                  if (!diff.hidden) return (diff.hidden = true);
-                  if (!diff.dataset.loaded) {
-                    const r = await page.act("GET", `/api/diff?path=${encodeURIComponent(f.path)}`);
-                    if (!r) return;
-                    diff.replaceChildren(...r.diff.split("\n").filter((l) => !/^(diff --git|index |--- |\+\+\+ )/.test(l)).map((l) => h("span", { class: l.startsWith("+") ? "add" : l.startsWith("-") ? "remove" : l.startsWith("@@") ? "hunk" : null }, `${l}\n`)));
-                    diff.dataset.loaded = "1";
-                  }
-                  diff.hidden = false;
-                },
-              },
-              h("span", { class: "review-name" }, f.path.slice(dir ? dir.length + 1 : 0), f.isNew ? h("span", { class: "tag" }, "new") : null),
-              h("span", { class: "review-stat" }, h("span", { class: "add" }, `+${f.added}`), " ", h("span", { class: "remove" }, `−${f.removed}`)),
-            );
-            return h("div", {}, row, diff);
-          }),
-        ),
-      ),
-    );
+    const added = files.reduce((n, f) => n + f.added, 0);
+    const removed = files.reduce((n, f) => n + f.removed, 0);
+    line.replaceChildren(files.length ? `${files.length} file${files.length === 1 ? "" : "s"} changed, +${added} −${removed}` : "No changes yet.");
   });
-  return panel;
+  const open = page.payload.review ? h("button", { class: "btn sm", type: "button", title: "Read the change and comment on its lines in git-diff-review", onclick: () => page.act("POST", "/api/review", {}) }, "Open in Review") : null;
+  return h("div", { class: "section-body" }, h("div", { class: "change-line" }, line, open), artifacts(run));
 }
 
 /** Reviews you finished, newest first. */

@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import * as omp from "@oh-my-pi/pi-coding-agent";
 import { openBoard } from "omp-integrations/terminal";
+import { isReviewRequest, REVIEW_EVENT } from "omp-integrations/review";
 import { currentTheme, hasThemeApi, terminalConfig } from "omp-integrations/theme";
 import { toAppearance } from "omp-integrations/appearance";
 import { type Compare, isRepo, repoRoot } from "./git";
@@ -79,21 +80,36 @@ export default function gitDiffReview(pi: ExtensionAPI) {
 		server.notifyChanged();
 	}
 
+	/** Opens the review page on a comparison of the session's repo; returns its URL. */
+	async function open(sessionCtx: ExtensionContext, compare: Compare): Promise<string> {
+		ctx = sessionCtx;
+		const reviewServer = await ensureServer(sessionCtx.cwd, null);
+		if (recordedPort(sessionCtx) !== reviewServer.port) pi.appendEntry(SERVER_ENTRY, { port: reviewServer.port });
+		const url = reviewServer.url(compare);
+		await openBoard(url, { focus: true });
+		return url;
+	}
+
 	pi.registerCommand("review", {
 		description: `Review changes in the browser with a file tree and line comments for the agent. ${USAGE}`,
 		handler: async (args, commandCtx) => {
-			ctx = commandCtx;
 			const compare = parseArgs(args);
 			if (!compare) {
 				commandCtx.ui.notify(USAGE, "error");
 				return;
 			}
-			const reviewServer = await ensureServer(commandCtx.cwd, null);
-			if (recordedPort(commandCtx) !== reviewServer.port) pi.appendEntry(SERVER_ENTRY, { port: reviewServer.port });
-			const url = reviewServer.url(compare);
-			await openBoard(url, { focus: true });
-			commandCtx.ui.notify(`review open at ${url}`, "info");
+			commandCtx.ui.notify(`review open at ${await open(commandCtx, compare)}`, "info");
 		},
+	});
+
+	pi.events.on(REVIEW_EVENT, (data: unknown) => {
+		if (!isReviewRequest(data)) return;
+		if (data.type === "probe") return data.reply({ ok: true, message: "" });
+		if (!ctx) return data.reply({ ok: false, message: "git-diff-review has no omp session yet" });
+		open(ctx, { kind: "branch", base: data.base }).then(
+			(url) => data.reply({ ok: true, message: url }),
+			(e) => data.reply({ ok: false, message: e instanceof Error ? e.message : String(e) }),
+		);
 	});
 
 	pi.on("session_start", async (_event, sessionCtx) => {

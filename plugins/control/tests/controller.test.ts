@@ -63,8 +63,8 @@ function harness(loop: LoopSnapshot, options: { ui?: boolean } = {}) {
 	return { controller, state, check, gateOpened: gateOpened.promise, onAsk: (fn: typeof answer) => (answer = fn) };
 }
 
-const single = (n: NodeDefinition, maxPasses = 4): LoopSnapshot => ({ id: "t", name: "Test", description: "", maxPasses, plan: false, planStages: [], stages: [{ nodes: [n] }], finish: "auto" });
-const flow = (...stages: NodeDefinition[][]): LoopSnapshot => ({ id: "t", name: "Test", description: "", maxPasses: 4, plan: false, planStages: [], stages: stages.map((nodes) => ({ nodes })), finish: "auto" });
+const single = (n: NodeDefinition, maxPasses = 4): LoopSnapshot => ({ id: "t", name: "Test", description: "", maxPasses, plan: "none", planReviewer: null, stages: [{ nodes: [n] }], finish: "auto" });
+const flow = (...stages: NodeDefinition[][]): LoopSnapshot => ({ id: "t", name: "Test", description: "", maxPasses: 4, plan: "none", planReviewer: null, stages: stages.map((nodes) => ({ nodes })), finish: "auto" });
 const reviewed = (...stages: NodeDefinition[][]): LoopSnapshot => ({ ...flow(...stages), finish: "review" });
 
 test("stop decisions: chat-only turns pass, unchecked changes block, settled changes pass, the fourth stop is let through", async () => {
@@ -298,22 +298,26 @@ test("a review interrupted by a new request stays pending and covers both reques
 	expect(controller.view()).toMatchObject({ pendingReview: null, reviews: [{ requests: ["Add a cart total", "Also show the tax"] }] });
 });
 
-const planned = (planStages: NodeDefinition[][], stages: NodeDefinition[][]): LoopSnapshot => ({ ...flow(...stages), plan: true, planStages: planStages.map((nodes) => ({ nodes })) });
+const planned = (maxPasses = 4): LoopSnapshot => ({ ...flow([node("q")]), maxPasses, plan: "ai", planReviewer: node("plan-reviewer") });
 
-test("plan checks send a flawed plan back to planning with their findings", async () => {
-	const { controller, state } = harness(planned([[node("plan-reviewer")]], [[node("q")]]));
+test("the plan reviewer sends a flawed plan back, and at the loop's limit leaves it to you", async () => {
+	const { controller, state } = harness(planned(2));
 	state.outcomes["plan-reviewer"] = { kind: "findings", findings: [finding("No tests in the plan", true)] };
 	const r = await controller.checkPlan("1. Change the cart", new AbortController().signal);
 	expect(r.action).toBe("refine");
 	if (r.action === "refine") expect(r.feedback).toContain("No tests in the plan");
 	expect(controller.view()?.nodes["plan-reviewer"].state).toBe("findings");
 	expect(state.ran).toEqual(["plan-reviewer"]);
+	expect(await controller.checkPlan("1. Change the cart again", new AbortController().signal)).toEqual({ action: "ask", reason: "plan-reviewer still finds problems in the plan after 2 rounds" });
 });
 
-test("a clean plan waits for your approval in omp's plan review", async () => {
-	const { controller } = harness(planned([[node("plan-reviewer")]], [[node("q")]]));
-	expect(await controller.checkPlan("plan", new AbortController().signal)).toEqual({ action: "wait" });
+test("a plan the reviewer passes is approved, and the next request's plan gets the full rounds again", async () => {
+	const { controller, state } = harness(planned(2));
+	expect(await controller.checkPlan("plan", new AbortController().signal)).toEqual({ action: "approve" });
 	expect(controller.view()?.nodes["plan-reviewer"].state).toBe("passed");
+	controller.onPlan("approved");
+	state.outcomes["plan-reviewer"] = { kind: "findings", findings: [finding("No tests in the plan", true)] };
+	expect((await controller.checkPlan("next plan", new AbortController().signal)).action).toBe("refine");
 });
 
 test("your review waits until the doubts are answered, then shows a grouped summary of the change", async () => {

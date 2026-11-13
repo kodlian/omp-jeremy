@@ -1522,7 +1522,7 @@ function updatePanel() {
 function updateLoop(t) {
   P.loopOpen.disabled = !sessionConnected(t);
   if (!canShowLoop(t) || !window.ControlView) return;
-  const shape = t.control?.loop ?? loopSummary(t) ?? { id: t.loop, name: t.loop, description: "", maxPasses: 0, plan: false, planStages: [], stages: [] };
+  const shape = t.control?.loop ?? loopSummary(t) ?? { id: t.loop, name: t.loop, description: "", maxPasses: 0, plan: "none", planReviewer: null, stages: [] };
   const key = JSON.stringify([shape, t.control]);
   if (P.loopKey === key) return;
   P.loopKey = key;

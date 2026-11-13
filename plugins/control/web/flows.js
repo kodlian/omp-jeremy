@@ -3,14 +3,12 @@
 /** A library loop as the diagram's shape; a missing node shows by its id. */
 export function libraryShape(payload, entry) {
   const nodes = new Map(payload.library.nodes.map((n) => [n.id, n]));
-  const shape = (stages) =>
-    (stages ?? []).map((s) => ({
-      nodes: s.nodes.map((id) => {
-        const n = nodes.get(id);
-        return { id, name: n?.name ?? `${id} (missing)`, kind: n?.kind ?? "check" };
-      }),
-    }));
-  return { id: entry.id, name: entry.name, description: entry.description, maxPasses: entry.maxPasses, plan: entry.plan === true, finish: entry.finish ?? "review", planStages: shape(entry.planStages), stages: shape(entry.stages) };
+  const node = (id) => {
+    const n = nodes.get(id);
+    return { id, name: n?.name ?? `${id} (missing)`, kind: n?.kind ?? "check" };
+  };
+  const shape = (stages) => (stages ?? []).map((s) => ({ nodes: s.nodes.map(node) }));
+  return { id: entry.id, name: entry.name, description: entry.description, maxPasses: entry.maxPasses, plan: entry.plan ?? "none", planReviewer: entry.planReviewer ? node(entry.planReviewer) : null, finish: entry.finish ?? "review", stages: shape(entry.stages) };
 }
 
 const list = (names) => (names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0]);
@@ -31,11 +29,12 @@ function machines(stages, object) {
 /** The flow's steps in plain words, in the order they happen. */
 export function describeFlow(shape) {
   const steps = [];
-  if (shape.plan) {
+  if (shape.plan !== "none") {
     steps.push("The agent plans first (omp plan mode).");
-    const planChecks = machines(shape.planStages, "the plan");
-    if (planChecks) steps.push(`${planChecks[0].toUpperCase()}${planChecks.slice(1)}; problems send the plan back to be revised.`);
-    steps.push("You approve the plan, or send it back.");
+    if (shape.plan === "ai") {
+      steps.push(`${shape.planReviewer?.name ?? "An AI reviewer"} reviews the plan; problems send it back to be revised, and a plan it passes is approved without you.`);
+      steps.push(`If the plan still has problems after ${shape.maxPasses} rounds, you approve it or send it back.`);
+    } else steps.push("You approve the plan, or send it back.");
     steps.push("The agent implements the approved plan.");
   } else steps.push("The agent implements your request.");
   const changeChecks = machines(shape.stages, "the change");

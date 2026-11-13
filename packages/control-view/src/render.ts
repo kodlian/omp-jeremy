@@ -1,4 +1,4 @@
-import { type Decision, type FindingView, type LoopShape, type NodeKind, type NodeState, questionAnswer, type RunStatus, type RunView } from "./protocol";
+import { type Decision, type FindingView, type LoopShape, type NodeKind, type NodeState, type PlanMode, questionAnswer, type RunStatus, type RunView } from "./protocol";
 
 export type Phase = "plan" | "change";
 
@@ -9,7 +9,7 @@ export interface EditHandlers {
 	/** Inserts a new stage at `index` in run order (0 = the first check run) of a loop's checks. */
 	onAddStage?(phase: Phase, index: number): void;
 	onAddToStage?(phase: Phase, stage: number): void;
-	onTogglePlan?(): void;
+	onPlanMode?(mode: PlanMode): void;
 	onToggleFinish?(): void;
 }
 
@@ -120,6 +120,9 @@ interface Segment {
 	implicit: (ShapeNode & { fact: string; state: NodeState | null }) | null;
 	hot: { text: string; tone: "warn" | "accent" } | null;
 	active: boolean;
+	/** The editor's + button after the checks (null: none), and whether checks can be stacked to run together. */
+	add: string | null;
+	together: boolean;
 }
 
 /**
@@ -174,8 +177,8 @@ function diagram(loop: LoopShape, run: RunView | null, handlers: RenderHandlers,
 	const sumX = PAD + 64;
 	const agentX = sumX + 16 + 34;
 	const outX = agentX + AGENT_W + 30;
-	const stackOf = (seg: Segment) => Math.max(1, ...seg.stages.map((s) => s.nodes.length + (edit ? 1 : 0)));
-	const columnsOf = (seg: Segment) => seg.stages.length + (seg.implicit ? 1 : 0) + (edit ? 1 : 0);
+	const stackOf = (seg: Segment) => Math.max(1, ...seg.stages.map((s) => s.nodes.length + (edit && seg.together ? 1 : 0)));
+	const columnsOf = (seg: Segment) => seg.stages.length + (seg.implicit ? 1 : 0) + (edit && seg.add ? 1 : 0);
 	const segmentWidth = (seg: Segment) => Math.max(outX + OUT_W - agentX, columnsOf(seg) * (NODE_W + STAGE_GAP) - STAGE_GAP + 2 * PAD);
 
 	/** One loop band at y0: ⊗ → agent → output, its checks in a box below feeding back into ⊗. */
@@ -243,7 +246,7 @@ function diagram(loop: LoopShape, run: RunView | null, handlers: RenderHandlers,
 			if (i > 0) between(i, counts[i - 1], counts[i]);
 			stage.nodes.forEach((n, k) => checkNode(n, sx, top + k * (NODE_H + 8)));
 			marks(i, stage.nodes.length, sx);
-			if (edit?.onAddToStage) addButton(sx, top + stage.nodes.length * (NODE_H + 8) + 2, NODE_W, "+ run together", "Add a check that runs at the same time", () => edit.onAddToStage!(seg.phase, i));
+			if (edit?.onAddToStage && seg.together) addButton(sx, top + stage.nodes.length * (NODE_H + 8) + 2, NODE_W, "+ run together", "Add a check that runs at the same time", () => edit.onAddToStage!(seg.phase, i));
 		});
 		let next = seg.stages.length;
 		if (seg.implicit) {
@@ -253,7 +256,7 @@ function diagram(loop: LoopShape, run: RunView | null, handlers: RenderHandlers,
 			marks(next, 1, colX(next));
 			next += 1;
 		}
-		if (edit?.onAddStage) addButton(colX(next), boxMid - 13, NODE_W, "+ add check", "Add a check that runs after the others", () => edit.onAddStage!(seg.phase, seg.stages.length));
+		if (edit?.onAddStage && seg.add) addButton(colX(next), boxMid - 13, NODE_W, seg.add, seg.phase === "plan" ? "Pick the AI reviewer that approves the plan" : "Add a check that runs after the others", () => edit.onAddStage!(seg.phase, seg.stages.length));
 		return { midY, branchX, bottom: boxY + boxH + 8 };
 	};
 
@@ -276,21 +279,27 @@ function diagram(loop: LoopShape, run: RunView | null, handlers: RenderHandlers,
 									: { fact: "", state: run ? ("waiting" as const) : null }),
 				}
 			: null;
-	const planSeg: Segment | null = loop.plan
-		? {
-				phase: "plan",
-				title: "Plan loop",
-				agent: { title: "Plan", sub: plan === "planning" ? "planning…" : plan === "review" ? "in review" : "", active: plan === "planning", icon: "pencil" },
-				output: { title: "Plan", sub: plan === "approved" ? "approved" : "", icon: "file" },
-				stages: loop.planStages,
-				implicit: { id: "@plan-review", name: "You approve", kind: "you", fact: plan === "approved" ? "approved" : plan === "review" ? "waiting for you" : "", state: plan === "approved" ? "passed" : plan === "review" ? "running" : run ? "waiting" : null },
-				hot: run?.findings.some((f) => f.id.startsWith("plan.")) && plan !== "approved" ? { text: "revise", tone: "warn" } : null,
-				active: plan === "planning" || plan === "review",
-			}
-		: null;
+	const planSeg: Segment | null =
+		loop.plan !== "none"
+			? {
+					phase: "plan",
+					title: "Plan loop",
+					agent: { title: "Plan", sub: plan === "planning" ? "planning…" : plan === "review" ? "in review" : "", active: plan === "planning", icon: "pencil" },
+					output: { title: "Plan", sub: plan === "approved" ? "approved" : "", icon: "file" },
+					stages: loop.plan === "ai" && loop.planReviewer ? [{ nodes: [loop.planReviewer] }] : [],
+					implicit:
+						loop.plan === "you"
+							? { id: "@plan-review", name: "You approve", kind: "you", fact: plan === "approved" ? "approved" : plan === "review" ? "waiting for you" : "", state: plan === "approved" ? "passed" : plan === "review" ? "running" : run ? "waiting" : null }
+							: null,
+					hot: run?.findings.some((f) => f.id.startsWith("plan.")) && plan !== "approved" ? { text: "revise", tone: "warn" } : null,
+					active: plan === "planning" || plan === "review",
+					add: loop.plan === "ai" && !loop.planReviewer ? "+ plan reviewer" : null,
+					together: false,
+				}
+			: null;
 	const changeSeg: Segment = {
 		phase: "change",
-		title: loop.plan ? "Implement loop" : "Control loop",
+		title: loop.plan !== "none" ? "Implement loop" : "Control loop",
 		agent: {
 			title: "Implement",
 			sub: run ? `${STATUS_LABELS[run.status]}${run.pass && loop.maxPasses ? ` · ${run.pass}/${loop.maxPasses}` : ""}` : "",
@@ -302,6 +311,8 @@ function diagram(loop: LoopShape, run: RunView | null, handlers: RenderHandlers,
 		implicit: review,
 		hot: open ? { text: `${open} for you`, tone: "warn" } : fixing ? { text: `${fixing} to fix`, tone: "accent" } : null,
 		active: !!run && plan !== "planning" && plan !== "review",
+		add: "+ add check",
+		together: true,
 	};
 	// Both bands share one width so their blocks line up.
 	const boxW = Math.max(segmentWidth(changeSeg), planSeg ? segmentWidth(planSeg) : 0);
@@ -336,9 +347,14 @@ function diagram(loop: LoopShape, run: RunView | null, handlers: RenderHandlers,
 		defs.append(m);
 	}
 	svg.append(defs, ...items);
-	const toggle = edit?.onTogglePlan
-		? el("button", { class: "btn ghost sm cv-plan-toggle", type: "button", onclick: () => edit.onTogglePlan!() }, loop.plan ? "Remove planning" : "+ Plan first: the agent writes a plan you approve before it implements")
-		: null;
+	const planButton = (mode: PlanMode, text: string) =>
+		el("button", { class: "btn ghost sm cv-plan-toggle", type: "button", onclick: () => edit!.onPlanMode!(mode) }, text);
+	const planModes: Record<PlanMode, [PlanMode, string][]> = {
+		none: [["you", "+ Plan first: the agent writes a plan you approve"], ["ai", "+ Plan first: an AI reviewer approves the plan"]],
+		you: [["ai", "Let an AI reviewer approve the plan instead"], ["none", "Remove planning"]],
+		ai: [["you", "Approve the plan myself instead"], ["none", "Remove planning"]],
+	};
+	const toggles = edit?.onPlanMode ? planModes[loop.plan].map(([mode, text]) => planButton(mode, text)) : [];
 	const finish = edit?.onToggleFinish
 		? el(
 				"button",
@@ -346,7 +362,7 @@ function diagram(loop: LoopShape, run: RunView | null, handlers: RenderHandlers,
 				loop.finish === "review" ? "Finish without my review: done as soon as the checks pass" : "+ Finish with my review: approve the change or send it back",
 			)
 		: null;
-	return el("div", { class: "cv-diagram-wrap" }, el("div", { class: "cv-toggles" }, toggle, finish), svg);
+	return el("div", { class: "cv-diagram-wrap" }, el("div", { class: "cv-toggles" }, ...toggles, finish), svg);
 }
 
 // MARK: findings

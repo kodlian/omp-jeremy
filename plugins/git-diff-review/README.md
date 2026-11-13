@@ -56,6 +56,8 @@ Choose the comparison once in the single-line header; long branch names truncate
 
 Pending comments, including a non-empty inline draft, expose **Send review (count)** in the main toolbar even when the file list is collapsed. Its adjacent menu offers copying, adding to the prompt, and clearing saved comments.
 
+Other plugins in the same omp open it on a change too: the Control page's **Open in Review** shows everything its loop checks, since the loop's baseline commit. They send a `git-diff-review:open` request on omp's event bus (`omp-integrations/review`).
+
 | Key | Action |
 |---|---|
 | `j` / `k` | next / previous file |

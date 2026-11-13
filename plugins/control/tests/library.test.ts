@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseNodeFile, serializeNode } from "../src/frontmatter";
-import { copyItem, deleteItem, loadLibrary, type NodeDefinition, nodeFrom, resolveLoop, saveLoop, saveNode, validateSnapshot } from "../src/library";
+import { copyItem, deleteItem, loadLibrary, type LoopSnapshot, type NodeDefinition, nodeFrom, resolveLoop, saveLoop, saveNode, savedSnapshot, validateSnapshot } from "../src/library";
 
 let home: string;
 let repo: string;
@@ -94,7 +94,7 @@ test("saveLoop writes the repo loop file and refuses unknown nodes; resolveLoop 
 	const loop = { id: "docs", name: "Docs", description: "", maxPasses: 2, stages: [{ nodes: ["docs-reviewer"] }, { nodes: ["quality-reviewer"] }] };
 	const path = await saveLoop(repo, "repo", loop, library);
 	expect(path).toBe(join(repo, ".omp/control/loops/docs.json"));
-	expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ name: "Docs", description: "", maxPasses: 2, plan: false, planStages: [], stages: loop.stages, finish: "review" });
+	expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ name: "Docs", description: "", maxPasses: 2, plan: "none", stages: loop.stages, finish: "review" });
 	await expect(saveLoop(repo, "repo", { ...loop, stages: [{ nodes: ["ghost", "phantom"] }] }, library)).rejects.toThrow("Loop docs needs missing nodes: ghost, phantom");
 
 	library = await loadLibrary(repo);
@@ -111,4 +111,14 @@ test("loop and session snapshot limits", () => {
 	expect(() => validateSnapshot({ name: "X", stages: [{ nodes: [reviewer, reviewer] }] })).toThrow("node docs-reviewer appears twice");
 	expect(() => validateSnapshot({ name: "X", maxPasses: 11, stages: [{ nodes: [reviewer] }] })).toThrow("maxPasses must be 1–10");
 	expect(validateSnapshot({ id: null, name: "X", stages: [{ nodes: [reviewer] }] })).toMatchObject({ id: null, maxPasses: 4, stages: [{ nodes: [reviewer] }] });
+	expect(() => validateSnapshot({ name: "X", plan: true, stages: [] })).toThrow("plan must be none, you or ai");
+	expect(() => validateSnapshot({ name: "X", plan: "ai", stages: [] })).toThrow("planReviewer names the plan's reviewer when plan is ai, and only then");
+	expect(() => validateSnapshot({ name: "X", plan: "you", planReviewer: reviewer, stages: [] })).toThrow("planReviewer names the plan's reviewer");
+	expect(() => validateSnapshot({ name: "X", plan: "ai", planReviewer: reviewer, stages: [{ nodes: [reviewer] }] })).toThrow("node docs-reviewer appears twice");
+	expect(validateSnapshot({ name: "X", plan: "ai", planReviewer: reviewer, stages: [] })).toMatchObject({ plan: "ai", planReviewer: reviewer });
+});
+
+test("a session loop saved before plan modes comes back with you approving the plan", () => {
+	const old = { id: "ship", name: "Ship", description: "", maxPasses: 4, plan: true, planStages: [{ nodes: [reviewer] }], stages: [], finish: "review" } as unknown as LoopSnapshot;
+	expect(savedSnapshot(old)).toEqual({ id: "ship", name: "Ship", description: "", maxPasses: 4, plan: "you", planReviewer: null, stages: [], finish: "review" });
 });

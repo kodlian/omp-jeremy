@@ -2,6 +2,6 @@
   "name": "Plan, you approve, you review",
   "description": "The classic loop: the agent plans, you approve the plan, it implements, you review the change",
   "maxPasses": 4,
-  "plan": true,
+  "plan": "you",
   "stages": []
 }

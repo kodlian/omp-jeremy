@@ -1,15 +1,8 @@
 {
   "name": "Plan, review, sign off",
-  "description": "An AI checks the plan before you approve it; after implementing, quality, conventions and project-rules reviewers, then your review",
+  "description": "You approve the plan; after implementing, quality, conventions and project-rules reviewers, then your review",
   "maxPasses": 4,
-  "plan": true,
-  "planStages": [
-    {
-      "nodes": [
-        "plan-reviewer"
-      ]
-    }
-  ],
+  "plan": "you",
   "stages": [
     {
       "nodes": [

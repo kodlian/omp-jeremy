@@ -7,6 +7,8 @@ export const COMMAND_EVENT = "control:command"; // payload: ControlCommand
 export type NodeKind = "check" | "review";
 /** How a loop ends once its checks pass: you review the change, or it's done (and an Orchestrator task can merge). */
 export type Finish = "review" | "auto";
+/** How a request is planned: not at all; in omp plan mode with you approving the plan; or with one AI reviewer approving it. */
+export type PlanMode = "none" | "you" | "ai";
 export type AskMode = "doubts" | "all" | "never";
 export type Severity = "blocker" | "major" | "minor";
 
@@ -21,10 +23,11 @@ export interface LoopShape {
 	name: string;
 	description: string;
 	maxPasses: number;
-	/** Each request starts in omp plan mode; the change loop runs once the plan is approved. */
-	plan: boolean;
-	/** Checks on the plan before you approve it; ids are unique across both loops. */
-	planStages: { nodes: NodeShape[] }[];
+	/** none: the agent implements the request; you and ai: it starts in omp plan mode and implements once you, or the
+	 * plan reviewer, approve the plan. */
+	plan: PlanMode;
+	/** The reviewer that approves the plan in ai mode, else null; its id is unique among the loop's nodes. */
+	planReviewer: NodeShape | null;
 	stages: { nodes: NodeShape[] }[];
 	finish: Finish;
 }

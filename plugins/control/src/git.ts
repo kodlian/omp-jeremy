@@ -115,14 +115,3 @@ export async function changedFiles(root: string, sha: string): Promise<ChangedFi
 	}
 	return out;
 }
-
-/** One file's diff since sha, as unified text; a new file diffs against nothing. Refuses paths outside the repository. */
-export async function fileDiff(root: string, sha: string, path: string): Promise<string> {
-	if (!path || path.startsWith("/") || path.split("/").includes("..")) throw new Error(`Not a repository path: ${path}`);
-	const tracked = (await git(["ls-files", "--error-unmatch", "--", path], root)).code === 0;
-	const changed = await git(["diff", sha, "--no-color", "-U4", "--", path], root);
-	if (changed.stdout || tracked) return changed.stdout;
-	const r = await git(["diff", "--no-index", "--no-color", "--", "/dev/null", path], root);
-	if (r.code > 1) throw new Error(r.stderr.trim() || `Couldn't diff ${path}`);
-	return r.stdout;
-}

@@ -303,6 +303,9 @@ ${decls.join("")}}
 `;
 }
 
+// packages/integrations/src/review.ts
+var REVIEW_EVENT = "git-diff-review:open";
+
 // plugins/control/src/library.ts
 import { realpathSync } from "fs";
 import { mkdir, readdir, readFile, rm, writeFile } from "fs/promises";
@@ -407,6 +410,7 @@ var ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
 var REVIEWER_TOOLS = ["read", "grep", "glob", "find", "ast_grep", "web_search"];
 var DEFAULT_TOOLS = ["read", "grep", "glob"];
 var ASK_MODES = ["doubts", "all", "never"];
+var PLAN_MODES = ["none", "you", "ai"];
 var BUILT_IN = join2(dirname(realpathSync(import.meta.path)), "..", "library");
 function libraryRoots(root) {
   return {
@@ -484,29 +488,31 @@ function nodeFrom(id, fields, body, where) {
     instructions: body.trim()
   };
 }
-function flowFrom(raw, where, node, idOf) {
+function flowFrom(raw, where, plan, node, idOf) {
   const seen = new Set;
-  const parse = (value, label, min) => {
-    if (!Array.isArray(value) || value.length < min || value.length > 8)
-      throw new Error(`${where}: ${label} must list ${min}\u20138 stages`);
-    return value.map((stage, i) => {
+  const unique = (n) => {
+    const id = idOf(n);
+    if (seen.has(id))
+      throw new Error(`${where}: node ${id} appears twice in the loop`);
+    seen.add(id);
+    return n;
+  };
+  const named = raw.planReviewer !== undefined && raw.planReviewer !== null;
+  if (named !== (plan === "ai"))
+    throw new Error(`${where}: planReviewer names the plan's reviewer when plan is ai, and only then`);
+  const planReviewer = named ? unique(node(raw.planReviewer, `${where}: planReviewer`)) : null;
+  const stages = raw.stages ?? [];
+  if (!Array.isArray(stages) || stages.length > 8)
+    throw new Error(`${where}: stages must list 0\u20138 stages`);
+  return {
+    planReviewer,
+    stages: stages.map((stage, i) => {
       const nodes = stage && typeof stage === "object" && "nodes" in stage ? stage.nodes : undefined;
       if (!Array.isArray(nodes) || nodes.length < 1 || nodes.length > 6)
-        throw new Error(`${where}: ${label} stage ${i + 1} must hold 1\u20136 nodes`);
-      return {
-        nodes: nodes.map((v) => {
-          const n = node(v, `${where}: ${label} stage ${i + 1}`);
-          const id = idOf(n);
-          if (seen.has(id))
-            throw new Error(`${where}: node ${id} appears twice in the loop`);
-          seen.add(id);
-          return n;
-        })
-      };
-    });
+        throw new Error(`${where}: stages stage ${i + 1} must hold 1\u20136 nodes`);
+      return { nodes: nodes.map((v) => unique(node(v, `${where}: stages stage ${i + 1}`))) };
+    })
   };
-  const planStages = raw.planStages === undefined ? [] : parse(raw.planStages, "planStages", 0);
-  return { planStages, stages: parse(raw.stages ?? [], "stages", 0) };
 }
 function loopHeader(raw, where) {
   const name = typeof raw.name === "string" ? raw.name.trim() : "";
@@ -518,26 +524,27 @@ function loopHeader(raw, where) {
   const maxPasses = raw.maxPasses ?? 4;
   if (typeof maxPasses !== "number" || !Number.isInteger(maxPasses) || maxPasses < 1 || maxPasses > 10)
     throw new Error(`${where}: maxPasses must be 1\u201310`);
-  const plan = raw.plan ?? false;
-  if (typeof plan !== "boolean")
-    throw new Error(`${where}: plan must be true or false`);
+  const plan = raw.plan ?? "none";
+  if (!PLAN_MODES.includes(plan))
+    throw new Error(`${where}: plan must be none, you or ai`);
   const finish = raw.finish ?? "review";
   if (finish !== "review" && finish !== "auto")
     throw new Error(`${where}: finish must be review or auto`);
-  return { name, description, maxPasses, plan: plan || Array.isArray(raw.planStages) && raw.planStages.length > 0, finish };
+  return { name, description, maxPasses, plan, finish };
 }
 function loopFrom(id, raw, where) {
   checkId(id, where, "loop id");
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
     throw new Error(`${where}: must be a JSON object`);
   const value = raw;
-  const flow = flowFrom(value, where, (n, at) => {
+  const header = loopHeader(value, where);
+  const flow = flowFrom(value, where, header.plan, (n, at) => {
     if (typeof n !== "string")
       throw new Error(`${at}: nodes must be node ids`);
     checkId(n, at, "node id");
     return n;
   }, (n) => n);
-  return { id, ...loopHeader(value, where), ...flow };
+  return { id, ...header, ...flow };
 }
 function validateSnapshot(value) {
   const where = "loop";
@@ -550,7 +557,8 @@ function validateSnapshot(value) {
       throw new Error(`${where}: id must be text`);
     checkId(id, where, "loop id");
   }
-  const flow = flowFrom(raw, where, (n, at) => {
+  const header = loopHeader(raw, where);
+  const flow = flowFrom(raw, where, header.plan, (n, at) => {
     if (!n || typeof n !== "object")
       throw new Error(`${at}: each node must be an object`);
     const fields = n;
@@ -559,7 +567,14 @@ function validateSnapshot(value) {
     const body = typeof fields.instructions === "string" ? fields.instructions : "";
     return nodeFrom(fields.id, fields, body, `${at}: node ${fields.id}`);
   }, (n) => n.id);
-  return { id, ...loopHeader(raw, where), ...flow };
+  return { id, ...header, ...flow };
+}
+function savedSnapshot(loop) {
+  const saved = loop;
+  if (typeof saved.plan !== "boolean")
+    return loop;
+  const { planStages: _, ...rest } = saved;
+  return { ...rest, plan: saved.plan ? "you" : "none", planReviewer: null };
 }
 async function listDir(dir, ext) {
   try {
@@ -624,14 +639,17 @@ async function saveNode(root, scope, node) {
   await writeFile(path, text);
   return path;
 }
+function missingNodes(loop, library) {
+  return [...loop.planReviewer ? [loop.planReviewer] : [], ...loop.stages.flatMap((s) => s.nodes)].filter((n) => !library.nodes.has(n));
+}
 async function saveLoop(root, scope, loop, library) {
   const valid = loopFrom(loop.id, loop, `loop ${loop.id}`);
-  const missing = [...valid.planStages, ...valid.stages].flatMap((s) => s.nodes).filter((n) => !library.nodes.has(n));
+  const missing = missingNodes(valid, library);
   if (missing.length)
     throw new Error(`Loop ${loop.id} needs missing nodes: ${missing.join(", ")}`);
   const path = join2(await scopeDir(root, scope), "loops", `${loop.id}.json`);
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify({ name: valid.name, description: valid.description, maxPasses: valid.maxPasses, plan: valid.plan, planStages: valid.planStages, stages: valid.stages, finish: valid.finish }, null, 2)}
+  await writeFile(path, `${JSON.stringify({ name: valid.name, description: valid.description, maxPasses: valid.maxPasses, plan: valid.plan, ...valid.planReviewer ? { planReviewer: valid.planReviewer } : {}, stages: valid.stages, finish: valid.finish }, null, 2)}
 `);
   return path;
 }
@@ -665,34 +683,28 @@ function resolveLoop(library, id) {
   const entry = library.loops.get(id);
   if (!entry)
     throw new Error(`No loop ${id} in the library`);
-  const missing = [...entry.loop.planStages, ...entry.loop.stages].flatMap((s) => s.nodes).filter((n) => !library.nodes.has(n));
+  const missing = missingNodes(entry.loop, library);
   if (missing.length)
     throw new Error(`Loop ${id} needs missing nodes: ${missing.join(", ")}`);
   const { loop } = entry;
-  const resolve2 = (stages) => stages.map((s) => ({ nodes: s.nodes.map((n) => library.nodes.get(n).node) }));
-  return { id, name: loop.name, description: loop.description, maxPasses: loop.maxPasses, plan: loop.plan, planStages: resolve2(loop.planStages), stages: resolve2(loop.stages), finish: loop.finish };
+  const node = (n) => library.nodes.get(n).node;
+  return { id, name: loop.name, description: loop.description, maxPasses: loop.maxPasses, plan: loop.plan, planReviewer: loop.planReviewer ? node(loop.planReviewer) : null, stages: loop.stages.map((s) => ({ nodes: s.nodes.map(node) })), finish: loop.finish };
 }
 function shape(loop) {
+  const brief = (n) => ({ id: n.id, name: n.name, kind: n.kind });
   return {
     id: loop.id,
     name: loop.name,
     description: loop.description,
     maxPasses: loop.maxPasses,
     plan: loop.plan,
+    planReviewer: loop.planReviewer ? brief(loop.planReviewer) : null,
     finish: loop.finish,
-    planStages: loop.planStages.map((s) => ({ nodes: s.nodes.map((n) => ({ id: n.id, name: n.name, kind: n.kind })) })),
-    stages: loop.stages.map((s) => ({ nodes: s.nodes.map((n) => ({ id: n.id, name: n.name, kind: n.kind })) }))
+    stages: loop.stages.map((s) => ({ nodes: s.nodes.map(brief) }))
   };
 }
 function summarize(library, repo) {
-  const loops = [...library.loops.values()].flatMap(({ loop, source }) => {
-    const lookup = (stages) => stages.map((s) => s.nodes.map((id) => library.nodes.get(id)?.node));
-    const [plan, change] = [lookup(loop.planStages), lookup(loop.stages)];
-    if ([...plan, ...change].some((s) => s.some((n) => !n)))
-      return [];
-    const full = (stages) => stages.map((s) => ({ nodes: s }));
-    return [{ ...shape({ ...loop, planStages: full(plan), stages: full(change) }), id: loop.id, source }];
-  });
+  const loops = [...library.loops.values()].flatMap(({ loop, source }) => missingNodes(loop, library).length ? [] : [{ ...shape(resolveLoop(library, loop.id)), id: loop.id, source }]);
   return { repo, loops: loops.sort((a, b) => a.name.localeCompare(b.name)) };
 }
 
@@ -1013,6 +1025,7 @@ function fresh(baseline) {
     prompts: [],
     plan: null,
     planState: "unused",
+    planRounds: 0,
     status: "idle",
     history: [],
     note: null,
@@ -1105,12 +1118,12 @@ class Controller {
       s.plan = cut2(planText, PLAN_LIMIT);
     if (state === "unused")
       s.plan = null;
-    if (state === "planning")
-      for (const node of this.#attached.loop.planStages.flatMap((st) => st.nodes)) {
-        const view = this.#nodes[node.id];
-        if (view)
-          Object.assign(view, { state: "waiting", detail: null, findings: 0 });
-      }
+    if (state === "unused" || state === "approved")
+      s.planRounds = 0;
+    const reviewer = this.#attached.loop.planReviewer;
+    const view = reviewer && this.#nodes[reviewer.id];
+    if (state === "planning" && view)
+      Object.assign(view, { state: "waiting", detail: null, findings: 0 });
     if (!s.paused && s.status !== "checking" && s.status !== "deciding")
       s.status = state === "planning" || state === "review" ? "planning" : "implementing";
     this.#persist();
@@ -1250,56 +1263,57 @@ class Controller {
   }
   async checkPlan(planText, signal) {
     const attached = this.#attached;
-    if (!attached || this.#state.paused)
-      return { action: "wait" };
+    const node = attached?.loop.planReviewer;
+    if (!attached || !node || this.#state.paused)
+      return { action: "ask", reason: null };
     const { loop } = attached;
-    const found = [];
-    for (const stage of loop.planStages) {
-      await Promise.all(stage.nodes.map(async (node) => {
-        const view = this.#nodes[node.id];
-        Object.assign(view, { state: "running", detail: "reading the plan", findings: 0 });
+    const s = this.#state;
+    s.planRounds += 1;
+    const view = this.#nodes[node.id];
+    Object.assign(view, { state: "running", detail: "reading the plan", findings: 0 });
+    this.#emit();
+    const started = Date.now();
+    let outcome;
+    try {
+      outcome = node.kind === "check" ? await this.#deps.runCheck(node, signal) : await this.#deps.runReview(node, planPacketText({ loopName: loop.name, nodeName: node.name, prompts: s.prompts, plan: planText }), signal, (detail) => {
+        view.detail = detail;
         this.#emit();
-        const started = Date.now();
-        let outcome;
-        try {
-          outcome = node.kind === "check" ? await this.#deps.runCheck(node, signal) : await this.#deps.runReview(node, planPacketText({ loopName: loop.name, nodeName: node.name, prompts: this.#state.prompts, plan: planText }), signal, (detail) => {
-            view.detail = detail;
-            this.#emit();
-          });
-        } catch (e) {
-          outcome = { kind: "error", message: e instanceof Error ? e.message : String(e) };
-        }
-        view.durationMs = Date.now() - started;
-        view.artifacts = outcome.artifacts ?? [];
-        view.detail = null;
-        if (outcome.kind === "passed")
-          view.state = "passed";
-        else if (outcome.kind === "findings") {
-          view.state = "findings";
-          view.findings = outcome.findings.length;
-          for (const f of outcome.findings)
-            found.push({ id: `plan.${found.length + 1}`, node: node.id, nodeName: node.name, ...f, recurring: false, approval: false, route: "fix", decision: null });
-        } else {
-          view.state = "error";
-          view.detail = cut2(outcome.message, 200);
-        }
-        this.#emit();
-      }));
-      if (found.length || signal.aborted)
-        break;
+      });
+    } catch (e) {
+      outcome = { kind: "error", message: e instanceof Error ? e.message : String(e) };
     }
-    if (signal.aborted)
-      return { action: "wait" };
-    if (found.length) {
-      this.#state.findings = found;
+    view.durationMs = Date.now() - started;
+    view.artifacts = outcome.artifacts ?? [];
+    view.detail = null;
+    if (signal.aborted) {
+      view.state = "waiting";
+      this.#emit(true);
+      return { action: "ask", reason: null };
+    }
+    if (outcome.kind === "passed") {
+      view.state = "passed";
+      s.findings = s.findings.filter((f) => !f.id.startsWith("plan."));
       this.#persist();
       this.#emit(true);
-      return { action: "refine", feedback: fixMessage(loop.name, 0, 0, found, [], 0).replace(/^.*?\n\n/, `The plan checks found problems in your plan; revise it:
+      return { action: "approve" };
+    }
+    if (outcome.kind !== "findings") {
+      view.state = "error";
+      view.detail = cut2(outcome.message, 200);
+      this.#persist();
+      this.#emit(true);
+      return { action: "ask", reason: `${node.name} couldn't review the plan: ${cut2(outcome.message, 200)}` };
+    }
+    view.state = "findings";
+    view.findings = outcome.findings.length;
+    s.findings = outcome.findings.map((f, i) => ({ id: `plan.${i + 1}`, node: node.id, nodeName: node.name, ...f, recurring: false, approval: false, route: "fix", decision: null }));
+    this.#persist();
+    this.#emit(true);
+    if (s.planRounds >= loop.maxPasses)
+      return { action: "ask", reason: `${node.name} still finds problems in the plan after ${s.planRounds} rounds` };
+    return { action: "refine", feedback: fixMessage(loop.name, 0, 0, s.findings, [], 0).replace(/^.*?\n\n/, `${node.name} found problems in your plan; revise it:
 
 `) };
-    }
-    this.#emit(true);
-    return { action: "wait" };
   }
   async#pass(attached, fp, questions, signal, progress) {
     const { loop } = attached;
@@ -1579,7 +1593,7 @@ ${held} judgment call${held === 1 ? " waits" : "s wait"} for the user once these
   }
   async#summary(loop, requests) {
     const s = this.#state;
-    const names = new Map([...loop.planStages, ...loop.stages].flatMap((st) => st.nodes).map((n) => [n.id, n.name]));
+    const names = new Map([...loop.planReviewer ? [loop.planReviewer] : [], ...loop.stages.flatMap((st) => st.nodes)].map((n) => [n.id, n.name]));
     const files = await this.#deps.changes().catch(() => []);
     return reviewSummary({
       requests,
@@ -1624,9 +1638,9 @@ ${held} judgment call${held === 1 ? " waits" : "s wait"} for the user once these
     const loop = this.#attached?.loop;
     if (!changeOnly)
       this.#nodes = {};
-    for (const stage of [...changeOnly ? [] : loop?.planStages ?? [], ...loop?.stages ?? []])
-      for (const node of stage.nodes)
-        this.#nodes[node.id] = { state: "waiting", detail: null, findings: 0, durationMs: null, artifacts: [] };
+    const nodes = [...changeOnly || !loop?.planReviewer ? [] : [loop.planReviewer], ...(loop?.stages ?? []).flatMap((st) => st.nodes)];
+    for (const node of nodes)
+      this.#nodes[node.id] = { state: "waiting", detail: null, findings: 0, durationMs: null, artifacts: [] };
     if (loop?.finish === "review")
       this.#nodes[REVIEW] = { state: "waiting", detail: null, findings: 0, durationMs: null, artifacts: [] };
   }
@@ -1765,18 +1779,6 @@ async function changedFiles(root, sha) {
 `) ? 1 : 0) : 0, removed: 0, isNew: true });
   }
   return out;
-}
-async function fileDiff(root, sha, path) {
-  if (!path || path.startsWith("/") || path.split("/").includes(".."))
-    throw new Error(`Not a repository path: ${path}`);
-  const tracked = (await git(["ls-files", "--error-unmatch", "--", path], root)).code === 0;
-  const changed = await git(["diff", sha, "--no-color", "-U4", "--", path], root);
-  if (changed.stdout || tracked)
-    return changed.stdout;
-  const r = await git(["diff", "--no-index", "--no-color", "--", "/dev/null", path], root);
-  if (r.code > 1)
-    throw new Error(r.stderr.trim() || `Couldn't diff ${path}`);
-  return r.stdout;
 }
 
 // plugins/control/src/sensors.ts
@@ -2049,8 +2051,6 @@ data: ${JSON.stringify(await hooks.state())}
       return events();
     if (method === "GET" && pathname === "/api/changes")
       return json(await hooks.changes());
-    if (method === "GET" && pathname === "/api/diff")
-      return json({ diff: await hooks.diff(new URL(req.url).searchParams.get("path") ?? "") });
     if (method === "GET" && pathname === "/api/artifact") {
       const path = new URL(req.url).searchParams.get("path") ?? "";
       const listed = Object.values((await hooks.state()).run?.nodes ?? {}).some((n) => n.artifacts.includes(path));
@@ -2118,6 +2118,9 @@ data: ${JSON.stringify(await hooks.state())}
       }
       case "POST /api/check":
         hooks.check();
+        return json({ ok: true });
+      case "POST /api/review":
+        await hooks.review();
         return json({ ok: true });
       case "POST /api/since": {
         if (typeof body.ref !== "string" || !body.ref.trim())
@@ -2223,6 +2226,9 @@ var SEND_BACK = "Send back";
 var DISMISS_ALL = "Dismiss all remaining";
 var PAUSE = "Pause the loop";
 var GATE_HELP = "Esc pauses the loop";
+var PLAN_APPROVALS = { execute: true, compact: true, keep: true };
+var REVIEW_PROBE_MS = 500;
+var REVIEW_OPEN_MS = 15000;
 var themeApi = hasThemeApi(omp);
 var errorText = (e) => e instanceof Error ? e.message : String(e);
 var reply = (text, isError = false) => ({ content: [{ type: "text", text }], isError });
@@ -2263,7 +2269,7 @@ function statusText(view) {
 function failedView(id, message) {
   return {
     version: 1,
-    loop: { id, name: id, description: "", maxPasses: 0, plan: false, finish: "review", planStages: [], stages: [] },
+    loop: { id, name: id, description: "", maxPasses: 0, plan: "none", planReviewer: null, finish: "review", stages: [] },
     plan: "unused",
     status: "idle",
     pass: 0,
@@ -2466,10 +2472,10 @@ ${findingQuestion(f)}`;
   };
   const armPlan = (ctx) => {
     const modes = ctx?.sessionModes;
-    if (!attached?.loop.plan || !modes || controller.paused)
+    if (!attached || attached.loop.plan === "none" || !modes || controller.paused)
       return;
     (async () => {
-      for (let attempt = 0;attempt < 20 && attached?.loop.plan && modes.getState().plan.status === "inactive"; attempt++) {
+      for (let attempt = 0;attempt < 20 && attached && attached.loop.plan !== "none" && modes.getState().plan.status === "inactive"; attempt++) {
         const r = await modes.set({ mode: "plan", action: "enter" }).catch(() => null);
         if (!r || r.ok || r.code !== "busy")
           return;
@@ -2507,7 +2513,7 @@ ${findingQuestion(f)}`;
     send(CHECK_REQUEST);
   };
   const startIfChanged = async () => {
-    if (!attached || controller.paused || attached.loop.plan)
+    if (!attached || controller.paused || attached.loop.plan !== "none")
       return;
     if (await deps.fingerprint().catch(() => "clean") !== "clean")
       checkNow();
@@ -2553,6 +2559,20 @@ ${findingQuestion(f)}`;
     if (themeEpoch === epoch)
       server?.setAppearance(toAppearance(theme, terminal));
   };
+  const askReview = (request) => {
+    const { promise, resolve: resolve3 } = Promise.withResolvers();
+    const timer = setTimeout(() => resolve3({ ok: false, message: "git-diff-review isn't loaded in this omp" }), request.type === "probe" ? REVIEW_PROBE_MS : REVIEW_OPEN_MS);
+    pi.events.emit(REVIEW_EVENT, {
+      ...request,
+      reply: (r) => {
+        clearTimeout(timer);
+        resolve3(r);
+      }
+    });
+    return promise;
+  };
+  let reviewProbe = null;
+  const reviewLoaded = () => reviewProbe ??= askReview({ type: "probe" }).then((r) => r.ok);
   const state = async () => {
     const lib = library ?? await refreshLibrary();
     return {
@@ -2562,6 +2582,7 @@ ${findingQuestion(f)}`;
         return snap ? { ...snap, since: await sinceLabel().catch(() => "") } : null;
       })(),
       run: controller.view(),
+      review: await reviewLoaded(),
       library: {
         loops: [...lib.loops.values()].map((e) => ({ ...e.loop, source: e.source, path: e.path, overrides: e.overrides })),
         nodes: [...lib.nodes.values()].map((e) => ({ ...e.node, source: e.source, path: e.path, overrides: e.overrides })),
@@ -2609,9 +2630,10 @@ ${findingQuestion(f)}`;
           return path;
         },
         changes: () => deps.changes(),
-        diff: async (path) => {
-          const at = await currentSha();
-          return fileDiff(at.root, at.sha, path);
+        review: async () => {
+          const r = await askReview({ type: "open", base: (await currentSha()).sha });
+          if (!r.ok)
+            throw new Error(r.message);
         },
         decide: (decisions, pause) => controller.decide(decisions, pause),
         send,
@@ -2663,7 +2685,7 @@ ${findingQuestion(f)}`;
         deps.emit(failedView(envLoop, errorText(e)));
       });
     } else {
-      attached = entry?.loop && entry.source && entry.baseline ? { loop: entry.loop, source: entry.source, baseline: entry.baseline } : null;
+      attached = entry?.loop && entry.source && entry.baseline ? { loop: savedSnapshot(entry.loop), source: entry.source, baseline: entry.baseline } : null;
       controller.restore(attached, attached ? checkpoint : null);
       await activate(attached !== null);
       armPlan(ctx);
@@ -2725,22 +2747,29 @@ ${findingQuestion(f)}`;
     if (ctx.agent?.kind === "sub")
       return;
     controller.onPlan("review", event.planContent);
-    if (!attached?.loop.planStages.length)
+    if (attached?.loop.plan !== "ai")
       return;
     planChecks?.abort();
     const ctl = new AbortController;
     planChecks = ctl;
     controller.checkPlan(event.planContent, ctl.signal).then((r) => {
-      if (ctl.signal.aborted || ctx.getPendingPlanReview()?.reviewId !== event.reviewId)
+      const review = ctx.getPendingPlanReview();
+      if (ctl.signal.aborted || !review || review.reviewId !== event.reviewId)
         return;
       if (r.action === "refine")
         ctx.resolvePlanReview(event.reviewId, "refine", { feedback: r.feedback });
-    }, (e) => ctx.ui.notify(`Control: plan checks failed: ${errorText(e)}`, "warning"));
+      else if (r.action === "approve") {
+        const choice = review.options.find((o) => !o.disabled && PLAN_APPROVALS[o.id]);
+        if (!choice || !ctx.resolvePlanReview(event.reviewId, choice.id))
+          ctx.ui.notify("Control: the plan reviewer passed the plan, but omp took no approval; approve it yourself", "warning");
+      } else if (r.reason)
+        ctx.ui.notify(`Control: ${r.reason}; approve the plan or send it back`, "warning");
+    }, (e) => ctx.ui.notify(`Control: the plan review failed: ${errorText(e)}`, "warning"));
   });
   pi.on("plan_review_resolved", (event, ctx) => {
     if (ctx.agent?.kind === "sub")
       return;
-    if (event.choice === "execute" || event.choice === "compact" || event.choice === "keep")
+    if (PLAN_APPROVALS[event.choice])
       controller.onPlan("approved");
     else if (event.choice === "refine")
       controller.onPlan("planning");
@@ -2842,8 +2871,8 @@ ${findingQuestion(f)}`;
     name: z.string(),
     description: z.string().optional(),
     maxPasses: z.number().int().optional(),
-    plan: z.boolean().optional().describe("Each request starts in omp plan mode; you approve the plan before it implements"),
-    planStages: z.array(z.object({ nodes: z.array(z.string()) })).optional().describe("Checks that read the plan before you approve it (implies plan)"),
+    plan: z.enum(["none", "you", "ai"]).optional().describe('"none" (default): the agent implements right away; "you": it plans in omp plan mode and you approve the plan; "ai": planReviewer approves the plan'),
+    planReviewer: z.string().optional().describe('The reviewer node that approves the plan; only with plan "ai"'),
     stages: z.array(z.object({ nodes: z.array(z.string()) })),
     finish: z.enum(["review", "auto"]).optional().describe('"review" (default): you review the final change; "auto": done once the checks pass, and a local Orchestrator task merges')
   });

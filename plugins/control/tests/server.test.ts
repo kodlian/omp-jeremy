@@ -14,6 +14,7 @@ let payload: StatePayload = {
 	session: { name: "omp", cwd: "/repo", repo: "/repo", idle: true },
 	attached: null,
 	run: null,
+	review: false,
 	library: { loops: [], nodes: [], errors: [] },
 };
 
@@ -26,7 +27,7 @@ const hooks: ControlHooks = {
 	deleteItem: async () => {},
 	copyItem: async () => "",
 	changes: async () => [],
-	diff: async () => "",
+	review: async () => {},
 	decide: (decisions, pause) => {
 		decided.push([decisions, pause]);
 		return { ok: true, message: "Recorded" };

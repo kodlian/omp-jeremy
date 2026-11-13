@@ -1,0 +1,16 @@
+{
+  "name": "Auto plan, review, sign off",
+  "description": "An AI reviewer approves the plan; after implementing, quality, conventions and project-rules reviewers, then your review",
+  "maxPasses": 4,
+  "plan": "ai",
+  "planReviewer": "plan-reviewer",
+  "stages": [
+    {
+      "nodes": [
+        "quality-reviewer",
+        "conventions-reviewer",
+        "rules-reviewer"
+      ]
+    }
+  ]
+}

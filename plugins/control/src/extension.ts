@@ -8,11 +8,12 @@ import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 import { COMMAND_EVENT, type ControlCommand, type Decision, type FindingView, LIBRARY_EVENT, questionAnswer, RUN_EVENT, type RunView } from "omp-control-view/protocol";
 import { STATUS_LABELS } from "omp-control-view/render";
 import { toAppearance } from "omp-integrations/appearance";
+import { REVIEW_EVENT, type ReviewReply } from "omp-integrations/review";
 import { openBoard } from "omp-integrations/terminal";
 import { currentTheme, hasThemeApi, terminalConfig } from "omp-integrations/theme";
 import { type Checkpoint, Controller, type ControllerDeps } from "./controller";
-import { type Baseline, baselineSha, changedFiles, commitsSince, defaultBranch, fileDiff, fingerprint, git, isCommit, repoRoot, reviewPacket } from "./git";
-import { copyItem, deleteItem, type Library, type LoopSnapshot, loadLibrary, loopFrom, nodeFrom, resolveLoop, saveLoop, saveNode, summarize } from "./library";
+import { type Baseline, baselineSha, changedFiles, commitsSince, defaultBranch, fingerprint, git, isCommit, repoRoot, reviewPacket } from "./git";
+import { copyItem, deleteItem, type Library, type LoopSnapshot, loadLibrary, loopFrom, nodeFrom, resolveLoop, saveLoop, saveNode, savedSnapshot, summarize } from "./library";
 import { CHECK_REQUEST, contextMessage, draftPrompt, reviewerSystemPrompt, stagesText } from "./prompts";
 import { runCheck, runReviewer } from "./sensors";
 import { type ControlServer, DEFAULT_PORTS, startControlServer, type StatePayload } from "./server";
@@ -43,6 +44,11 @@ const SEND_BACK = "Send back";
 const DISMISS_ALL = "Dismiss all remaining";
 const PAUSE = "Pause the loop";
 const GATE_HELP = "Esc pauses the loop";
+/** omp's plan review choices that approve the plan. */
+const PLAN_APPROVALS: Record<string, true> = { execute: true, compact: true, keep: true };
+/** How long git-diff-review gets to answer: a probe at once when it's loaded; opening its page takes longer. */
+const REVIEW_PROBE_MS = 500;
+const REVIEW_OPEN_MS = 15_000;
 
 interface LoopEntry {
 	loop: LoopSnapshot | null;
@@ -87,7 +93,7 @@ function statusText(view: RunView | null): string {
 function failedView(id: string, message: string): RunView {
 	return {
 		version: 1,
-		loop: { id, name: id, description: "", maxPasses: 0, plan: false, finish: "review", planStages: [], stages: [] },
+		loop: { id, name: id, description: "", maxPasses: 0, plan: "none", planReviewer: null, finish: "review", stages: [] },
 		plan: "unused",
 		status: "idle",
 		pass: 0,
@@ -281,13 +287,13 @@ export default function control(pi: ExtensionAPI) {
 		await pi.setActiveTools(on ? [...tools, TOOL] : tools.filter((t) => t !== TOOL));
 	};
 
-	/** A flow with a Plan node starts each request in plan mode: enter it whenever the session is idle outside it. */
+	/** A flow that plans starts each request in plan mode: enter it whenever the session is idle outside it. */
 	const armPlan = (ctx: ExtensionContext | null) => {
 		const modes = ctx?.sessionModes;
-		if (!attached?.loop.plan || !modes || controller.paused) return;
+		if (!attached || attached.loop.plan === "none" || !modes || controller.paused) return;
 		void (async () => {
 			// omp refuses mode changes while a turn is settling ("busy"); the session is idle a moment later.
-			for (let attempt = 0; attempt < 20 && attached?.loop.plan && modes.getState().plan.status === "inactive"; attempt++) {
+			for (let attempt = 0; attempt < 20 && attached && attached.loop.plan !== "none" && modes.getState().plan.status === "inactive"; attempt++) {
 				const r = await modes.set({ mode: "plan", action: "enter" }).catch(() => null);
 				if (!r || r.ok || r.code !== "busy") return;
 				await Bun.sleep(250);
@@ -329,7 +335,7 @@ export default function control(pi: ExtensionAPI) {
 
 	/** Starts the loop right away when there is already code to check, so attaching to finished work reviews it. */
 	const startIfChanged = async () => {
-		if (!attached || controller.paused || attached.loop.plan) return;
+		if (!attached || controller.paused || attached.loop.plan !== "none") return;
 		if ((await deps.fingerprint().catch(() => "clean")) !== "clean") checkNow();
 	};
 
@@ -375,6 +381,22 @@ export default function control(pi: ExtensionAPI) {
 		if (themeEpoch === epoch) server?.setAppearance(toAppearance(theme, terminal));
 	};
 
+	/** Asks git-diff-review in this omp over the shared bus; without an answer in time it isn't loaded. */
+	const askReview = (request: { type: "probe" } | { type: "open"; base: string }): Promise<ReviewReply> => {
+		const { promise, resolve } = Promise.withResolvers<ReviewReply>();
+		const timer = setTimeout(() => resolve({ ok: false, message: "git-diff-review isn't loaded in this omp" }), request.type === "probe" ? REVIEW_PROBE_MS : REVIEW_OPEN_MS);
+		pi.events.emit(REVIEW_EVENT, {
+			...request,
+			reply: (r: ReviewReply) => {
+				clearTimeout(timer);
+				resolve(r);
+			},
+		});
+		return promise;
+	};
+	let reviewProbe: Promise<boolean> | null = null;
+	const reviewLoaded = () => (reviewProbe ??= askReview({ type: "probe" }).then((r) => r.ok));
+
 	const state = async (): Promise<StatePayload> => {
 		const lib = library ?? (await refreshLibrary());
 		return {
@@ -384,6 +406,7 @@ export default function control(pi: ExtensionAPI) {
 				return snap ? { ...snap, since: await sinceLabel().catch(() => "") } : null;
 			})(),
 			run: controller.view(),
+			review: await reviewLoaded(),
 			library: {
 				loops: [...lib.loops.values()].map((e) => ({ ...e.loop, source: e.source, path: e.path, overrides: e.overrides })),
 				nodes: [...lib.nodes.values()].map((e) => ({ ...e.node, source: e.source, path: e.path, overrides: e.overrides })),
@@ -429,9 +452,9 @@ export default function control(pi: ExtensionAPI) {
 						return path;
 					},
 					changes: () => deps.changes(),
-					diff: async (path) => {
-						const at = await currentSha();
-						return fileDiff(at.root, at.sha, path);
+					review: async () => {
+						const r = await askReview({ type: "open", base: (await currentSha()).sha });
+						if (!r.ok) throw new Error(r.message);
 					},
 					decide: (decisions, pause) => controller.decide(decisions, pause),
 					send,
@@ -487,7 +510,7 @@ export default function control(pi: ExtensionAPI) {
 				},
 			);
 		} else {
-			attached = entry?.loop && entry.source && entry.baseline ? { loop: entry.loop, source: entry.source, baseline: entry.baseline } : null;
+			attached = entry?.loop && entry.source && entry.baseline ? { loop: savedSnapshot(entry.loop), source: entry.source, baseline: entry.baseline } : null;
 			controller.restore(attached, attached ? checkpoint : null);
 			await activate(attached !== null);
 			armPlan(ctx);
@@ -542,23 +565,29 @@ export default function control(pi: ExtensionAPI) {
 	pi.on("plan_review_requested", (event, ctx) => {
 		if (ctx.agent?.kind === "sub") return;
 		controller.onPlan("review", event.planContent);
-		if (!attached?.loop.planStages.length) return;
-		// The review's handlers must return quickly; the checks run after, and answer the review when they're done.
+		if (attached?.loop.plan !== "ai") return;
+		// The review's handlers must return quickly; the reviewer runs after, and answers the review when it's done.
 		planChecks?.abort();
 		const ctl = new AbortController();
 		planChecks = ctl;
 		void controller.checkPlan(event.planContent, ctl.signal).then(
 			(r) => {
-				if (ctl.signal.aborted || ctx.getPendingPlanReview()?.reviewId !== event.reviewId) return;
+				const review = ctx.getPendingPlanReview();
+				if (ctl.signal.aborted || !review || review.reviewId !== event.reviewId) return;
 				if (r.action === "refine") ctx.resolvePlanReview(event.reviewId, "refine", { feedback: r.feedback });
+				else if (r.action === "approve") {
+					// The first approving choice, as Enter would pick.
+					const choice = review.options.find((o) => !o.disabled && PLAN_APPROVALS[o.id]);
+					if (!choice || !ctx.resolvePlanReview(event.reviewId, choice.id)) ctx.ui.notify("Control: the plan reviewer passed the plan, but omp took no approval; approve it yourself", "warning");
+				} else if (r.reason) ctx.ui.notify(`Control: ${r.reason}; approve the plan or send it back`, "warning");
 			},
-			(e) => ctx.ui.notify(`Control: plan checks failed: ${errorText(e)}`, "warning"),
+			(e) => ctx.ui.notify(`Control: the plan review failed: ${errorText(e)}`, "warning"),
 		);
 	});
 
 	pi.on("plan_review_resolved", (event, ctx) => {
 		if (ctx.agent?.kind === "sub") return;
-		if (event.choice === "execute" || event.choice === "compact" || event.choice === "keep") controller.onPlan("approved");
+		if (PLAN_APPROVALS[event.choice]) controller.onPlan("approved");
 		else if (event.choice === "refine") controller.onPlan("planning");
 		else controller.onPlan(ctx.sessionModes?.getState().plan.status === "active" ? "planning" : "unused");
 	});
@@ -661,8 +690,8 @@ export default function control(pi: ExtensionAPI) {
 		name: z.string(),
 		description: z.string().optional(),
 		maxPasses: z.number().int().optional(),
-		plan: z.boolean().optional().describe("Each request starts in omp plan mode; you approve the plan before it implements"),
-		planStages: z.array(z.object({ nodes: z.array(z.string()) })).optional().describe("Checks that read the plan before you approve it (implies plan)"),
+		plan: z.enum(["none", "you", "ai"]).optional().describe('"none" (default): the agent implements right away; "you": it plans in omp plan mode and you approve the plan; "ai": planReviewer approves the plan'),
+		planReviewer: z.string().optional().describe('The reviewer node that approves the plan; only with plan "ai"'),
 		stages: z.array(z.object({ nodes: z.array(z.string()) })),
 		finish: z.enum(["review", "auto"]).optional().describe('"review" (default): you review the final change; "auto": done once the checks pass, and a local Orchestrator task merges'),
 	});

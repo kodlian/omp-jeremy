@@ -56,6 +56,15 @@ async function openBoard(url, options = {}) {
   await helper(args, options);
 }
 
+// packages/integrations/src/review.ts
+var REVIEW_EVENT = "git-diff-review:open";
+function isReviewRequest(data) {
+  if (!data || typeof data !== "object")
+    return false;
+  const r = data;
+  return typeof r.reply === "function" && (r.type === "probe" || r.type === "open" && typeof r.base === "string");
+}
+
 // packages/integrations/src/theme.ts
 import { existsSync } from "fs";
 import { homedir } from "os";
@@ -925,22 +934,34 @@ function gitDiffReview(pi) {
     server.setRoot(await reviewRoot(sessionCtx.cwd));
     server.notifyChanged();
   }
+  async function open(sessionCtx, compare) {
+    ctx = sessionCtx;
+    const reviewServer = await ensureServer(sessionCtx.cwd, null);
+    if (recordedPort(sessionCtx) !== reviewServer.port)
+      pi.appendEntry(SERVER_ENTRY, { port: reviewServer.port });
+    const url = reviewServer.url(compare);
+    await openBoard(url, { focus: true });
+    return url;
+  }
   pi.registerCommand("review", {
     description: `Review changes in the browser with a file tree and line comments for the agent. ${USAGE}`,
     handler: async (args, commandCtx) => {
-      ctx = commandCtx;
       const compare = parseArgs(args);
       if (!compare) {
         commandCtx.ui.notify(USAGE, "error");
         return;
       }
-      const reviewServer = await ensureServer(commandCtx.cwd, null);
-      if (recordedPort(commandCtx) !== reviewServer.port)
-        pi.appendEntry(SERVER_ENTRY, { port: reviewServer.port });
-      const url = reviewServer.url(compare);
-      await openBoard(url, { focus: true });
-      commandCtx.ui.notify(`review open at ${url}`, "info");
+      commandCtx.ui.notify(`review open at ${await open(commandCtx, compare)}`, "info");
     }
+  });
+  pi.events.on(REVIEW_EVENT, (data) => {
+    if (!isReviewRequest(data))
+      return;
+    if (data.type === "probe")
+      return data.reply({ ok: true, message: "" });
+    if (!ctx)
+      return data.reply({ ok: false, message: "git-diff-review has no omp session yet" });
+    open(ctx, { kind: "branch", base: data.base }).then((url) => data.reply({ ok: true, message: url }), (e) => data.reply({ ok: false, message: e instanceof Error ? e.message : String(e) }));
   });
   pi.on("session_start", async (_event, sessionCtx) => {
     ctx = sessionCtx;

@@ -59,7 +59,7 @@ export function renderLibrary(page) {
     { class: "screen" },
     h("header", { class: "bar" }, h("button", { class: "btn ghost sm", type: "button", onclick: () => page.go("#/") }, "‹ Back"), h("h1", {}, "Library"), h("span", { class: "spacer" }), h("button", { class: "btn sm", type: "button", onclick: () => page.go("#/edit/new") }, "New flow")),
     h("p", { class: "hint" }, "Presets come with the extension. Global items are yours, in every project (~/.omp/control). Project items are committed in .omp/control and shared with everyone on it. Project overrides Global, which overrides a Preset with the same id."),
-    h("section", {}, h("h2", {}, "Flows"), library.loops.length ? library.loops.map((l) => row(page, "loop", l, [l.plan ? "Plan → " : "", summary(l)].join(""))) : h("p", { class: "muted" }, "No flows yet.")),
+    h("section", {}, h("h2", {}, "Flows"), library.loops.length ? library.loops.map((l) => row(page, "loop", l, [{ none: "", you: "Plan, you approve → ", ai: "Plan, AI approves → " }[l.plan], summary(l)].join(""))) : h("p", { class: "muted" }, "No flows yet.")),
     h(
       "section",
       {},

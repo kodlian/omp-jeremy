@@ -24,6 +24,8 @@ export interface StatePayload {
 	/** since: what the loop checks, in words ("since main · 3 commits and uncommitted changes"). */
 	attached: { loop: LoopSnapshot; source: string; since: string } | null;
 	run: RunView | null;
+	/** git-diff-review is loaded in this omp, so the page can open the change there. */
+	review: boolean;
 	library: {
 		loops: (LoopDefinition & { source: Source; path: string; overrides: Source[] })[];
 		nodes: (NodeDefinition & { source: Source; path: string; overrides: Source[] })[];
@@ -39,9 +41,10 @@ export interface ControlHooks {
 	saveNode(scope: Scope, node: NodeDefinition): Promise<string>;
 	deleteItem(kind: "node" | "loop", scope: Scope, id: string): Promise<void>;
 	copyItem(kind: "node" | "loop", id: string, to: Scope, move: boolean): Promise<string>;
-	/** The files the attached loop's change touches, and one file's diff, for the review page. */
+	/** The files the attached loop's change touches, for the page's summary of it. */
 	changes(): Promise<ChangedFile[]>;
-	diff(path: string): Promise<string>;
+	/** Opens the attached loop's change in git-diff-review. */
+	review(): Promise<void>;
 	decide(decisions: Record<string, Decision>, pause: boolean): ControlReply;
 	send(text: string): void;
 	/** Runs the loop on the current code now, even when it already passed. */
@@ -171,7 +174,6 @@ export function startControlServer(hooks: ControlHooks, { ports = DEFAULT_PORTS,
 		if (method === "GET" && pathname === "/api/state") return json(await hooks.state());
 		if (method === "GET" && pathname === "/api/events") return events();
 		if (method === "GET" && pathname === "/api/changes") return json(await hooks.changes());
-		if (method === "GET" && pathname === "/api/diff") return json({ diff: await hooks.diff(new URL(req.url).searchParams.get("path") ?? "") });
 		if (method === "GET" && pathname === "/api/artifact") {
 			// Only images the current run lists: the page can't read arbitrary files through this route.
 			const path = new URL(req.url).searchParams.get("path") ?? "";
@@ -231,6 +233,9 @@ export function startControlServer(hooks: ControlHooks, { ports = DEFAULT_PORTS,
 			}
 			case "POST /api/check":
 				hooks.check();
+				return json({ ok: true });
+			case "POST /api/review":
+				await hooks.review();
 				return json({ ok: true });
 			case "POST /api/since": {
 				if (typeof body.ref !== "string" || !body.ref.trim()) throw new HttpError(400, "ref is required");
