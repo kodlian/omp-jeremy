@@ -1,40 +1,26 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import * as omp from "@oh-my-pi/pi-coding-agent";
-import { toAppearance } from "omp-integrations/appearance";
+import { COMMAND_EVENT, type ControlReply, RUN_EVENT, type RunView } from "omp-control-view/protocol";
+import { busAsk } from "omp-integrations/bus";
+import { appearanceSync, recordedPort } from "omp-integrations/page";
 import { openBoard } from "omp-integrations/terminal";
-import { currentTheme, hasThemeApi, terminalConfig } from "omp-integrations/theme";
+import { errorText } from "omp-integrations/text";
 import { DEFAULT_PORTS, type PlanReviewServer, startPlanReviewServer } from "./server";
 
-// Undocumented omp exports; without them the page keeps its built-in palette and font size.
-const themeApi = hasThemeApi(omp);
 // Session entry recording the port a session's page uses, so a restored session brings it back and an open tab reconnects.
 const SERVER_ENTRY = "plan-review.server";
-
-function recordedPort(sessionCtx: ExtensionContext): number | null {
-	let port: number | null = null;
-	for (const entry of sessionCtx.sessionManager.getBranch()) {
-		if (entry.type === "custom" && entry.customType === SERVER_ENTRY && typeof entry.data?.port === "number") port = entry.data.port;
-	}
-	return port;
-}
+/** How long Control gets to say whether its AI reviewer answers the plan; it answers at once when loaded. */
+const CONTROL_ASK_MS = 150;
 
 export default function planReview(pi: ExtensionAPI) {
 	let server: PlanReviewServer | null = null;
 	let ctx: ExtensionContext | null = null;
-	let themeEpoch: number | null = null;
-	let themeTimer: Timer | undefined;
 	let resumePort: number | null = null;
+	let pending: string | null = null; // the review omp waits on
+	let opened: string | null = null; // the review the page was opened for
+	const appearance = appearanceSync(omp, () => server);
 
-	async function syncAppearance(force = false) {
-		if (!themeApi) return;
-		const epoch = omp.getThemeEpoch();
-		if (!server || (epoch === themeEpoch && !force)) return;
-		themeEpoch = epoch;
-		const [theme, terminal] = await Promise.all([currentTheme(omp), terminalConfig()]);
-		if (themeEpoch === epoch) server?.setAppearance(toAppearance(theme, terminal));
-	}
-
-	async function ensureServer(sessionCtx: ExtensionContext, port: number | null = recordedPort(sessionCtx)): Promise<PlanReviewServer> {
+	async function ensureServer(sessionCtx: ExtensionContext, port: number | null = recordedPort(sessionCtx, SERVER_ENTRY)): Promise<PlanReviewServer> {
 		if (!server) {
 			server = startPlanReviewServer(
 				{
@@ -43,13 +29,22 @@ export default function planReview(pi: ExtensionAPI) {
 				},
 				{ ports: port ? [port, ...DEFAULT_PORTS] : DEFAULT_PORTS },
 			);
-			if (themeApi) themeTimer = setInterval(() => syncAppearance(), 1000);
+			appearance.start();
 		}
-		if (recordedPort(sessionCtx) !== server.port) pi.appendEntry(SERVER_ENTRY, { port: server.port });
+		if (recordedPort(sessionCtx, SERVER_ENTRY) !== server.port) pi.appendEntry(SERVER_ENTRY, { port: server.port });
 		// The terminal config has no change signal, so each open re-reads it.
-		if (themeApi) await syncAppearance(true);
+		await appearance.sync(true);
 		return server;
 	}
+
+	/** Brings the page forward for a review, once. */
+	const show = async (reviewId: string) => {
+		// Orchestrator task sessions already show their plan on the board.
+		if (opened === reviewId || pending !== reviewId || !ctx || process.env.ORCHESTRATOR_TASK) return;
+		opened = reviewId;
+		await openBoard((await ensureServer(ctx)).url(), { focus: true });
+	};
+	const showFailed = (error: unknown) => ctx?.ui.notify(`Plan review: the page didn't open: ${errorText(error)}`, "warning");
 
 	pi.registerCommand("plan-review", {
 		description: "Open the plan review page: comment on the plan's lines, then refine or approve it",
@@ -64,17 +59,25 @@ export default function planReview(pi: ExtensionAPI) {
 	pi.on("plan_review_requested", (event, eventCtx) => {
 		if (eventCtx.agent?.kind === "sub") return;
 		ctx = eventCtx;
+		pending = event.reviewId;
 		// The review's handlers must return quickly; the page opens after.
 		void (async () => {
-			const reviewServer = await ensureServer(eventCtx);
-			reviewServer.present(event);
-			// Orchestrator task sessions already show their plan on the board.
-			if (!process.env.ORCHESTRATOR_TASK) await openBoard(reviewServer.url(), { focus: true });
-		})().catch((error) => eventCtx.ui.notify(`Plan review: the page didn't open: ${error instanceof Error ? error.message : String(error)}`, "warning"));
+			(await ensureServer(eventCtx)).present(event);
+			// Control's AI reviewer answers first; the page comes forward if it leaves the plan to you.
+			const run = (await busAsk<ControlReply>(pi.events, COMMAND_EVENT, { type: "run" }, CONTROL_ASK_MS, "")).run;
+			if (run?.loop.plan === "ai" && run.status !== "paused" && run.plan !== "review") return;
+			await show(event.reviewId);
+		})().catch(showFailed);
+	});
+
+	pi.events.on(RUN_EVENT, (data) => {
+		const view = (data ?? null) as RunView | null; // Control's RUN_EVENT payload
+		if (view?.plan === "review" && pending) void show(pending).catch(showFailed);
 	});
 
 	pi.on("plan_review_resolved", (event, eventCtx) => {
 		if (eventCtx.agent?.kind === "sub") return;
+		if (event.reviewId === pending) pending = null;
 		server?.resolved(event.reviewId, event.choice ?? null, event.by);
 	});
 
@@ -86,25 +89,29 @@ export default function planReview(pi: ExtensionAPI) {
 		if (eventCtx.agent?.kind !== "sub") server?.setWorking(false);
 	});
 
-	// The page is served for the whole session, so an open tab shows what omp is doing even before its first plan.
 	pi.on("session_start", async (_event, sessionCtx) => {
+		if (sessionCtx.agent?.kind === "sub") return;
 		ctx = sessionCtx;
-		const port = resumePort ?? recordedPort(sessionCtx);
+		const port = resumePort ?? recordedPort(sessionCtx, SERVER_ENTRY);
 		resumePort = null;
 		// Control's reviewer sessions never plan.
-		if (sessionCtx.agent?.kind !== "sub" && process.env.OMP_CONTROL_REVIEWER !== "1") await ensureServer(sessionCtx, port);
+		if (process.env.OMP_CONTROL_REVIEWER === "1") return;
+		await ensureServer(sessionCtx, port).catch((e) => sessionCtx.ui.notify(`Plan review: the page didn't start: ${errorText(e)}`, "warning"));
 	});
 
 	pi.on("session_switch", async (_event, sessionCtx) => {
+		if (sessionCtx.agent?.kind === "sub") return;
 		ctx = sessionCtx;
 		if (server) server.clear();
-		else await ensureServer(sessionCtx);
+		else await ensureServer(sessionCtx).catch((e) => sessionCtx.ui.notify(`Plan review: the page didn't start: ${errorText(e)}`, "warning"));
 	});
 
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", (_event, sessionCtx) => {
+		if (sessionCtx.agent?.kind === "sub") return;
+		ctx = null;
+		pending = null;
 		resumePort = server?.port ?? null;
-		clearInterval(themeTimer);
-		themeEpoch = null;
+		appearance.stop();
 		server?.stop();
 		server = null;
 	});

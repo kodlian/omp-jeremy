@@ -16,20 +16,6 @@ export function h(tag, attrs = {}, ...children) {
   return el;
 }
 
-let toastTimer = null;
-export function toast(text, error = false) {
-  let el = document.getElementById("toast");
-  if (!el) {
-    el = h("div", { id: "toast", role: "status" });
-    document.body.append(el);
-  }
-  el.textContent = text;
-  el.classList.toggle("error", error);
-  el.classList.add("visible");
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove("visible"), error ? 6000 : 3000);
-}
-
 // A modal confirm; resolves true on OK.
 export function confirmBox(text, { ok = "OK", danger = false } = {}) {
   return new Promise((resolve) => {

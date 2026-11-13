@@ -1,23 +1,18 @@
-import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, extname, join, resolve, sep } from "node:path";
-import type { Server } from "bun";
-import { type Appearance, appearanceCss } from "omp-integrations/appearance";
+import { dirname, join, resolve } from "node:path";
+import type { Appearance } from "omp-integrations/appearance";
+import { HttpError, json, portRange, startPageServer } from "omp-integrations/server";
+import { errorText } from "omp-integrations/text";
 import type { ControlReply, Decision, RunView, Scope, Source } from "omp-control-view/protocol";
 import type { ChangedFile } from "./git";
 import { type LoopDefinition, type LoopSnapshot, loopFrom, type NodeDefinition, nodeFrom, validateSnapshot } from "./library";
 import { draftPrompt } from "./prompts";
 
 const WEB_DIR = resolve(dirname(realpathSync(import.meta.path)), "..", "web");
-export const DEFAULT_PORTS = Array.from({ length: 10 }, (_, i) => 9880 + i);
+export const DEFAULT_PORTS = portRange(9880);
 const STATE_DIR = join(homedir(), ".omp", "cache", "control");
 const PING_MS = 15_000;
-const CONTENT_TYPES: Record<string, string> = {
-	".html": "text/html; charset=utf-8",
-	".css": "text/css; charset=utf-8",
-	".js": "text/javascript; charset=utf-8",
-};
 
 export interface StatePayload {
 	session: { name: string; cwd: string; repo: string | null; idle: boolean };
@@ -65,44 +60,6 @@ export interface ControlServer {
 	stop(): void;
 }
 
-class HttpError extends Error {
-	constructor(
-		readonly status: number,
-		message: string,
-	) {
-		super(message);
-	}
-}
-
-function json(body: unknown, status = 200): Response {
-	return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
-}
-
-function token(dir: string): string {
-	const file = join(dir, "token");
-	try {
-		const existing = readFileSync(file, "utf8").trim();
-		if (existing) return existing;
-	} catch {}
-	const fresh = randomBytes(16).toString("hex");
-	mkdirSync(dir, { recursive: true });
-	writeFileSync(file, fresh, { mode: 0o600 });
-	return fresh;
-}
-
-async function serveStatic(pathname: string, token: string): Promise<Response> {
-	const file = resolve(WEB_DIR, `.${pathname === "/" ? "/index.html" : pathname}`);
-	const type = CONTENT_TYPES[extname(file)];
-	if (!type || !file.startsWith(WEB_DIR + sep)) return new Response("Not found", { status: 404 });
-	if (!(await Bun.file(file).exists())) return new Response("Not found", { status: 404 });
-	const headers = { "Content-Type": type, "Cache-Control": "no-store" };
-	if (type.startsWith("text/html")) {
-		const html = await Bun.file(file).text();
-		return new Response(html.replace('href="/appearance.css"', `href="/appearance.css?token=${token}"`), { headers });
-	}
-	return new Response(Bun.file(file), { headers });
-}
-
 function scopeOf(value: unknown): Scope {
 	if (value !== "repo" && value !== "global") throw new HttpError(400, "scope must be repo or global");
 	return value;
@@ -132,8 +89,6 @@ function decisionsOf(value: unknown): Record<string, Decision> {
 }
 
 export function startControlServer(hooks: ControlHooks, { ports = DEFAULT_PORTS, stateDir = STATE_DIR } = {}): ControlServer {
-	const secret = token(stateDir);
-	let themeCss = "";
 	const clients = new Set<ReadableStreamDefaultController<Uint8Array>>();
 	const encoder = new TextEncoder();
 
@@ -250,50 +205,29 @@ export function startControlServer(hooks: ControlHooks, { ports = DEFAULT_PORTS,
 		}
 	}
 
-	let server: Server<undefined> | null = null;
-	for (const port of [...ports, 0]) {
-		try {
-			server = Bun.serve({
-				hostname: "127.0.0.1",
-				port,
-				idleTimeout: 0,
-				async fetch(req) {
-					const url = new URL(req.url);
-					const authorized = url.searchParams.get("token") === secret;
-					if (url.pathname.startsWith("/api/")) {
-						if (!authorized) return json({ error: "forbidden" }, 403);
-						try {
-							return await api(req, url.pathname);
-						} catch (e) {
-							const status = e instanceof HttpError ? e.status : 400;
-							return json({ error: e instanceof Error ? e.message : String(e) }, status);
-						}
-					}
-					if (url.pathname === "/appearance.css") {
-						if (!authorized) return new Response("Forbidden", { status: 403 });
-						return new Response(themeCss, { headers: { "Content-Type": CONTENT_TYPES[".css"], "Cache-Control": "no-store" } });
-					}
-					return serveStatic(url.pathname, authorized ? secret : "");
-				},
-			});
-			break;
-		} catch {}
-	}
-	if (!server) throw new Error("control: could not bind a local port");
-	const srv = server;
+	const page = startPageServer({
+		name: "control",
+		webDir: WEB_DIR,
+		stateDir,
+		ports,
+		idleTimeout: 0,
+		api: async (req, url) => {
+			try {
+				return await api(req, url.pathname);
+			} catch (e) {
+				return json({ error: errorText(e) }, e instanceof HttpError ? e.status : 400);
+			}
+		},
+		onAppearance: () => broadcast("event: appearance\ndata: {}\n\n"),
+	});
 
 	return {
-		port: srv.port as number,
-		token: secret,
-		url: () => `http://127.0.0.1:${srv.port}/?token=${secret}`,
+		port: page.port,
+		token: page.token,
+		url: page.url,
 		notify: () => void sendState().catch(() => {}),
 		clients: () => clients.size,
-		setAppearance(appearance) {
-			const next = appearance ? appearanceCss({ ...appearance, font: undefined }) : "";
-			if (next === themeCss) return;
-			themeCss = next;
-			broadcast("event: appearance\ndata: {}\n\n");
-		},
+		setAppearance: page.setAppearance,
 		stop() {
 			clearInterval(ping);
 			for (const client of clients) {
@@ -302,7 +236,7 @@ export function startControlServer(hooks: ControlHooks, { ports = DEFAULT_PORTS,
 				} catch {}
 			}
 			clients.clear();
-			srv.stop(true);
+			page.stop();
 		},
 	};
 }

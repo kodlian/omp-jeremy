@@ -48,7 +48,16 @@ export interface LibrarySummary {
 
 export type NodeState = "waiting" | "running" | "passed" | "findings" | "failed" | "error" | "skipped";
 export type RunStatus = "idle" | "planning" | "implementing" | "checking" | "deciding" | "fixing" | "passed" | "deferred" | "paused" | "stalled";
-export type PlanState = "unused" | "planning" | "review" | "approved";
+/** checking: the AI plan reviewer reads the plan; review: the plan waits for you in omp's plan review. */
+export type PlanState = "unused" | "planning" | "checking" | "review" | "approved";
+
+/** A loop stored before plan modes (plan on or off, plan checks) reads as you approving the plan. */
+export function withPlanMode<T extends { plan: PlanMode }>(loop: T): T {
+	const stored = loop as T & { plan: PlanMode | boolean; planStages?: unknown; planReviewer?: unknown };
+	if (typeof stored.plan !== "boolean") return stored.planReviewer === undefined ? { ...loop, planReviewer: null } : loop;
+	const { planStages: _, ...rest } = stored;
+	return { ...rest, plan: stored.plan ? "you" : "none", planReviewer: null } as unknown as T;
+}
 
 export interface Decision {
 	decision: "fix" | "dismiss";

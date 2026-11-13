@@ -89,9 +89,10 @@ body {
 
 /* Fixed rows: the banner is often hidden and must not shift the others. */
 .body {
+  position: relative;
   grid-row: 3;
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: var(--outline-w, 220px) minmax(0, 1fr);
   min-height: 0;
 }
 
@@ -99,8 +100,28 @@ body {
   grid-template-columns: minmax(0, 1fr);
 }
 
-.no-outline .outline {
+.no-outline .outline,
+.no-outline .resizer {
   display: none;
+}
+
+.resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--outline-w, 220px) - 3px);
+  z-index: 6;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  outline: none;
+}
+
+.resizer:hover,
+.resizer:focus-visible,
+.resizer.dragging {
+  background: var(--accent-soft);
 }
 
 .scroller {
@@ -189,6 +210,8 @@ body {
 /* The left padding is the gutter: the + button at 16px, change bars at 44px (BAR_X, GUTTER_X in main.js). */
 .doc {
   position: relative;
+  max-width: 1000px;
+  margin: 0 auto;
   padding: 20px 32px 64px 64px;
   font-size: var(--font-size-lg);
   line-height: 1.55;
@@ -212,6 +235,7 @@ body {
 .doc h2,
 .doc h3,
 .doc h4 {
+  color: var(--md-heading);
   line-height: 1.25;
 }
 
@@ -223,7 +247,7 @@ body {
 .doc h2 {
   margin: 1.6em 0 0.5em;
   padding-bottom: 0.25em;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--md-hr);
   font-size: 1.3em;
 }
 
@@ -266,29 +290,63 @@ body {
 .doc code {
   padding: 0.1em 0.35em;
   border-radius: var(--radius-sm);
-  background: var(--surface-2);
+  background: color-mix(in srgb, var(--md-code) 10%, transparent);
+  color: var(--md-code);
   font-family: var(--mono);
   font-size: 0.88em;
 }
 
+.doc code.path {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.doc a {
+  color: var(--md-link);
+  text-decoration-color: color-mix(in srgb, var(--md-link) 45%, transparent);
+  text-underline-offset: 2px;
+}
+
+.doc li::marker {
+  color: var(--md-bullet);
+}
+
 .doc pre {
+  position: relative;
+  tab-size: 2;
   padding: 10px 12px;
+  border: 1px solid var(--md-code-border);
   border-radius: var(--radius);
   background: var(--surface);
+  color: var(--md-code-block);
   overflow-x: auto;
+}
+
+.doc pre[data-lang]::before {
+  content: attr(data-lang);
+  position: absolute;
+  top: 2px;
+  right: 8px;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: var(--font-size-xs);
+  pointer-events: none;
+  user-select: none;
 }
 
 .doc pre code {
   padding: 0;
   background: none;
+  color: inherit;
   font-size: var(--code-font-size-sm);
   line-height: var(--line-height);
 }
 
 .doc blockquote {
   padding-left: 12px;
-  border-left: 3px solid var(--line-strong);
-  color: var(--muted);
+  border-left: 3px solid var(--md-quote-border);
+  color: var(--md-quote);
+  font-style: italic;
 }
 
 .doc table {
@@ -298,14 +356,19 @@ body {
 .doc th,
 .doc td {
   padding: 4px 10px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--md-code-border);
   text-align: left;
+}
+
+.doc th {
+  background: var(--surface);
+  color: var(--md-heading);
 }
 
 .doc hr {
   margin: 1.4em 0;
   border: 0;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--md-hr);
 }
 
 /* MARK: blocks */
@@ -615,24 +678,6 @@ li > .block {
 
 /* MARK: toast */
 
-#toast {
-  position: fixed;
-  left: 50%;
-  bottom: 60px;
-  z-index: 60;
-  max-width: calc(100vw - 32px);
-  padding: 6px 12px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--surface-solid);
-  box-shadow: 0 6px 20px rgb(0 0 0 / 0.25);
-  opacity: 0;
-  transform: translate(-50%, 6px);
-  transition: opacity 0.15s, transform 0.15s;
-  pointer-events: none;
-}
-
-#toast.visible {
-  opacity: 1;
-  transform: translate(-50%, 0);
+:root {
+  --toast-bottom: 60px;
 }

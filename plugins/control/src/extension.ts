@@ -7,10 +7,12 @@ import * as omp from "@oh-my-pi/pi-coding-agent";
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 import { COMMAND_EVENT, type ControlCommand, type Decision, type FindingView, LIBRARY_EVENT, questionAnswer, RUN_EVENT, type RunView } from "omp-control-view/protocol";
 import { STATUS_LABELS } from "omp-control-view/render";
-import { toAppearance } from "omp-integrations/appearance";
+import { busAsk } from "omp-integrations/bus";
+import { appearanceSync, recordedPort } from "omp-integrations/page";
+import { approvalChoice, PLAN_APPROVALS } from "omp-integrations/plan";
 import { REVIEW_EVENT, type ReviewReply } from "omp-integrations/review";
 import { openBoard } from "omp-integrations/terminal";
-import { currentTheme, hasThemeApi, terminalConfig } from "omp-integrations/theme";
+import { errorText, toolReply } from "omp-integrations/text";
 import { type Checkpoint, Controller, type ControllerDeps } from "./controller";
 import { type Baseline, baselineSha, changedFiles, commitsSince, defaultBranch, fingerprint, git, isCommit, repoRoot, reviewPacket } from "./git";
 import { copyItem, deleteItem, type Library, type LoopSnapshot, loadLibrary, loopFrom, nodeFrom, resolveLoop, saveLoop, saveNode, savedSnapshot, summarize } from "./library";
@@ -44,8 +46,6 @@ const SEND_BACK = "Send back";
 const DISMISS_ALL = "Dismiss all remaining";
 const PAUSE = "Pause the loop";
 const GATE_HELP = "Esc pauses the loop";
-/** omp's plan review choices that approve the plan. */
-const PLAN_APPROVALS: Record<string, true> = { execute: true, compact: true, keep: true };
 /** How long git-diff-review gets to answer: a probe at once when it's loaded; opening its page takes longer. */
 const REVIEW_PROBE_MS = 500;
 const REVIEW_OPEN_MS = 15_000;
@@ -61,11 +61,6 @@ interface Attached {
 	source: string;
 	baseline: Baseline;
 }
-
-// Undocumented omp exports; without them the page keeps its built-in palette.
-const themeApi = hasThemeApi(omp);
-const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
-const reply = (text: string, isError = false) => ({ content: [{ type: "text" as const, text }], isError });
 
 function findingQuestion(f: FindingView): string {
 	if (f.approval) return `${f.rule}\n\n${f.observed}\n\nApprove the change, or send it back with what to change (type it as your answer).`;
@@ -125,8 +120,7 @@ export default function control(pi: ExtensionAPI) {
 	let library: Library | null = null;
 	let server: ControlServer | null = null;
 	let resumePort: number | null = null;
-	let themeEpoch: number | null = null;
-	let themeTimer: Timer | undefined;
+	const appearance = appearanceSync(omp, () => server);
 	let lastNote: string | null = null;
 	let lastPrompt: string | null = null;
 	let planChecks: AbortController | null = null;
@@ -298,10 +292,16 @@ export default function control(pi: ExtensionAPI) {
 				if (!r || r.ok || r.code !== "busy") return;
 				await Bun.sleep(250);
 			}
-		})();
+		})().catch(() => {});
+	};
+
+	const dropPlanCheck = () => {
+		planChecks?.abort();
+		planChecks = null;
 	};
 
 	const setLoop = async (next: Attached) => {
+		dropPlanCheck();
 		attached = next;
 		lastNote = null;
 		controller.attach(next.loop, next.source, next.baseline);
@@ -311,6 +311,7 @@ export default function control(pi: ExtensionAPI) {
 	};
 
 	const detach = async () => {
+		dropPlanCheck();
 		attached = null;
 		controller.detach();
 		pi.appendEntry<LoopEntry>(LOOP_ENTRY, { loop: null, source: null, baseline: null });
@@ -372,30 +373,17 @@ export default function control(pi: ExtensionAPI) {
 
 	// --- page
 
-	const syncAppearance = async (force = false) => {
-		if (!themeApi) return;
-		const epoch = omp.getThemeEpoch();
-		if (!server || (epoch === themeEpoch && !force)) return;
-		themeEpoch = epoch;
-		const [theme, terminal] = await Promise.all([currentTheme(omp), terminalConfig()]);
-		if (themeEpoch === epoch) server?.setAppearance(toAppearance(theme, terminal));
-	};
-
 	/** Asks git-diff-review in this omp over the shared bus; without an answer in time it isn't loaded. */
-	const askReview = (request: { type: "probe" } | { type: "open"; base: string }): Promise<ReviewReply> => {
-		const { promise, resolve } = Promise.withResolvers<ReviewReply>();
-		const timer = setTimeout(() => resolve({ ok: false, message: "git-diff-review isn't loaded in this omp" }), request.type === "probe" ? REVIEW_PROBE_MS : REVIEW_OPEN_MS);
-		pi.events.emit(REVIEW_EVENT, {
-			...request,
-			reply: (r: ReviewReply) => {
-				clearTimeout(timer);
-				resolve(r);
-			},
+	const askReview = (request: { type: "probe" } | { type: "open"; base: string }) =>
+		busAsk<ReviewReply>(pi.events, REVIEW_EVENT, request, request.type === "probe" ? REVIEW_PROBE_MS : REVIEW_OPEN_MS, "git-diff-review isn't loaded in this omp");
+	let reviewLoaded = false;
+	/** Whether git-diff-review answers in this omp; a change reaches the open page. */
+	const probeReview = () =>
+		void askReview({ type: "probe" }).then((r) => {
+			if (r.ok === reviewLoaded) return;
+			reviewLoaded = r.ok;
+			server?.notify();
 		});
-		return promise;
-	};
-	let reviewProbe: Promise<boolean> | null = null;
-	const reviewLoaded = () => (reviewProbe ??= askReview({ type: "probe" }).then((r) => r.ok));
 
 	const state = async (): Promise<StatePayload> => {
 		const lib = library ?? (await refreshLibrary());
@@ -406,7 +394,7 @@ export default function control(pi: ExtensionAPI) {
 				return snap ? { ...snap, since: await sinceLabel().catch(() => "") } : null;
 			})(),
 			run: controller.view(),
-			review: await reviewLoaded(),
+			review: reviewLoaded,
 			library: {
 				loops: [...lib.loops.values()].map((e) => ({ ...e.loop, source: e.source, path: e.path, overrides: e.overrides })),
 				nodes: [...lib.nodes.values()].map((e) => ({ ...e.node, source: e.source, path: e.path, overrides: e.overrides })),
@@ -464,23 +452,16 @@ export default function control(pi: ExtensionAPI) {
 				},
 				{ ports: port ? [port, ...DEFAULT_PORTS] : DEFAULT_PORTS },
 			);
-			if (themeApi) themeTimer = setInterval(() => syncAppearance(), 1000);
+			appearance.start();
 		}
-		if (themeApi) await syncAppearance(true);
+		probeReview();
+		await appearance.sync(true);
 		return server;
-	};
-
-	const recordedPort = (ctx: ExtensionContext): number | null => {
-		let port: number | null = null;
-		for (const entry of ctx.sessionManager.getBranch()) {
-			if (entry.type === "custom" && entry.customType === SERVER_ENTRY && typeof entry.data?.port === "number") port = entry.data.port;
-		}
-		return port;
 	};
 
 	const openPage = async () => {
 		const page = await ensureServer(null);
-		if (sessionCtx && recordedPort(sessionCtx) !== page.port) pi.appendEntry(SERVER_ENTRY, { port: page.port });
+		if (sessionCtx && recordedPort(sessionCtx, SERVER_ENTRY) !== page.port) pi.appendEntry(SERVER_ENTRY, { port: page.port });
 		await openBoard(page.url(), { focus: true });
 		return page.url();
 	};
@@ -488,6 +469,7 @@ export default function control(pi: ExtensionAPI) {
 	// --- session state
 
 	const restore = async (ctx: ExtensionContext, withServer: boolean) => {
+		dropPlanCheck();
 		sessionCtx = ctx;
 		root = await repoRoot(ctx.cwd);
 		library = null;
@@ -510,13 +492,23 @@ export default function control(pi: ExtensionAPI) {
 				},
 			);
 		} else {
-			attached = entry?.loop && entry.source && entry.baseline ? { loop: savedSnapshot(entry.loop), source: entry.source, baseline: entry.baseline } : null;
+			attached = null;
+			if (entry?.loop && entry.source && entry.baseline) {
+				try {
+					attached = { loop: savedSnapshot(entry.loop), source: entry.source, baseline: entry.baseline };
+				} catch (e) {
+					ctx.ui.notify(`Control: this session's flow no longer loads (${errorText(e)}); attach one with /control use`, "warning");
+				}
+			}
 			controller.restore(attached, attached ? checkpoint : null);
+			// A plan read by the reviewer before the restart waits for you if omp's review is still open.
+			const plan = controller.view()?.plan;
+			if (plan === "checking" || plan === "review") controller.onPlan(ctx.getPendingPlanReview() ? "review" : ctx.sessionModes?.getState().plan.status === "active" ? "planning" : "unused");
 			await activate(attached !== null);
 			armPlan(ctx);
 		}
 		if (withServer) {
-			const port = resumePort ?? recordedPort(ctx);
+			const port = resumePort ?? recordedPort(ctx, SERVER_ENTRY);
 			resumePort = null;
 			if (port !== null) await ensureServer(port);
 		}
@@ -564,29 +556,36 @@ export default function control(pi: ExtensionAPI) {
 
 	pi.on("plan_review_requested", (event, ctx) => {
 		if (ctx.agent?.kind === "sub") return;
-		controller.onPlan("review", event.planContent);
-		if (attached?.loop.plan !== "ai") return;
-		// The review's handlers must return quickly; the reviewer runs after, and answers the review when it's done.
-		planChecks?.abort();
+		dropPlanCheck();
+		const ai = attached?.loop.plan === "ai" && !controller.paused;
+		controller.onPlan(ai ? "checking" : "review", event.planContent);
+		if (!ai) return;
 		const ctl = new AbortController();
 		planChecks = ctl;
-		void controller.checkPlan(event.planContent, ctl.signal).then(
-			(r) => {
+		/** The plan is yours to answer in omp's plan review. */
+		const yours = (why: string) => {
+			controller.onPlan("review");
+			sessionCtx?.ui.notify(`Control: ${why}; approve the plan or send it back`, "warning");
+		};
+		// The review's handlers must return quickly; the reviewer runs after, and answers the review when it's done.
+		void controller
+			.checkPlan(event.planContent, ctl.signal)
+			.then((r) => {
 				const review = ctx.getPendingPlanReview();
 				if (ctl.signal.aborted || !review || review.reviewId !== event.reviewId) return;
-				if (r.action === "refine") ctx.resolvePlanReview(event.reviewId, "refine", { feedback: r.feedback });
-				else if (r.action === "approve") {
-					// The first approving choice, as Enter would pick.
-					const choice = review.options.find((o) => !o.disabled && PLAN_APPROVALS[o.id]);
-					if (!choice || !ctx.resolvePlanReview(event.reviewId, choice.id)) ctx.ui.notify("Control: the plan reviewer passed the plan, but omp took no approval; approve it yourself", "warning");
-				} else if (r.reason) ctx.ui.notify(`Control: ${r.reason}; approve the plan or send it back`, "warning");
-			},
-			(e) => ctx.ui.notify(`Control: the plan review failed: ${errorText(e)}`, "warning"),
-		);
+				if (r.action === "refine") {
+					if (!ctx.resolvePlanReview(event.reviewId, "refine", { feedback: r.feedback })) yours("omp didn't take the plan reviewer's feedback");
+				} else if (r.action === "approve") {
+					const choice = approvalChoice(review.options);
+					if (!choice || !ctx.resolvePlanReview(event.reviewId, choice.id)) yours("the plan reviewer passed the plan, but omp took no approval");
+				} else yours(r.reason ?? "the plan reviewer didn't finish");
+			})
+			.catch((e) => yours(`the plan review failed: ${errorText(e)}`));
 	});
 
 	pi.on("plan_review_resolved", (event, ctx) => {
 		if (ctx.agent?.kind === "sub") return;
+		dropPlanCheck();
 		if (PLAN_APPROVALS[event.choice]) controller.onPlan("approved");
 		else if (event.choice === "refine") controller.onPlan("planning");
 		else controller.onPlan(ctx.sessionModes?.getState().plan.status === "active" ? "planning" : "unused");
@@ -616,10 +615,8 @@ export default function control(pi: ExtensionAPI) {
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (ctx.agent?.kind === "sub") return;
 		controller.abort();
-		planChecks?.abort();
-		clearInterval(themeTimer);
-		themeTimer = undefined;
-		themeEpoch = null;
+		dropPlanCheck();
+		appearance.stop();
 		await rm(artifactsDir, { recursive: true, force: true });
 		if (!server) return;
 		resumePort = server.port;
@@ -723,29 +720,29 @@ export default function control(pi: ExtensionAPI) {
 					const nodes = [...lib.nodes.values()].map(({ node, source }) => `- ${node.id} · ${node.name} · ${node.kind} (${source})`);
 					const parts = [`Loops:\n${loops.join("\n") || "(none)"}`, `Nodes:\n${nodes.join("\n") || "(none)"}`];
 					if (lib.errors.length) parts.push(`Files with errors:\n${lib.errors.map((e) => `- ${e.message}`).join("\n")}`);
-					return reply(parts.join("\n\n"));
+					return toolReply(parts.join("\n\n"));
 				}
-				if (!params.kind || !params.id) return reply(`${params.action} needs kind and id`, true);
+				if (!params.kind || !params.id) return toolReply(`${params.action} needs kind and id`, true);
 				if (params.action === "read") {
 					const entry = params.kind === "node" ? lib.nodes.get(params.id) : lib.loops.get(params.id);
-					if (!entry) return reply(`No ${params.kind} ${params.id} in the library`, true);
-					return reply(`${entry.path} (${entry.source})\n\n${await Bun.file(entry.path).text()}`);
+					if (!entry) return toolReply(`No ${params.kind} ${params.id} in the library`, true);
+					return toolReply(`${entry.path} (${entry.source})\n\n${await Bun.file(entry.path).text()}`);
 				}
 				const scope = params.scope ?? (root ? "repo" : "global");
 				let path: string;
 				if (params.kind === "node") {
-					if (!params.node) return reply("save of a node needs node", true);
+					if (!params.node) return toolReply("save of a node needs node", true);
 					const node = nodeFrom(params.id, params.node, params.node.instructions ?? "", `node ${params.id}`);
 					path = await saveNode(root, scope, node);
 				} else {
-					if (!params.loop) return reply("save of a loop needs loop", true);
+					if (!params.loop) return toolReply("save of a loop needs loop", true);
 					path = await saveLoop(root, scope, loopFrom(params.id, params.loop, `loop ${params.id}`), lib);
 				}
 				const existed = (params.kind === "node" ? lib.nodes.get(params.id) : lib.loops.get(params.id))?.path === path;
 				await emitLibrary();
-				return reply(existed ? `Updated ${params.kind} ${params.id} at ${path}` : `Saved ${params.kind} ${params.id} to ${path}`);
+				return toolReply(existed ? `Updated ${params.kind} ${params.id} at ${path}` : `Saved ${params.kind} ${params.id} to ${path}`);
 			} catch (e) {
-				return reply(errorText(e), true);
+				return toolReply(errorText(e), true);
 			}
 		},
 	});
@@ -761,12 +758,12 @@ export default function control(pi: ExtensionAPI) {
 			try {
 				if (params.loop === "none") {
 					await detach();
-					return reply("Detached the control loop");
+					return toolReply("Detached the control loop");
 				}
 				const loop = await attach(ctx.cwd, params.loop);
-				return reply(`Attached «${loop.name}» (${stagesText(loop)}). Call control_check when your implementation is complete.`);
+				return toolReply(`Attached «${loop.name}» (${stagesText(loop)}). Call control_check when your implementation is complete.`);
 			} catch (e) {
-				return reply(errorText(e), true);
+				return toolReply(errorText(e), true);
 			}
 		},
 	});
@@ -778,7 +775,7 @@ export default function control(pi: ExtensionAPI) {
 		parameters: z.object({}),
 		approval: "read",
 		async execute() {
-			return reply(statusText(controller.view()));
+			return toolReply(statusText(controller.view()));
 		},
 	});
 

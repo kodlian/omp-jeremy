@@ -320,6 +320,37 @@ test("a plan the reviewer passes is approved, and the next request's plan gets t
 	expect((await controller.checkPlan("next plan", new AbortController().signal)).action).toBe("refine");
 });
 
+test("an aborted plan review spends no round", async () => {
+	const { controller, state } = harness(planned(2));
+	const blocked = Promise.withResolvers<NodeOutcome>();
+	state.outcomes["plan-reviewer"] = () => blocked.promise;
+	const ctl = new AbortController();
+	const pending = controller.checkPlan("a", ctl.signal);
+	ctl.abort();
+	blocked.resolve({ kind: "findings", findings: [finding("No tests in the plan", true)] });
+	expect(await pending).toEqual({ action: "ask", reason: null });
+	expect(controller.view()?.nodes["plan-reviewer"].state).toBe("waiting");
+	state.outcomes["plan-reviewer"] = { kind: "findings", findings: [finding("No tests in the plan", true)] };
+	expect((await controller.checkPlan("b", new AbortController().signal)).action).toBe("refine");
+	expect(await controller.checkPlan("c", new AbortController().signal)).toEqual({ action: "ask", reason: "plan-reviewer still finds problems in the plan after 2 rounds" });
+});
+
+test("a superseded plan review leaves the newer run's tile alone", async () => {
+	const { controller, state } = harness(planned(2));
+	const first = Promise.withResolvers<NodeOutcome>();
+	const second = Promise.withResolvers<NodeOutcome>();
+	state.outcomes["plan-reviewer"] = () => first.promise;
+	const older = controller.checkPlan("a", new AbortController().signal);
+	state.outcomes["plan-reviewer"] = () => second.promise;
+	const newer = controller.checkPlan("b", new AbortController().signal);
+	first.resolve({ kind: "findings", findings: [finding("No tests in the plan", true)] });
+	expect(await older).toEqual({ action: "ask", reason: null });
+	expect(controller.view()?.nodes["plan-reviewer"].state).toBe("running");
+	second.resolve({ kind: "passed" });
+	expect(await newer).toEqual({ action: "approve" });
+	expect(controller.view()?.nodes["plan-reviewer"].state).toBe("passed");
+});
+
 test("your review waits until the doubts are answered, then shows a grouped summary of the change", async () => {
 	const { controller, state, check, onAsk } = harness(reviewed([node("swift")]));
 	controller.onUserPrompt("fp0", "Add a cart total");

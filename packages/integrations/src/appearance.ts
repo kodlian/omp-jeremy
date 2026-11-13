@@ -24,6 +24,16 @@ const TOKEN_VARS: Record<string, string> = {
 	"--syn-type": "syntaxType",
 	"--syn-operator": "syntaxOperator",
 	"--syn-punctuation": "syntaxPunctuation",
+	"--md-heading": "mdHeading",
+	"--md-link": "mdLink",
+	"--md-link-url": "mdLinkUrl",
+	"--md-code": "mdCode",
+	"--md-code-block": "mdCodeBlock",
+	"--md-code-border": "mdCodeBlockBorder",
+	"--md-quote": "mdQuote",
+	"--md-quote-border": "mdQuoteBorder",
+	"--md-hr": "mdHr",
+	"--md-bullet": "mdListBullet",
 };
 
 export function toAppearance(omp: OmpTheme, terminal: TerminalConfig | null): Appearance {

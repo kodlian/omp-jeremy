@@ -1,18 +1,15 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import * as omp from "@oh-my-pi/pi-coding-agent";
-import { openBoard } from "omp-integrations/terminal";
+import { appearanceSync, recordedPort } from "omp-integrations/page";
 import { isReviewRequest, REVIEW_EVENT } from "omp-integrations/review";
-import { currentTheme, hasThemeApi, terminalConfig } from "omp-integrations/theme";
-import { toAppearance } from "omp-integrations/appearance";
+import { openBoard } from "omp-integrations/terminal";
+import { errorText } from "omp-integrations/text";
 import { type Compare, isRepo, repoRoot } from "./git";
 import { DEFAULT_PORTS, type ReviewServer, startReviewServer } from "./server";
 
 const USAGE = "Usage: /review [branch [base] | uncommitted | commit [sha]]";
 // Session entry recording the port a session's review page uses, so a restored session brings it back.
 const SERVER_ENTRY = "git-diff-review.server";
-
-// Undocumented omp exports; without them the page keeps its built-in palette and font size.
-const themeApi = hasThemeApi(omp);
 
 function parseArgs(args: string): Compare | null {
 	const [kind, value] = args.trim().split(/\s+/).filter(Boolean);
@@ -26,20 +23,11 @@ async function reviewRoot(cwd: string): Promise<string> {
 	return (await isRepo(cwd)) ? await repoRoot(cwd) : cwd;
 }
 
-function recordedPort(sessionCtx: ExtensionContext): number | null {
-	let port: number | null = null;
-	for (const entry of sessionCtx.sessionManager.getBranch()) {
-		if (entry.type === "custom" && entry.customType === SERVER_ENTRY && typeof entry.data?.port === "number") port = entry.data.port;
-	}
-	return port;
-}
-
 export default function gitDiffReview(pi: ExtensionAPI) {
 	let server: ReviewServer | null = null;
 	let ctx: ExtensionContext | null = null;
 	let resumePort: number | null = null;
-	let themeEpoch: number | null = null;
-	let themeTimer: Timer | undefined;
+	const appearance = appearanceSync(omp, () => server);
 
 	const hooks = {
 		send(text: string) {
@@ -52,24 +40,15 @@ export default function gitDiffReview(pi: ExtensionAPI) {
 		sessionName: () => pi.getSessionName() || "omp",
 	};
 
-	async function syncAppearance(force = false) {
-		if (!themeApi) return;
-		const epoch = omp.getThemeEpoch();
-		if (!server || (epoch === themeEpoch && !force)) return;
-		themeEpoch = epoch;
-		const [theme, terminal] = await Promise.all([currentTheme(omp), terminalConfig()]);
-		if (themeEpoch === epoch) server?.setAppearance(toAppearance(theme, terminal));
-	}
-
 	async function ensureServer(cwd: string, port: number | null): Promise<ReviewServer> {
 		const root = await reviewRoot(cwd);
 		if (server) server.setRoot(root);
 		else {
 			server = startReviewServer(root, hooks, { ports: port ? [port, ...DEFAULT_PORTS] : DEFAULT_PORTS });
-			if (themeApi) themeTimer = setInterval(() => syncAppearance(), 1000);
+			appearance.start();
 		}
 		// The terminal config has no change signal, so each /review re-reads it.
-		if (themeApi) await syncAppearance(true);
+		await appearance.sync(true);
 		return server;
 	}
 
@@ -84,7 +63,7 @@ export default function gitDiffReview(pi: ExtensionAPI) {
 	async function open(sessionCtx: ExtensionContext, compare: Compare): Promise<string> {
 		ctx = sessionCtx;
 		const reviewServer = await ensureServer(sessionCtx.cwd, null);
-		if (recordedPort(sessionCtx) !== reviewServer.port) pi.appendEntry(SERVER_ENTRY, { port: reviewServer.port });
+		if (recordedPort(sessionCtx, SERVER_ENTRY) !== reviewServer.port) pi.appendEntry(SERVER_ENTRY, { port: reviewServer.port });
 		const url = reviewServer.url(compare);
 		await openBoard(url, { focus: true });
 		return url;
@@ -108,34 +87,39 @@ export default function gitDiffReview(pi: ExtensionAPI) {
 		if (!ctx) return data.reply({ ok: false, message: "git-diff-review has no omp session yet" });
 		open(ctx, { kind: "branch", base: data.base }).then(
 			(url) => data.reply({ ok: true, message: url }),
-			(e) => data.reply({ ok: false, message: e instanceof Error ? e.message : String(e) }),
+			(e) => data.reply({ ok: false, message: errorText(e) }),
 		);
 	});
 
 	pi.on("session_start", async (_event, sessionCtx) => {
+		if (sessionCtx.agent?.kind === "sub") return;
 		ctx = sessionCtx;
-		const port = resumePort ?? recordedPort(sessionCtx);
+		const port = resumePort ?? recordedPort(sessionCtx, SERVER_ENTRY);
 		resumePort = null;
-		if (port !== null) await ensureServer(sessionCtx.cwd, port);
+		if (port !== null) await ensureServer(sessionCtx.cwd, port).catch((e) => sessionCtx.ui.notify(`Review: the page didn't start: ${errorText(e)}`, "warning"));
 	});
 	pi.on("session_switch", async (_event, sessionCtx) => {
-		const port = server ? null : recordedPort(sessionCtx);
+		if (sessionCtx.agent?.kind === "sub") return;
+		const port = server ? null : recordedPort(sessionCtx, SERVER_ENTRY);
 		if (port !== null) {
 			ctx = sessionCtx;
-			await ensureServer(sessionCtx.cwd, port);
+			await ensureServer(sessionCtx.cwd, port).catch((e) => sessionCtx.ui.notify(`Review: the page didn't start: ${errorText(e)}`, "warning"));
 		} else await follow(sessionCtx);
 	});
 	pi.on("tool_result", async (_event, sessionCtx) => {
+		if (sessionCtx.agent?.kind === "sub") return;
 		await follow(sessionCtx);
 	});
 	pi.on("agent_end", async (_event, sessionCtx) => {
+		if (sessionCtx.agent?.kind === "sub") return;
 		await follow(sessionCtx);
 	});
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async (_event, sessionCtx) => {
+		if (sessionCtx.agent?.kind === "sub") return;
+		ctx = null;
 		if (!server) return;
 		resumePort = server.port;
-		clearInterval(themeTimer);
-		themeEpoch = null;
+		appearance.stop();
 		server.stop();
 		server = null;
 	});

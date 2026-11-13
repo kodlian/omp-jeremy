@@ -49,9 +49,17 @@ export function langFor(path) {
   return lang && bundledLanguages[lang] ? lang : null;
 }
 
-// Tokens per line for `lines` (one string each), or null when the language is unknown.
-export async function tokenize(lines, path) {
-  const lang = langFor(path);
+/** The bundled language a fence's name (ts, swift, sh…) stands for, else null. */
+export function langNamed(name) {
+  const lang = EXT_LANG[name] ?? name;
+  return lang && bundledLanguages[lang] ? lang : null;
+}
+
+/** Tokens per line for `lines` (one string each) of a file at `path`, or null when its language is unknown. */
+export const tokenize = (lines, path) => tokenizeAs(lines, langFor(path));
+
+/** The same for a language name. */
+export async function tokenizeAs(lines, lang) {
   if (!lang || !lines.length) return null;
   const hl = await highlighter();
   if (!loaded.has(lang)) {

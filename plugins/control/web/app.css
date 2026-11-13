@@ -78,9 +78,6 @@ select.field { height: var(--field-h); }
 .dialog.wide { width: min(640px, calc(100vw - 32px)); }
 .dialog-text { margin-bottom: 14px; white-space: pre-wrap; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
-#toast { position: fixed; left: 50%; bottom: 20px; z-index: 50; max-width: 80vw; padding: 8px 14px; border-radius: var(--radius); background: var(--raised); box-shadow: var(--shadow); opacity: 0; transform: translate(-50%, 8px); transition: opacity 0.15s, transform 0.15s; pointer-events: none; }
-#toast.visible { opacity: 1; transform: translate(-50%, 0); }
-#toast.error { color: var(--remove); }
 
 @media (max-width: 720px) {
   .pick, .flow-fields, .add-grid { grid-template-columns: minmax(0, 1fr); }

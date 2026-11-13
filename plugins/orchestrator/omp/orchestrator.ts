@@ -7,6 +7,9 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import * as omp from "@oh-my-pi/pi-coding-agent";
 import { truncateToWidth, type AutocompleteItem } from "@oh-my-pi/pi-tui";
 import { detectTerminalContext, openBoard as openTerminalBoard, type TerminalContext, type TerminalKind } from "omp-integrations/terminal";
+import { approvalChoice } from "omp-integrations/plan";
+import { errorText, toolReply } from "omp-integrations/text";
+import { busAsk } from "omp-integrations/bus";
 import { currentTheme, hasThemeApi, isLightColor, resolveTheme, type Scheme } from "omp-integrations/theme";
 import { COMMAND_EVENT, type ControlReply, type Decision, LIBRARY_EVENT, type LibrarySummary, type LoopSummary, RUN_EVENT, type RunView } from "omp-control-view/protocol";
 
@@ -53,8 +56,6 @@ const ORCHESTRATOR_CONTEXT = `Orchestrator mode is on in this checkout: this ses
 - orchestrator_memory holds this repository's durable project decisions and conventions, shared by every card. Search it on demand when a decision may already exist, and remember a durable decision the user made; task outcomes go on the card with orchestrator_publish. Never load all memories each turn, and never store the user's personal omp preferences there. Forgetting one asks the user first.
 - A plan you propose in this session is for work done here; it doesn't become a card.`;
 
-/** Plan review choices that approve; orchestrator_review picks the first enabled one, as Enter would. */
-const APPROVALS: Record<string, true> = { execute: true, compact: true, keep: true };
 const DIFF_TOOL_LIMIT = 60_000;
 const SHARING =
 	"Record a concise finding other tasks need (a decision, contract, gotcha, where something lives) with orchestrator_publish as you learn it, and your outcome (what changed, where, how dependents use it) once the work is committed, before finishing. Read what a dependency recorded, newer than your brief, with orchestrator_context. orchestrator_memory holds this repository's durable project decisions across all tasks: search it when a past decision may apply, and remember one only when it outlives this task; it's not for task outcomes, progress or the user's personal omp preferences, and it's never loaded in full.";
@@ -234,8 +235,6 @@ class BoardError extends Error {
 }
 
 const tilde = (path: string) => (path.startsWith(homedir()) ? `~${path.slice(homedir().length)}` : path);
-const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
-const reply = (text: string, isError = false) => ({ content: [{ type: "text" as const, text }], isError });
 
 /** Card numbers by id, as the latest board read gave them. */
 const cardNumbers = new Map<string, string>();
@@ -876,6 +875,8 @@ export default function orchestrator(pi: ExtensionAPI) {
 	let current = "";
 	let planning = false;
 	let reviewOpen = false;
+	let planForYou = false; // an open plan review waits for you, not for Control's AI reviewer
+	let lastControl: RunView | null = null;
 	let currentStep: string | null = null;
 	let reportedStep: string | null = null;
 	let stepTimer: Timer | undefined;
@@ -975,9 +976,9 @@ export default function orchestrator(pi: ExtensionAPI) {
 
 	const answer = async (work: Promise<string>) => {
 		try {
-			return reply(withNumbers(await work));
+			return toolReply(withNumbers(await work));
 		} catch (e) {
-			return reply(withNumbers(errorText(e)), true);
+			return toolReply(withNumbers(errorText(e)), true);
 		}
 	};
 
@@ -1042,25 +1043,14 @@ export default function orchestrator(pi: ExtensionAPI) {
 	});
 	pi.on("agent_end", (event, ctx) => {
 		if (ctx.agent?.kind === "sub" || ("willContinue" in event && event.willContinue === true)) return;
-		void report(ctx, reviewOpen ? "plan_ready" : "idle");
+		void report(ctx, reviewOpen && planForYou ? "plan_ready" : reviewOpen ? "planning" : "idle");
 		if (task) void autoMerge(ctx);
 	});
 
 	// --- control loops (the Control plugin, when installed)
 
 	/** Asks the Control plugin in this omp over the shared bus; without an answer in time it isn't loaded. */
-	const controlAsk = (command: ControlRequest): Promise<ControlReply> => {
-		const { promise, resolve } = Promise.withResolvers<ControlReply>();
-		const timer = setTimeout(() => resolve({ ok: false, message: "The Control plugin isn't loaded in this omp" }), CONTROL_ASK_MS);
-		pi.events.emit(COMMAND_EVENT, {
-			...command,
-			reply: (r: ControlReply) => {
-				clearTimeout(timer);
-				resolve(r);
-			},
-		});
-		return promise;
-	};
+	const controlAsk = (command: ControlRequest) => busAsk<ControlReply>(pi.events, COMMAND_EVENT, command, CONTROL_ASK_MS, "The Control plugin isn't loaded in this omp");
 
 	/** Posts this task's latest control loop view to its card: one request in flight, at most every CONTROL_POST_MS. */
 	const postControl = (view: RunView | null) => {
@@ -1085,8 +1075,18 @@ export default function orchestrator(pi: ExtensionAPI) {
 
 	pi.events.on(RUN_EVENT, (data) => {
 		const view = (data ?? null) as RunView | null; // the Control plugin's RUN_EVENT payload
+		lastControl = view;
 		if (task) postControl(view);
 		if (!controlCtx || !view) return;
+		if (reviewOpen) {
+			if (view.plan === "review" && !planForYou) {
+				planForYou = true;
+				void report(controlCtx, "plan_ready");
+			} else if (view.plan === "checking") {
+				planForYou = false;
+				void report(controlCtx, "planning", `Control · ${view.loop.planReviewer?.name ?? "plan reviewer"} reads the plan`);
+			}
+		}
 		if (view.gate.open) {
 			const undecided = view.findings.filter((f) => f.route === "ask" && !f.decision).length;
 			void report(controlCtx, "needs_input", `Control: ${undecided} findings need your decision`);
@@ -1129,7 +1129,7 @@ export default function orchestrator(pi: ExtensionAPI) {
 			ctx.ui.notify(`Control flow «${run.loop.name}» passed: merging ${taskNumber(id)} into ${t.base}`, "info");
 			await api("POST", `/api/tasks/${id}/merge`, { cleanup: true, commit: true, terminal: await requestTerminal() });
 		} catch (e) {
-			const message = e instanceof Error ? e.message : String(e);
+			const message = errorText(e);
 			if (!message.includes(" is still ")) ctx.ui.notify(`Couldn't merge ${taskNumber(id)} automatically: ${message}`, "error");
 		} finally {
 			autoMerging = false;
@@ -1204,7 +1204,7 @@ export default function orchestrator(pi: ExtensionAPI) {
 					ok = ctx.resolvePlanReview(review.reviewId, "refine", { feedback: c.feedback });
 					message = ok ? "Sent the feedback; it plans again" : "omp didn't take the feedback";
 				} else {
-					const choice = review.options.find((o) => !o.disabled && APPROVALS[o.id]);
+					const choice = approvalChoice(review.options);
 					ok = choice !== undefined && ctx.resolvePlanReview(review.reviewId, choice.id);
 					message = ok && choice ? `Approved its plan (${choice.label})` : "Its plan review took no approval";
 				}
@@ -1709,9 +1709,10 @@ export default function orchestrator(pi: ExtensionAPI) {
 	pi.on("plan_review_requested", (event, ctx) => {
 		if (ctx.agent?.kind === "sub") return;
 		reviewOpen = true;
+		planForYou = !(lastControl?.loop.plan === "ai" && lastControl.status !== "paused");
 		if (!task) return;
 		const id = task;
-		void report(ctx, "plan_ready");
+		void report(ctx, planForYou ? "plan_ready" : "planning", planForYou ? undefined : "Control reviews the plan");
 		void api("PATCH", `/api/tasks/${id}`, { plan: event.planContent }, false).catch((e) =>
 			ctx.ui.notify(`${taskNumber(id)}: the plan didn't reach the board: ${errorText(e)}`, "warning"),
 		);
@@ -1720,6 +1721,7 @@ export default function orchestrator(pi: ExtensionAPI) {
 	pi.on("plan_review_resolved", (event, ctx) => {
 		if (ctx.agent?.kind === "sub") return;
 		reviewOpen = false;
+		planForYou = false;
 		if (!event.choice || event.choice === "save") void report(ctx, "idle");
 	});
 
@@ -1806,7 +1808,7 @@ export default function orchestrator(pi: ExtensionAPI) {
 		parameters: z.object({ id: z.string().optional(), all: z.boolean().optional() }),
 		approval: "read",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			if (params.id && params.all) return reply("Pass id or all, not both", true);
+			if (params.id && params.all) return toolReply("Pass id or all, not both", true);
 			return answer(
 				(async () => {
 					const board = await api<Board>("GET", "/api/state");
@@ -1895,9 +1897,9 @@ export default function orchestrator(pi: ExtensionAPI) {
 				(k) => params[k] !== undefined,
 			);
 			const side = params.before !== undefined ? "before" : params.after !== undefined ? "after" : undefined;
-			if (params.before !== undefined && params.after !== undefined) return reply("Pass before or after, not both", true);
+			if (params.before !== undefined && params.after !== undefined) return toolReply("Pass before or after, not both", true);
 			if (!fields.length && !side) {
-				return reply("Nothing to change: pass title, description, ticket, plan, planningMode, loop, merge, base, branch, dependsOn, parent, before or after", true);
+				return toolReply("Nothing to change: pass title, description, ticket, plan, planningMode, loop, merge, base, branch, dependsOn, parent, before or after", true);
 			}
 			return answer(
 				(async () => {
@@ -2073,7 +2075,7 @@ export default function orchestrator(pi: ExtensionAPI) {
 		approval: "read",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const id = params.id ? await cardId(params.id, ctx) : task;
-			if (!id) return reply("Name the card to read: this session has no task of its own", true);
+			if (!id) return toolReply("Name the card to read: this session has no task of its own", true);
 			return answer(api<TaskContext>("GET", `/api/tasks/${id}/context`).then(contextText));
 		},
 	});
@@ -2091,7 +2093,7 @@ export default function orchestrator(pi: ExtensionAPI) {
 		approval: "read",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const id = params.id ? await cardId(params.id, ctx) : task;
-			if (!id) return reply("Name the card to record on: this session has no task of its own", true);
+			if (!id) return toolReply("Name the card to record on: this session has no task of its own", true);
 			return answer(
 				api<TaskContext>("POST", `/api/tasks/${id}/context`, { kind: params.kind, text: params.text, source: task ?? "orchestrator" }).then(
 					(c) => `Recorded a ${params.kind} on ${id} (revision ${c.revision}, ${c.entries.length} entr${c.entries.length === 1 ? "y" : "ies"})`,

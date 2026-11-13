@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { withPlanMode } from "omp-control-view/protocol";
 import { parseNodeFile, serializeNode } from "../src/frontmatter";
 import { copyItem, deleteItem, loadLibrary, type LoopSnapshot, type NodeDefinition, nodeFrom, resolveLoop, saveLoop, saveNode, savedSnapshot, validateSnapshot } from "../src/library";
 
@@ -121,4 +122,27 @@ test("loop and session snapshot limits", () => {
 test("a session loop saved before plan modes comes back with you approving the plan", () => {
 	const old = { id: "ship", name: "Ship", description: "", maxPasses: 4, plan: true, planStages: [{ nodes: [reviewer] }], stages: [], finish: "review" } as unknown as LoopSnapshot;
 	expect(savedSnapshot(old)).toEqual({ id: "ship", name: "Ship", description: "", maxPasses: 4, plan: "you", planReviewer: null, stages: [], finish: "review" });
+});
+
+test("a command check can't be the plan reviewer", () => {
+	expect(() => validateSnapshot({ name: "X", plan: "ai", planReviewer: { ...reviewer, kind: "check", command: "true" }, stages: [] })).toThrow("planReviewer must be an AI reviewer");
+});
+
+test("a loop file in the old format reports why it doesn't load, instead of falling back to the built-in of the same id", async () => {
+	await mkdir(join(repo, ".omp/control/loops"), { recursive: true });
+	await writeFile(join(repo, ".omp/control/loops/review.json"), '{"name":"Old","plan":true,"planStages":[],"stages":[]}');
+	const library = await loadLibrary(repo);
+	expect(library.loops.has("review")).toBe(false);
+	expect(() => resolveLoop(library, "review")).toThrow("plan must be none, you or ai");
+});
+
+test("every built-in loop round-trips through the session snapshot check", async () => {
+	const library = await loadLibrary(repo);
+	expect(library.loops.size).toBeGreaterThan(0);
+	for (const id of library.loops.keys()) expect(validateSnapshot(resolveLoop(library, id))).toEqual(resolveLoop(library, id));
+});
+
+test("a loop stored before plan modes reads as you approving the plan", () => {
+	const old = { id: "a", name: "A", description: "", maxPasses: 4, plan: true, planStages: [], stages: [], finish: "review" } as never;
+	expect(withPlanMode(old)).toEqual({ id: "a", name: "A", description: "", maxPasses: 4, plan: "you", planReviewer: null, stages: [], finish: "review" });
 });

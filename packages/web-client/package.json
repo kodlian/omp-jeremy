@@ -1,0 +1,16 @@
+{
+  "name": "omp-web-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "What a plugin page needs to talk to its omp: token, socket, theme stylesheet",
+  "exports": {
+    ".": "./src/index.js",
+    "./esc": "./src/esc.js",
+    "./highlight": "./src/highlight.js"
+  },
+  "files": ["src"],
+  "dependencies": {
+    "shiki": "^4.5.0"
+  }
+}

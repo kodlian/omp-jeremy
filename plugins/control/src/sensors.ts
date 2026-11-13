@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { errorText } from "omp-integrations/text";
 import type { NodeDefinition } from "./library";
 import { checkFinding, finalText, parseFindings, type RawFinding, timeoutFinding } from "./prompts";
 
@@ -132,7 +133,7 @@ export async function runReviewer(
 			const findings = parseFindings(finalText(lines));
 			return findings.length ? { kind: "findings", findings } : { kind: "passed" };
 		} catch (e) {
-			return { kind: "error", message: e instanceof Error ? e.message : String(e) };
+			return { kind: "error", message: errorText(e) };
 		}
 	} finally {
 		await rm(dir, { recursive: true, force: true });

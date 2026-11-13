@@ -1,12 +1,18 @@
+import { approvalChoice, PLAN_APPROVALS } from "omp-integrations/plan";
+import { connectSocket, reloadAppearance, withToken } from "omp-web-client";
+import { langNamed, tokenizeAs } from "omp-web-client/highlight";
+import { toast } from "omp-web-design-system/toast";
 import { esc, parsePlan } from "../src/shared/blocks.js";
 import { feedbackMessage, lineRange } from "../src/shared/feedback.js";
 import { PROTOCOL } from "../src/shared/protocol.js";
 import { compareRevisions } from "../src/shared/revision.js";
 import { icon } from "./icons.js";
 
-const token = new URLSearchParams(location.search).get("token") ?? "";
-const APPROVALS = new Set(["execute", "compact", "keep"]);
 const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl ";
+const PREFS_KEY = "plan-review:prefs";
+const OUTLINE_DEFAULT = 220;
+const OUTLINE_MIN = 140;
+const prefs = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}");
 
 const state = {
   connected: false,
@@ -22,6 +28,7 @@ const state = {
   composer: null,
   role: null,
   busy: false,
+  outlineWidth: typeof prefs.outlineWidth === "number" ? prefs.outlineWidth : OUTLINE_DEFAULT,
 };
 
 const app = document.getElementById("app");
@@ -39,6 +46,7 @@ app.innerHTML = `
   <div class="banner" hidden></div>
   <div class="body">
     <nav class="outline" aria-label="Sections"></nav>
+    <div class="resizer" role="separator" tabindex="0" aria-label="Resize outline" aria-orientation="vertical" title="Drag to resize · double-click to reset"></div>
     <div class="scroller" tabindex="-1">
       <article class="doc"></article>
       <button type="button" class="gutter-add" data-act="comment-block" title="Comment (c) · shift-click extends the open comment" hidden>${icon("commentAdd", 13)}</button>
@@ -53,6 +61,8 @@ const outline = app.querySelector(".outline");
 const gutterAdd = app.querySelector(".gutter-add");
 const selComment = app.querySelector(".sel-comment");
 const actions = app.querySelector(".actions");
+const resizer = app.querySelector(".resizer");
+app.style.setProperty("--outline-w", `${state.outlineWidth}px`);
 let hovered = null;
 
 // MARK: storage
@@ -78,27 +88,8 @@ function saveDraft() {
 
 // MARK: socket
 
-let retry = 0;
-
-function connect() {
-  const socket = new WebSocket(`ws://${location.host}/ws?token=${encodeURIComponent(token)}`);
-  socket.onopen = () => {
-    retry = 0;
-    state.connected = true;
-    renderBanner();
-  };
-  socket.onmessage = (e) => onSocket(JSON.parse(e.data));
-  socket.onclose = () => {
-    state.connected = false;
-    renderBanner();
-    setTimeout(connect, Math.min(5000, 500 * 2 ** retry++));
-  };
-}
-
 function onSocket(msg) {
-  if (msg.type === "appearance" || msg.type === "hello") {
-    document.getElementById("appearance").href = `/appearance.css?token=${encodeURIComponent(token)}&t=${Date.now()}`;
-  }
+  if (msg.type === "appearance" || msg.type === "hello") reloadAppearance();
   if (msg.type === "hello") {
     state.stale = msg.protocol !== PROTOCOL;
     state.working = Boolean(msg.working);
@@ -157,7 +148,7 @@ function statusText() {
   if (!review) return state.working ? "Working" : "";
   if (!review.resolution) return review.previous === null ? "Waiting for review" : "Revised plan";
   if (!state.working) return review.resolution.choice === "refine" ? "Sent for refinement" : "Answered";
-  return review.resolution.choice === "refine" ? "Revising" : APPROVALS.has(review.resolution.choice) ? "Executing" : "Working";
+  return review.resolution.choice === "refine" ? "Revising" : PLAN_APPROVALS[review.resolution.choice] ? "Executing" : "Working";
 }
 
 /** What omp is doing after the answer, while its turn runs. */
@@ -165,7 +156,7 @@ function activityText() {
   const choice = state.review?.resolution?.choice;
   if (!state.working) return "";
   if (choice === "refine") return "omp is revising the plan…";
-  return APPROVALS.has(choice) ? "omp is executing the plan…" : "omp is working…";
+  return PLAN_APPROVALS[choice] ? "omp is executing the plan…" : "omp is working…";
 }
 
 function renderHeader() {
@@ -245,6 +236,7 @@ function renderDoc() {
     return;
   }
   doc.innerHTML = state.html;
+  highlightCode();
   state.hunks.forEach((hunk, i) => {
     const kind = hunk.before.length ? "changed" : "added";
     for (const id of hunk.blocks) blockEl(id)?.classList.add(kind);
@@ -267,6 +259,38 @@ function renderDoc() {
     textarea.closest(".composer").scrollIntoView({ block: "nearest" });
   }
   renderOutline();
+}
+
+// MARK: code
+
+const highlighted = new Map();
+
+/** Colors each fenced block with the terminal's syntax palette; one already tokenized paints at once, the rest when their tokens arrive. */
+function highlightCode() {
+  for (const code of doc.querySelectorAll("pre > code[class^='language-']")) {
+    const lang = langNamed(code.className.slice("language-".length));
+    const text = code.textContent;
+    const key = `${lang}\0${text}`;
+    const cached = highlighted.get(key);
+    if (cached) code.innerHTML = cached;
+    else if (lang) {
+      tokenizeAs(text.replace(/\n$/, "").split("\n"), lang)
+        .then((lines) => {
+          if (!lines) return;
+          highlighted.set(key, `${lines.map((line) => line.map((t) => `<span style="color:${t.color}">${esc(t.content)}</span>`).join("")).join("\n")}\n`);
+          highlightCode();
+        })
+        .catch((error) => console.warn("highlight failed", lang, error));
+    }
+  }
+}
+
+// MARK: outline width
+
+function setOutlineWidth(width) {
+  state.outlineWidth = Math.round(Math.max(OUTLINE_MIN, Math.min(window.innerWidth * 0.5, width)));
+  app.style.setProperty("--outline-w", `${state.outlineWidth}px`);
+  localStorage.setItem(PREFS_KEY, JSON.stringify({ outlineWidth: state.outlineWidth }));
 }
 
 // MARK: outline
@@ -484,7 +508,7 @@ function renderActions() {
 
 /** The approval ⌘⇧↵ picks: omp's first enabled one, as Enter in its dialog would. */
 function approval() {
-  return state.review?.options.find((o) => APPROVALS.has(o.id) && !o.disabled);
+  return approvalChoice(state.review?.options ?? []);
 }
 
 async function choose(choice) {
@@ -499,36 +523,22 @@ async function choose(choice) {
   } else {
     const pending = state.comments.length + (state.note.trim() ? 1 : 0);
     if (pending && !confirm(`${pending === 1 ? "Your feedback isn't sent" : `${pending} pieces of feedback aren't sent`}. Answer without ${pending === 1 ? "it" : "them"}?`)) return renderActions();
-    if (APPROVALS.has(choice) && state.role && review.tiers?.length > 1) body.role = state.role;
+    if (PLAN_APPROVALS[choice] && state.role && review.tiers?.length > 1) body.role = state.role;
   }
   state.busy = true;
   renderActions();
   try {
-    const res = await fetch(`/api/resolve?token=${encodeURIComponent(token)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const res = await fetch(withToken("/api/resolve"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const result = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(result.error ?? `omp answered ${res.status}`);
-    if (choice === "refine" || APPROVALS.has(choice)) localStorage.removeItem(storageKey(review.reviewId));
+    if (choice === "refine" || PLAN_APPROVALS[choice]) localStorage.removeItem(storageKey(review.reviewId));
   } catch (error) {
-    toast(error instanceof Error ? error.message : String(error));
+    toast(error instanceof Error ? error.message : String(error), { ms: 4000 });
   } finally {
     state.busy = false;
     renderDoc();
     renderActions();
   }
-}
-
-let toastTimer = null;
-function toast(message) {
-  let el = document.getElementById("toast");
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "toast";
-    document.body.appendChild(el);
-  }
-  el.textContent = message;
-  el.classList.add("visible");
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove("visible"), 4000);
 }
 
 // MARK: events
@@ -634,7 +644,7 @@ document.addEventListener("keydown", (e) => {
   if (submit) {
     e.preventDefault();
     if (pendingFeedback()) void choose("refine");
-    else toast("Comment on a line or write overall feedback to refine");
+    else toast("Comment on a line or write overall feedback to refine", { ms: 4000 });
     return;
   }
   if (inField || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -647,7 +657,33 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+resizer.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  const startX = e.clientX;
+  const startWidth = outline.getBoundingClientRect().width;
+  resizer.setPointerCapture(e.pointerId);
+  resizer.classList.add("dragging");
+  const move = (ev) => setOutlineWidth(startWidth + ev.clientX - startX);
+  const finish = () => {
+    resizer.classList.remove("dragging");
+    resizer.removeEventListener("pointermove", move);
+    resizer.removeEventListener("lostpointercapture", finish);
+  };
+  resizer.addEventListener("pointermove", move);
+  resizer.addEventListener("lostpointercapture", finish);
+});
+resizer.addEventListener("dblclick", () => setOutlineWidth(OUTLINE_DEFAULT));
+resizer.addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  e.preventDefault();
+  setOutlineWidth(state.outlineWidth + (e.key === "ArrowRight" ? 16 : -16));
+});
+
 renderHeader();
 renderDoc();
 renderBanner();
-connect();
+connectSocket(onSocket, (connected) => {
+  state.connected = connected;
+  renderBanner();
+});

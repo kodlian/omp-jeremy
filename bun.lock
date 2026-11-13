@@ -16,6 +16,13 @@
       "name": "omp-integrations",
       "version": "0.1.0",
     },
+    "packages/web-client": {
+      "name": "omp-web-client",
+      "version": "0.1.0",
+      "dependencies": {
+        "shiki": "^4.5.0",
+      },
+    },
     "packages/web-design-system": {
       "name": "omp-web-design-system",
       "version": "0.1.0",
@@ -27,6 +34,8 @@
         "@types/bun": "latest",
         "omp-control-view": "workspace:*",
         "omp-integrations": "workspace:*",
+        "omp-web-client": "workspace:*",
+        "omp-web-design-system": "workspace:*",
       },
     },
     "plugins/git-diff-review": {
@@ -36,7 +45,8 @@
         "@types/bun": "latest",
         "lucide": "^1.55.0",
         "omp-integrations": "workspace:*",
-        "shiki": "^4.5.0",
+        "omp-web-client": "workspace:*",
+        "omp-web-design-system": "workspace:*",
       },
     },
     "plugins/orchestrator": {
@@ -55,7 +65,10 @@
         "@types/bun": "latest",
         "lucide": "^1.55.0",
         "marked": "^18.2.0",
+        "omp-control-view": "workspace:*",
         "omp-integrations": "workspace:*",
+        "omp-web-client": "workspace:*",
+        "omp-web-design-system": "workspace:*",
       },
     },
   },
@@ -139,6 +152,8 @@
     "omp-orchestrator": ["omp-orchestrator@workspace:plugins/orchestrator"],
 
     "omp-plan-review": ["omp-plan-review@workspace:plugins/plan-review"],
+
+    "omp-web-client": ["omp-web-client@workspace:packages/web-client"],
 
     "omp-web-design-system": ["omp-web-design-system@workspace:packages/web-design-system"],
 

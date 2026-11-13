@@ -1,6 +1,6 @@
 "use strict";
 // MARK: pipeline canvas
-const pipeline = { positions: new Map(), nodes: new Map(), edges: new Map(), x: 40, y: 60, zoom: 1, gesture: null, selected: null, scope: null };
+const pipeline = { positions: new Map(), deps: new Map(), nodes: new Map(), edges: new Map(), x: 40, y: 60, zoom: 1, gesture: null, selected: null, scope: null };
 let boardView = LS.get("boardView") === "pipeline" ? "pipeline" : "board";
 function pipelineSVG(tag, attrs = {}) {
   const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
@@ -14,15 +14,40 @@ function pipelinePoint(e) {
 function pipelineTransform() {
   pipeline.world.style.transform = `translate(${pipeline.x}px,${pipeline.y}px) scale(${pipeline.zoom})`;
 }
+const PIPELINE_COL = 400, PIPELINE_ROW = 210;
+// An empty canvas gets the full layout; after that only new tasks and tasks whose prerequisites changed are placed,
+// beside the tasks they connect to, so nodes you arranged stay where they are.
 function pipelineLayout(tasks) {
-  const missing = tasks.filter(t => !pipeline.positions.has(t.id));
-  if (!missing.length) return;
-  const positions = layoutTaskGraph(tasks);
-  for (const t of missing) {
-    const p = positions.get(t.id);
+  const signature = t => [...t.dependsOn].sort().join(",");
+  if (!tasks.some(t => pipeline.positions.has(t.id))) {
+    const positions = layoutTaskGraph(tasks);
+    for (const t of tasks) { pipeline.positions.set(t.id, positions.get(t.id)); pipeline.deps.set(t.id, signature(t)); }
+    return;
+  }
+  const pending = tasks.filter(t => !pipeline.positions.has(t.id) || pipeline.deps.get(t.id) !== signature(t));
+  for (const t of pending) pipeline.positions.delete(t.id);
+  // Prerequisites first, so a dependent lands beside a prerequisite placed in the same pass.
+  const ids = new Set(pending.map(t => t.id));
+  const ordered = [];
+  const visit = (t, seen = new Set()) => {
+    if (ordered.includes(t) || seen.has(t.id)) return;
+    seen.add(t.id);
+    for (const id of t.dependsOn) if (ids.has(id)) visit(pending.find(p => p.id === id), seen);
+    ordered.push(t);
+  };
+  for (const t of pending) visit(t);
+  for (const t of ordered) {
+    const before = t.dependsOn.map(id => pipeline.positions.get(id)).filter(Boolean);
+    const after = tasks.filter(o => o.dependsOn.includes(t.id)).map(o => pipeline.positions.get(o.id)).filter(Boolean);
+    const all = [...pipeline.positions.values()];
+    const meanY = ps => ps.reduce((s, p) => s + p.y, 0) / ps.length;
+    const p = before.length ? { x: Math.max(...before.map(q => q.x)) + PIPELINE_COL, y: meanY(before) }
+      : after.length ? { x: Math.min(...after.map(q => q.x)) - PIPELINE_COL, y: meanY(after) }
+      : { x: all.length ? Math.min(...all.map(q => q.x)) : 0, y: all.length ? Math.max(...all.map(q => q.y)) + PIPELINE_ROW : 0 };
     while ([...pipeline.positions.values()].some(other =>
-      Math.abs(other.x - p.x) < 340 && Math.abs(other.y - p.y) < 210)) p.y += 210;
+      Math.abs(other.x - p.x) < 340 && Math.abs(other.y - p.y) < PIPELINE_ROW)) p.y += PIPELINE_ROW;
     pipeline.positions.set(t.id, p);
+    pipeline.deps.set(t.id, signature(t));
   }
 }
 function pipelineCurve(a, b) {

@@ -2,10 +2,12 @@
   "name": "omp-web-design-system",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "Shared tokens, reset and controls for the omp plugin web pages",
   "exports": {
     ".": "./design-system.css",
-    "./design-system.css": "./design-system.css"
+    "./design-system.css": "./design-system.css",
+    "./toast": "./toast.js"
   },
-  "files": ["design-system.css"]
+  "files": ["design-system.css", "toast.js"]
 }

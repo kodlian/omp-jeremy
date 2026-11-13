@@ -11,7 +11,6 @@
   initial-value: 20px;
 }
 
-:root,
 .default-syntax {
   --syn-comment: light-dark(#59636e, #8b949e);
   --syn-keyword: light-dark(#cf222e, #ff7b72);
@@ -243,29 +242,4 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-#toast {
-  position: fixed;
-  left: 50%;
-  bottom: 16px;
-  z-index: 60;
-  max-width: calc(100vw - 32px);
-  padding: 6px 12px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--surface-solid);
-  box-shadow: 0 6px 20px rgb(0 0 0 / 0.25);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  opacity: 0;
-  transform: translate(-50%, 6px);
-  transition: opacity 0.15s, transform 0.15s;
-  pointer-events: none;
-}
-
-#toast.visible {
-  opacity: 1;
-  transform: translate(-50%, 0);
 }

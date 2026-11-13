@@ -1,4 +1,5 @@
 import type { ControlReply, Decision, FindingView, NodeState, PlanState, PendingReview, ReviewRecord, RunStatus, RunView } from "omp-control-view/protocol";
+import { errorText } from "omp-integrations/text";
 import type { Baseline, ChangedFile } from "./git";
 import { type LoopSnapshot, type NodeDefinition, shape } from "./library";
 import { fixMessage, judgmentCalls, passedMessage, planPacketText, type RawFinding, reviewPacketText, reviewSummary, stopReason } from "./prompts";
@@ -166,6 +167,7 @@ export class Controller {
 	#gateReason: "doubts" | "limit" | null = null;
 	#gate: Gate | null = null;
 	#running: Promise<string> | null = null;
+	#planRun = 0;
 	#passAbort: AbortController | null = null;
 	#lastEmit = 0;
 	#lastStatus: RunStatus | null = null;
@@ -247,7 +249,7 @@ export class Controller {
 		const reviewer = this.#attached.loop.planReviewer;
 		const view = reviewer && this.#nodes[reviewer.id];
 		if (state === "planning" && view) Object.assign(view, { state: "waiting", detail: null, findings: 0 });
-		if (!s.paused && s.status !== "checking" && s.status !== "deciding") s.status = state === "planning" || state === "review" ? "planning" : "implementing";
+		if (!s.paused && s.status !== "checking" && s.status !== "deciding") s.status = state === "planning" || state === "checking" || state === "review" ? "planning" : "implementing";
 		this.#persist();
 		this.#emit(true);
 	}
@@ -255,7 +257,7 @@ export class Controller {
 	stopDecision(fp: string): { block: false; stalled?: true } | { block: true; reason: string } {
 		const s = this.#state;
 		if (!this.#attached || s.paused) return { block: false };
-		if (s.planState === "planning" || s.planState === "review") return { block: false };
+		if (s.planState === "planning" || s.planState === "checking" || s.planState === "review") return { block: false };
 		if (fp === "clean" || fp === s.promptFingerprint || s.settled?.fingerprint === fp) return { block: false };
 		if (s.blocks >= MAX_BLOCKS) {
 			s.settled = { fingerprint: fp, kind: "stalled" };
@@ -394,23 +396,22 @@ export class Controller {
 		if (!attached || !node || this.#state.paused) return { action: "ask", reason: null };
 		const { loop } = attached;
 		const s = this.#state;
-		s.planRounds += 1;
 		const view = this.#nodes[node.id];
 		Object.assign(view, { state: "running", detail: "reading the plan", findings: 0 });
 		this.#emit();
 		const started = Date.now();
 		let outcome: NodeOutcome;
+		const run = ++this.#planRun;
 		try {
-			outcome =
-				node.kind === "check"
-					? await this.#deps.runCheck(node, signal)
-					: await this.#deps.runReview(node, planPacketText({ loopName: loop.name, nodeName: node.name, prompts: s.prompts, plan: planText }), signal, (detail) => {
-							view.detail = detail;
-							this.#emit();
-						});
+			outcome = await this.#deps.runReview(node, planPacketText({ loopName: loop.name, nodeName: node.name, prompts: s.prompts, plan: planText }), signal, (detail) => {
+				view.detail = detail;
+				this.#emit();
+			});
 		} catch (e) {
-			outcome = { kind: "error", message: e instanceof Error ? e.message : String(e) };
+			outcome = { kind: "error", message: errorText(e) };
 		}
+		// A newer plan or another loop took over: this run writes nothing more.
+		if (run !== this.#planRun || this.#attached !== attached || this.#state !== s) return { action: "ask", reason: null };
 		view.durationMs = Date.now() - started;
 		view.artifacts = outcome.artifacts ?? [];
 		view.detail = null;
@@ -419,9 +420,11 @@ export class Controller {
 			this.#emit(true);
 			return { action: "ask", reason: null };
 		}
+		s.planRounds += 1;
+		const kept = s.findings.filter((f) => !f.id.startsWith("plan."));
 		if (outcome.kind === "passed") {
 			view.state = "passed";
-			s.findings = s.findings.filter((f) => !f.id.startsWith("plan."));
+			s.findings = kept;
 			this.#persist();
 			this.#emit(true);
 			return { action: "approve" };
@@ -429,6 +432,7 @@ export class Controller {
 		if (outcome.kind !== "findings") {
 			view.state = "error";
 			view.detail = cut(outcome.message, 200);
+			s.findings = kept;
 			this.#persist();
 			this.#emit(true);
 			return { action: "ask", reason: `${node.name} couldn't review the plan: ${cut(outcome.message, 200)}` };
@@ -543,7 +547,7 @@ export class Controller {
 												report();
 											});
 							} catch (e) {
-								outcome = { kind: "error", message: e instanceof Error ? e.message : String(e) };
+								outcome = { kind: "error", message: errorText(e) };
 							}
 							if (abort.signal.aborted) return;
 							view.durationMs = Date.now() - started;

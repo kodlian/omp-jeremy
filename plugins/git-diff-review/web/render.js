@@ -1,8 +1,8 @@
+import { esc } from "omp-web-client/esc";
 import { changedSpan } from "../src/shared/diff.js";
 import { isChangeRow } from "../src/shared/layout.js";
 import { formatPin } from "../src/shared/reference.js";
-import { esc } from "./dom.js";
-import { tokenize } from "./highlight.js";
+import { tokenize } from "omp-web-client/highlight";
 import { icon } from "./icons.js";
 
 // MARK: syntax + intraline

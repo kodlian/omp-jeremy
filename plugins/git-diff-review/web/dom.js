@@ -1,8 +1,4 @@
-const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-
-export function esc(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (c) => ESCAPES[c]);
-}
+import { esc } from "omp-web-client/esc";
 
 export function isTextField(el) {
   return el instanceof HTMLElement && (el.isContentEditable || el.matches("input, textarea, select"));
@@ -11,20 +7,6 @@ export function isTextField(el) {
 export function splitPath(path) {
   const i = path.lastIndexOf("/");
   return i < 0 ? { dir: "", name: path } : { dir: path.slice(0, i), name: path.slice(i + 1) };
-}
-
-let toastTimer = null;
-export function toast(message, ms = 3000) {
-  let el = document.getElementById("toast");
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "toast";
-    document.body.appendChild(el);
-  }
-  el.textContent = message;
-  el.classList.add("visible");
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove("visible"), ms);
 }
 
 function execCopy(text) {

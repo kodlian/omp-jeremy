@@ -8,11 +8,14 @@
     "extensions": ["./dist/extension.js"]
   },
   "scripts": {
-    "build": "bun build web/main.js --outdir web/dist --format esm --minify",
+    "build": "bun build web/main.js --outdir web/dist --splitting --format esm --minify",
     "test": "bun test"
   },
   "devDependencies": {
     "omp-integrations": "workspace:*",
+    "omp-control-view": "workspace:*",
+    "omp-web-design-system": "workspace:*",
+    "omp-web-client": "workspace:*",
     "marked": "^18.2.0",
     "lucide": "^1.55.0",
     "@types/bun": "latest"

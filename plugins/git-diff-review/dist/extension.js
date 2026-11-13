@@ -2,69 +2,6 @@
 // plugins/git-diff-review/src/extension.ts
 import * as omp from "@oh-my-pi/pi-coding-agent";
 
-// packages/integrations/src/terminal.ts
-import { fileURLToPath } from "url";
-var TERMINALS_SCRIPT = fileURLToPath(new URL("../python/omp_terminals.py", import.meta.url));
-async function helper(args, options) {
-  const overrides = (options.overrideEnvs ?? []).flatMap((name) => ["--override-env", name]);
-  const proc = Bun.spawn([options.python ?? "python3", TERMINALS_SCRIPT, ...overrides, ...args], {
-    env: options.env ?? process.env,
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe"
-  });
-  const timer = setTimeout(() => proc.kill(), options.timeoutMs ?? 30000);
-  try {
-    const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-    if (code !== 0)
-      throw new Error(err.trim().replace(/^terminals: /, "") || `omp_terminals.py ${args[0]} exited with ${code}`);
-    return out;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-async function detectTerminalContext(options = {}) {
-  return JSON.parse(await helper(["detect"], options));
-}
-async function terminalCellHeight(options = {}) {
-  try {
-    const context = await detectTerminalContext(options);
-    const cmux = context.cmux;
-    const surface = cmux?.surface;
-    if (!cmux || !surface)
-      return;
-    const proc = Bun.spawn([cmux.cli, "--socket", cmux.socket, "list-panes", "--workspace", cmux.workspace, "--json"], {
-      env: options.env ?? process.env,
-      stdout: "pipe",
-      stderr: "ignore",
-      timeout: 2000
-    });
-    const data = await new Response(proc.stdout).json();
-    if (await proc.exited !== 0)
-      return;
-    const pane = data.panes?.find((pane2) => pane2.surface_ids?.includes(surface));
-    const height = pane?.cell_height_points;
-    return typeof height === "number" && Number.isFinite(height) && height > 0 ? height : undefined;
-  } catch {
-    return;
-  }
-}
-async function openBoard(url, options = {}) {
-  const args = ["board", url, options.focus ? "--focus" : "--no-focus"];
-  if (options.context)
-    args.push("--context", JSON.stringify(options.context));
-  await helper(args, options);
-}
-
-// packages/integrations/src/review.ts
-var REVIEW_EVENT = "git-diff-review:open";
-function isReviewRequest(data) {
-  if (!data || typeof data !== "object")
-    return false;
-  const r = data;
-  return typeof r.reply === "function" && (r.type === "probe" || r.type === "open" && typeof r.base === "string");
-}
-
 // packages/integrations/src/theme.ts
 import { existsSync } from "fs";
 import { homedir } from "os";
@@ -152,6 +89,60 @@ async function terminalFont(families) {
   return null;
 }
 
+// packages/integrations/src/terminal.ts
+import { fileURLToPath } from "url";
+var TERMINALS_SCRIPT = fileURLToPath(new URL("../python/omp_terminals.py", import.meta.url));
+async function helper(args, options) {
+  const overrides = (options.overrideEnvs ?? []).flatMap((name) => ["--override-env", name]);
+  const proc = Bun.spawn([options.python ?? "python3", TERMINALS_SCRIPT, ...overrides, ...args], {
+    env: options.env ?? process.env,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe"
+  });
+  const timer = setTimeout(() => proc.kill(), options.timeoutMs ?? 30000);
+  try {
+    const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+    if (code !== 0)
+      throw new Error(err.trim().replace(/^terminals: /, "") || `omp_terminals.py ${args[0]} exited with ${code}`);
+    return out;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function detectTerminalContext(options = {}) {
+  return JSON.parse(await helper(["detect"], options));
+}
+async function terminalCellHeight(options = {}) {
+  try {
+    const context = await detectTerminalContext(options);
+    const cmux = context.cmux;
+    const surface = cmux?.surface;
+    if (!cmux || !surface)
+      return;
+    const proc = Bun.spawn([cmux.cli, "--socket", cmux.socket, "list-panes", "--workspace", cmux.workspace, "--json"], {
+      env: options.env ?? process.env,
+      stdout: "pipe",
+      stderr: "ignore",
+      timeout: 2000
+    });
+    const data = await new Response(proc.stdout).json();
+    if (await proc.exited !== 0)
+      return;
+    const pane = data.panes?.find((pane2) => pane2.surface_ids?.includes(surface));
+    const height = pane?.cell_height_points;
+    return typeof height === "number" && Number.isFinite(height) && height > 0 ? height : undefined;
+  } catch {
+    return;
+  }
+}
+async function openBoard(url, options = {}) {
+  const args = ["board", url, options.focus ? "--focus" : "--no-focus"];
+  if (options.context)
+    args.push("--context", JSON.stringify(options.context));
+  await helper(args, options);
+}
+
 // packages/integrations/src/theme.ts
 var THEME_EXPORTS = ["getCurrentThemeName", "getResolvedThemeColors", "getThemeExportColors", "isLightTheme", "getThemeEpoch"];
 function hasThemeApi(module) {
@@ -236,7 +227,17 @@ var TOKEN_VARS = {
   "--syn-number": "syntaxNumber",
   "--syn-type": "syntaxType",
   "--syn-operator": "syntaxOperator",
-  "--syn-punctuation": "syntaxPunctuation"
+  "--syn-punctuation": "syntaxPunctuation",
+  "--md-heading": "mdHeading",
+  "--md-link": "mdLink",
+  "--md-link-url": "mdLinkUrl",
+  "--md-code": "mdCode",
+  "--md-code-block": "mdCodeBlock",
+  "--md-code-border": "mdCodeBlockBorder",
+  "--md-quote": "mdQuote",
+  "--md-quote-border": "mdQuoteBorder",
+  "--md-hr": "mdHr",
+  "--md-bullet": "mdListBullet"
 };
 function toAppearance(omp, terminal) {
   const theme = resolveTheme(omp, terminal);
@@ -282,6 +283,56 @@ function appearanceCss({ scheme, vars, font }, fontUrl) {
 ${decls.join("")}}
 `;
 }
+
+// packages/integrations/src/page.ts
+function recordedPort(ctx, entryType) {
+  let port = null;
+  for (const entry of ctx.sessionManager.getBranch()) {
+    if (entry.type === "custom" && entry.customType === entryType && typeof entry.data?.port === "number")
+      port = entry.data.port;
+  }
+  return port;
+}
+function appearanceSync(omp, page) {
+  const api = hasThemeApi(omp) ? omp : null;
+  let epoch = null;
+  let timer;
+  const sync = async (force = false) => {
+    if (!api || !page())
+      return;
+    const now = api.getThemeEpoch();
+    if (now === epoch && !force)
+      return;
+    epoch = now;
+    const [theme, terminal] = await Promise.all([currentTheme(api), terminalConfig()]);
+    if (epoch === now)
+      page()?.setAppearance(toAppearance(theme, terminal));
+  };
+  return {
+    sync,
+    start() {
+      if (api && !timer)
+        timer = setInterval(() => void sync().catch(() => {}), 1000);
+    },
+    stop() {
+      clearInterval(timer);
+      timer = undefined;
+      epoch = null;
+    }
+  };
+}
+
+// packages/integrations/src/review.ts
+var REVIEW_EVENT = "git-diff-review:open";
+function isReviewRequest(data) {
+  if (!data || typeof data !== "object")
+    return false;
+  const r = data;
+  return typeof r.reply === "function" && (r.type === "probe" || r.type === "open" && typeof r.base === "string");
+}
+
+// packages/integrations/src/text.ts
+var errorText = (e) => e instanceof Error ? e.message : String(e);
 
 // plugins/git-diff-review/src/git.ts
 import { join as join2, resolve as resolve2, sep } from "path";
@@ -584,7 +635,124 @@ async function listCommits(root, max = 100, rev = "HEAD") {
 
 // plugins/git-diff-review/src/server.ts
 import { watch } from "fs";
-import { basename, extname as extname2, resolve as resolve3, sep as sep2 } from "path";
+import { basename, resolve as resolve4 } from "path";
+
+// packages/integrations/src/server.ts
+import { randomBytes, timingSafeEqual } from "crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "fs";
+import { extname as extname2, join as join3, resolve as resolve3, sep as sep2 } from "path";
+var CONTENT_TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".woff2": "font/woff2"
+};
+var portRange = (base) => Array.from({ length: 10 }, (_, i) => base + i);
+function json(body, status = 200) {
+  return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
+}
+
+class HttpError extends Error {
+  status;
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+function storedToken(dir) {
+  const file = join3(dir, "token");
+  try {
+    const token2 = readFileSync(file, "utf8").trim();
+    if (token2)
+      return token2;
+  } catch {}
+  const token = randomBytes(16).toString("hex");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(file, token, { mode: 384 });
+  return token;
+}
+async function serveStatic(webDir, pathname, token) {
+  const file = resolve3(webDir, `.${pathname === "/" ? "/index.html" : pathname}`);
+  const type = CONTENT_TYPES[extname2(file)];
+  if (!type || !file.startsWith(webDir + sep2))
+    return new Response("Not found", { status: 404 });
+  if (!await Bun.file(file).exists())
+    return new Response("Not found", { status: 404 });
+  const headers = { "Content-Type": type, "Cache-Control": "no-store" };
+  if (type.startsWith("text/html")) {
+    const html = await Bun.file(file).text();
+    return new Response(html.replace('href="/appearance.css"', `href="/appearance.css?token=${token}"`), { headers });
+  }
+  return new Response(Bun.file(file), { headers });
+}
+function startPageServer(options) {
+  const token = storedToken(options.stateDir);
+  const expected = Buffer.from(token);
+  let css = "";
+  let font;
+  const authorized = (url) => {
+    const given = Buffer.from(url.searchParams.get("token") ?? "");
+    return given.length === expected.length && timingSafeEqual(given, expected);
+  };
+  async function fetch(req, srv2) {
+    const url = new URL(req.url);
+    const ok = authorized(url);
+    if (url.pathname === "/ws") {
+      if (options.websocket && ok && srv2.upgrade(req, { data: undefined }))
+        return;
+      return new Response("Forbidden", { status: 403 });
+    }
+    if (options.fonts && url.pathname === "/api/font") {
+      if (!ok)
+        return new Response("Forbidden", { status: 403 });
+      if (!font || url.searchParams.get("id") !== font.id)
+        return new Response("Not found", { status: 404 });
+      return new Response(Bun.file(font.path), { headers: { "Cache-Control": "no-store" } });
+    }
+    if (url.pathname.startsWith("/api/")) {
+      if (!ok)
+        return json({ error: "forbidden" }, 403);
+      try {
+        return await options.api(req, url);
+      } catch (e) {
+        return json({ error: errorText(e) }, e instanceof HttpError ? e.status : 500);
+      }
+    }
+    if (url.pathname === "/appearance.css") {
+      if (!ok)
+        return new Response("Forbidden", { status: 403 });
+      return new Response(css, { headers: { "Content-Type": CONTENT_TYPES[".css"], "Cache-Control": "no-store" } });
+    }
+    return serveStatic(options.webDir, url.pathname, ok ? token : "");
+  }
+  let server = null;
+  for (const port of [...options.ports, 0]) {
+    try {
+      server = options.websocket ? Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: options.idleTimeout, fetch, websocket: options.websocket }) : Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: options.idleTimeout, fetch });
+      break;
+    } catch {}
+  }
+  if (!server)
+    throw new Error(`${options.name}: could not bind a local port`);
+  const srv = server;
+  return {
+    port: srv.port,
+    token,
+    server: srv,
+    url: () => `http://127.0.0.1:${srv.port}/?token=${token}`,
+    setAppearance(appearance) {
+      font = options.fonts ? appearance?.font : undefined;
+      const next = appearance ? options.fonts ? appearanceCss(appearance, `/api/font?token=${token}&id=${font?.id}`) : appearanceCss({ ...appearance, font: undefined }) : "";
+      if (next === css)
+        return;
+      css = next;
+      options.onAppearance();
+    },
+    stop() {
+      srv.stop(true);
+    }
+  };
+}
 
 // plugins/git-diff-review/src/open-in.ts
 var fileUrl = (scheme) => (abs, line) => `${scheme}://file${encodeURI(abs)}${line ? `:${line}` : ""}`;
@@ -621,11 +789,11 @@ async function openIn(id, abs, line) {
 var PROTOCOL = 3;
 
 // plugins/git-diff-review/src/store.ts
-import { createHash as createHash2, randomBytes } from "crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "fs";
+import { createHash as createHash2 } from "crypto";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "fs";
 import { homedir as homedir2 } from "os";
-import { join as join3 } from "path";
-var DEFAULT_STATE_DIR = join3(homedir2(), ".omp", "cache", "git-diff-review");
+import { join as join4 } from "path";
+var DEFAULT_STATE_DIR = join4(homedir2(), ".omp", "cache", "git-diff-review");
 
 class ReviewStore {
   dir;
@@ -634,25 +802,13 @@ class ReviewStore {
     this.dir = dir;
   }
   #file(root) {
-    return join3(this.dir, `${createHash2("sha1").update(root).digest("hex").slice(0, 16)}.json`);
-  }
-  token() {
-    const file = join3(this.dir, "token");
-    try {
-      const token2 = readFileSync(file, "utf8").trim();
-      if (token2)
-        return token2;
-    } catch {}
-    const token = randomBytes(16).toString("hex");
-    mkdirSync(this.dir, { recursive: true });
-    writeFileSync(file, token, { mode: 384 });
-    return token;
+    return join4(this.dir, `${createHash2("sha1").update(root).digest("hex").slice(0, 16)}.json`);
   }
   get(root) {
     let state = this.#cache.get(root);
     if (!state) {
       try {
-        const raw = JSON.parse(readFileSync(this.#file(root), "utf8"));
+        const raw = JSON.parse(readFileSync2(this.#file(root), "utf8"));
         state = { pins: Array.isArray(raw.pins) ? raw.pins : [], viewed: raw.viewed && typeof raw.viewed === "object" ? raw.viewed : {} };
       } catch {
         state = { pins: [], viewed: {} };
@@ -664,21 +820,15 @@ class ReviewStore {
   update(root, patch) {
     const state = { ...this.get(root), ...patch };
     this.#cache.set(root, state);
-    mkdirSync(this.dir, { recursive: true });
-    writeFileSync(this.#file(root), JSON.stringify({ root, ...state }));
+    mkdirSync2(this.dir, { recursive: true });
+    writeFileSync2(this.#file(root), JSON.stringify({ root, ...state }));
     return state;
   }
 }
 
 // plugins/git-diff-review/src/server.ts
-var WEB_DIR = resolve3(import.meta.dir, "..", "web");
-var DEFAULT_PORTS = Array.from({ length: 10 }, (_, i) => 9890 + i);
-var CONTENT_TYPES = {
-  ".html": "text/html; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".woff2": "font/woff2"
-};
+var WEB_DIR = resolve4(import.meta.dir, "..", "web");
+var DEFAULT_PORTS = portRange(9890);
 function parseCompare(params) {
   const kind = params.get("kind");
   if (kind === "branch")
@@ -694,29 +844,11 @@ function compareQuery(compare) {
     return compare.sha ? `&kind=commit&sha=${encodeURIComponent(compare.sha)}` : "&kind=commit";
   return "";
 }
-function json(body, status = 200) {
-  return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
-}
-async function serveStatic(pathname, token) {
-  const file = resolve3(WEB_DIR, `.${pathname === "/" ? "/index.html" : pathname}`);
-  const type = CONTENT_TYPES[extname2(file)];
-  if (!type || !file.startsWith(WEB_DIR + sep2))
-    return new Response("Not found", { status: 404 });
-  const headers = { "Content-Type": type, "Cache-Control": "no-store" };
-  if (type.startsWith("text/html")) {
-    const html = await Bun.file(file).text();
-    return new Response(html.replace('href="/appearance.css"', `href="/appearance.css?token=${token}"`), { headers });
-  }
-  return new Response(Bun.file(file), { headers });
-}
 function startReviewServer(initialRoot, hooks, { store = new ReviewStore, ports = DEFAULT_PORTS } = {}) {
-  const token = store.token();
   let root = initialRoot;
   let watcher = null;
   let changeTimer;
-  let themeCss = "";
-  let font;
-  const notifyChanged = () => server?.publish("review", JSON.stringify({ type: "changed" }));
+  const notifyChanged = () => page.server.publish("review", JSON.stringify({ type: "changed" }));
   async function watchGit() {
     const watched = root;
     const dir = await gitDir(watched).catch(() => null);
@@ -735,30 +867,26 @@ function startReviewServer(initialRoot, hooks, { store = new ReviewStore, ports 
   }
   const hello = () => JSON.stringify({ type: "hello", protocol: PROTOCOL, root, name: basename(root), session: hooks.sessionName(), ...store.get(root) });
   async function api(pathname, params) {
-    try {
-      switch (pathname) {
-        case "/api/review":
-          if (!await isRepo(root))
-            return json({ files: [], branch: null, base: null, commit: null, notRepo: true });
-          return json(await loadReview(root, parseCompare(params), { ignoreWhitespace: params.get("ws") === "1" }));
-        case "/api/branches":
-          return json(await listBranches(root));
-        case "/api/commits":
-          return json(await listCommits(root));
-        case "/api/lines":
-          return json(await fileLines(root, parseCompare(params), params.get("path") ?? ""));
-        case "/api/open-targets":
-          return json(await openTargets());
-        case "/api/open": {
-          const line = Number(params.get("line"));
-          await openIn(params.get("target") ?? "default", resolveInRoot(root, params.get("path") ?? ""), line > 0 ? line : null);
-          return json({ ok: true });
-        }
-        default:
-          return json({ error: "not found" }, 404);
+    switch (pathname) {
+      case "/api/review":
+        if (!await isRepo(root))
+          return json({ files: [], branch: null, base: null, commit: null, notRepo: true });
+        return json(await loadReview(root, parseCompare(params), { ignoreWhitespace: params.get("ws") === "1" }));
+      case "/api/branches":
+        return json(await listBranches(root));
+      case "/api/commits":
+        return json(await listCommits(root));
+      case "/api/lines":
+        return json(await fileLines(root, parseCompare(params), params.get("path") ?? ""));
+      case "/api/open-targets":
+        return json(await openTargets());
+      case "/api/open": {
+        const line = Number(params.get("line"));
+        await openIn(params.get("target") ?? "default", resolveInRoot(root, params.get("path") ?? ""), line > 0 ? line : null);
+        return json({ ok: true });
       }
-    } catch (error) {
-      return json({ error: error instanceof Error ? error.message : String(error) }, 500);
+      default:
+        return json({ error: "not found" }, 404);
     }
   }
   function onMessage(ws, raw) {
@@ -780,82 +908,46 @@ function startReviewServer(initialRoot, hooks, { store = new ReviewStore, ports 
       isRepo(root).then((repo) => repo || initRepo(root)).then(() => {
         notifyChanged();
         return watchGit();
-      }).catch((error) => ws.send(JSON.stringify({ type: "error", message: error instanceof Error ? error.message : String(error) })));
+      }).catch((error) => ws.send(JSON.stringify({ type: "error", message: errorText(error) })));
     }
   }
-  let server = null;
-  for (const port of [...ports, 0]) {
-    try {
-      server = Bun.serve({
-        hostname: "127.0.0.1",
-        port,
-        fetch(req, srv2) {
-          const url = new URL(req.url);
-          const authorized = url.searchParams.get("token") === token;
-          if (url.pathname === "/ws") {
-            if (authorized && srv2.upgrade(req, { data: null }))
-              return;
-            return new Response("Forbidden", { status: 403 });
-          }
-          if (url.pathname === "/api/font") {
-            if (!authorized)
-              return new Response("Forbidden", { status: 403 });
-            if (!font || url.searchParams.get("id") !== font.id)
-              return new Response("Not found", { status: 404 });
-            return new Response(Bun.file(font.path), { headers: { "Cache-Control": "no-store" } });
-          }
-          if (url.pathname.startsWith("/api/")) {
-            return authorized ? api(url.pathname, url.searchParams) : json({ error: "forbidden" }, 403);
-          }
-          if (url.pathname === "/appearance.css") {
-            if (!authorized)
-              return new Response("Forbidden", { status: 403 });
-            return new Response(themeCss, { headers: { "Content-Type": CONTENT_TYPES[".css"], "Cache-Control": "no-store" } });
-          }
-          return serveStatic(url.pathname, authorized ? token : "");
-        },
-        websocket: {
-          open(ws) {
-            ws.subscribe("review");
-            ws.send(hello());
-          },
-          message: onMessage
-        }
-      });
-      break;
-    } catch {}
-  }
-  if (!server)
-    throw new Error("git-diff-review: could not bind a local port");
-  const srv = server;
+  const page = startPageServer({
+    name: "git-diff-review",
+    webDir: WEB_DIR,
+    stateDir: store.dir,
+    ports,
+    fonts: true,
+    api: (_req, url) => api(url.pathname, url.searchParams),
+    websocket: {
+      open(ws) {
+        ws.subscribe("review");
+        ws.send(hello());
+      },
+      message: onMessage
+    },
+    onAppearance: () => page.server.publish("review", JSON.stringify({ type: "appearance" }))
+  });
   watchGit();
   return {
-    port: srv.port,
-    token,
+    port: page.port,
+    token: page.token,
     get root() {
       return root;
     },
-    url: (compare) => `http://127.0.0.1:${srv.port}/?token=${token}${compareQuery(compare)}`,
+    url: (compare) => page.url() + compareQuery(compare),
     setRoot(next) {
       if (next === root)
         return;
       root = next;
-      srv.publish("review", hello());
+      page.server.publish("review", hello());
       watchGit();
     },
-    setAppearance(appearance) {
-      font = appearance?.font;
-      const next = appearance ? appearanceCss(appearance, `/api/font?token=${token}&id=${font?.id}`) : "";
-      if (next === themeCss)
-        return;
-      themeCss = next;
-      srv.publish("review", JSON.stringify({ type: "appearance" }));
-    },
+    setAppearance: page.setAppearance,
     notifyChanged,
     stop() {
       watcher?.close();
       clearTimeout(changeTimer);
-      srv.stop(true);
+      page.stop();
     }
   };
 }
@@ -863,7 +955,6 @@ function startReviewServer(initialRoot, hooks, { store = new ReviewStore, ports 
 // plugins/git-diff-review/src/extension.ts
 var USAGE = "Usage: /review [branch [base] | uncommitted | commit [sha]]";
 var SERVER_ENTRY = "git-diff-review.server";
-var themeApi = hasThemeApi(omp);
 function parseArgs(args) {
   const [kind, value] = args.trim().split(/\s+/).filter(Boolean);
   if (!kind || kind === "branch")
@@ -877,20 +968,11 @@ function parseArgs(args) {
 async function reviewRoot(cwd) {
   return await isRepo(cwd) ? await repoRoot(cwd) : cwd;
 }
-function recordedPort(sessionCtx) {
-  let port = null;
-  for (const entry of sessionCtx.sessionManager.getBranch()) {
-    if (entry.type === "custom" && entry.customType === SERVER_ENTRY && typeof entry.data?.port === "number")
-      port = entry.data.port;
-  }
-  return port;
-}
 function gitDiffReview(pi) {
   let server = null;
   let ctx = null;
   let resumePort = null;
-  let themeEpoch = null;
-  let themeTimer;
+  const appearance = appearanceSync(omp, () => server);
   const hooks = {
     send(text) {
       if (!ctx || ctx.isIdle())
@@ -903,28 +985,15 @@ function gitDiffReview(pi) {
     },
     sessionName: () => pi.getSessionName() || "omp"
   };
-  async function syncAppearance(force = false) {
-    if (!themeApi)
-      return;
-    const epoch = omp.getThemeEpoch();
-    if (!server || epoch === themeEpoch && !force)
-      return;
-    themeEpoch = epoch;
-    const [theme, terminal] = await Promise.all([currentTheme(omp), terminalConfig()]);
-    if (themeEpoch === epoch)
-      server?.setAppearance(toAppearance(theme, terminal));
-  }
   async function ensureServer(cwd, port) {
     const root = await reviewRoot(cwd);
     if (server)
       server.setRoot(root);
     else {
       server = startReviewServer(root, hooks, { ports: port ? [port, ...DEFAULT_PORTS] : DEFAULT_PORTS });
-      if (themeApi)
-        themeTimer = setInterval(() => syncAppearance(), 1000);
+      appearance.start();
     }
-    if (themeApi)
-      await syncAppearance(true);
+    await appearance.sync(true);
     return server;
   }
   async function follow(sessionCtx) {
@@ -937,7 +1006,7 @@ function gitDiffReview(pi) {
   async function open(sessionCtx, compare) {
     ctx = sessionCtx;
     const reviewServer = await ensureServer(sessionCtx.cwd, null);
-    if (recordedPort(sessionCtx) !== reviewServer.port)
+    if (recordedPort(sessionCtx, SERVER_ENTRY) !== reviewServer.port)
       pi.appendEntry(SERVER_ENTRY, { port: reviewServer.port });
     const url = reviewServer.url(compare);
     await openBoard(url, { focus: true });
@@ -961,35 +1030,45 @@ function gitDiffReview(pi) {
       return data.reply({ ok: true, message: "" });
     if (!ctx)
       return data.reply({ ok: false, message: "git-diff-review has no omp session yet" });
-    open(ctx, { kind: "branch", base: data.base }).then((url) => data.reply({ ok: true, message: url }), (e) => data.reply({ ok: false, message: e instanceof Error ? e.message : String(e) }));
+    open(ctx, { kind: "branch", base: data.base }).then((url) => data.reply({ ok: true, message: url }), (e) => data.reply({ ok: false, message: errorText(e) }));
   });
   pi.on("session_start", async (_event, sessionCtx) => {
+    if (sessionCtx.agent?.kind === "sub")
+      return;
     ctx = sessionCtx;
-    const port = resumePort ?? recordedPort(sessionCtx);
+    const port = resumePort ?? recordedPort(sessionCtx, SERVER_ENTRY);
     resumePort = null;
     if (port !== null)
-      await ensureServer(sessionCtx.cwd, port);
+      await ensureServer(sessionCtx.cwd, port).catch((e) => sessionCtx.ui.notify(`Review: the page didn't start: ${errorText(e)}`, "warning"));
   });
   pi.on("session_switch", async (_event, sessionCtx) => {
-    const port = server ? null : recordedPort(sessionCtx);
+    if (sessionCtx.agent?.kind === "sub")
+      return;
+    const port = server ? null : recordedPort(sessionCtx, SERVER_ENTRY);
     if (port !== null) {
       ctx = sessionCtx;
-      await ensureServer(sessionCtx.cwd, port);
+      await ensureServer(sessionCtx.cwd, port).catch((e) => sessionCtx.ui.notify(`Review: the page didn't start: ${errorText(e)}`, "warning"));
     } else
       await follow(sessionCtx);
   });
   pi.on("tool_result", async (_event, sessionCtx) => {
+    if (sessionCtx.agent?.kind === "sub")
+      return;
     await follow(sessionCtx);
   });
   pi.on("agent_end", async (_event, sessionCtx) => {
+    if (sessionCtx.agent?.kind === "sub")
+      return;
     await follow(sessionCtx);
   });
-  pi.on("session_shutdown", async () => {
+  pi.on("session_shutdown", async (_event, sessionCtx) => {
+    if (sessionCtx.agent?.kind === "sub")
+      return;
+    ctx = null;
     if (!server)
       return;
     resumePort = server.port;
-    clearInterval(themeTimer);
-    themeEpoch = null;
+    appearance.stop();
     server.stop();
     server = null;
   });

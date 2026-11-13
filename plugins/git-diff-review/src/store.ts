@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -31,19 +31,6 @@ export class ReviewStore {
 
 	#file(root: string): string {
 		return join(this.dir, `${createHash("sha1").update(root).digest("hex").slice(0, 16)}.json`);
-	}
-
-	// Shared by every review server so an open tab survives omp restarts and session switches.
-	token(): string {
-		const file = join(this.dir, "token");
-		try {
-			const token = readFileSync(file, "utf8").trim();
-			if (token) return token;
-		} catch {}
-		const token = randomBytes(16).toString("hex");
-		mkdirSync(this.dir, { recursive: true });
-		writeFileSync(file, token, { mode: 0o600 });
-		return token;
 	}
 
 	get(root: string): RepoState {

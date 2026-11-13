@@ -14,6 +14,8 @@
   "devDependencies": {
     "omp-integrations": "workspace:*",
     "omp-control-view": "workspace:*",
+    "omp-web-design-system": "workspace:*",
+    "omp-web-client": "workspace:*",
     "@types/bun": "latest"
   }
 }

@@ -1,12 +1,12 @@
 // The plan's Markdown as commentable blocks: headings, paragraphs, code, tables, quotes and each list item, with source lines.
 import { Marked } from "marked";
+import { esc } from "omp-web-client/esc";
 
-const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+export { esc };
+
 const SAFE_URL = /^(https?:|mailto:|#)/i;
-
-export function esc(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (c) => ESCAPES[c]);
-}
+// Inline code naming a file: a path with a folder, or a bare name with a known extension, optionally followed by :line.
+const PATH = /^(?:(?:~|\.{1,2})?\/)?[\w@.+-]+(?:\/[\w@.+-]+)+\/?(?::\d+(?:-\d+)?)?$|^[\w.-]+\.(?:[cm]?[jt]sx?|json|md|swift|py|rs|go|css|html|ya?ml|toml|sh|kts?|java|rb|plist|xcconfig|lock)(?::\d+(?:-\d+)?)?$/;
 
 // Plans come from the agent: raw HTML shows as text, links keep only safe schemes, images show their alt text.
 const marked = new Marked({
@@ -14,6 +14,13 @@ const marked = new Marked({
   renderer: {
     html({ text }) {
       return esc(text);
+    },
+    code({ text, lang }) {
+      const name = (lang ?? "").match(/^\S+/)?.[0] ?? "";
+      return `<pre${name ? ` data-lang="${esc(name)}"` : ""}><code${name ? ` class="language-${esc(name)}"` : ""}>${esc(text.replace(/\n$/, ""))}\n</code></pre>\n`;
+    },
+    codespan({ text }) {
+      return `<code${PATH.test(text) ? ' class="path"' : ""}>${esc(text)}</code>`;
     },
     link({ href, title, tokens }) {
       const label = this.parser.parseInline(tokens);

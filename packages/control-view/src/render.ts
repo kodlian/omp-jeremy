@@ -1,4 +1,4 @@
-import { type Decision, type FindingView, type LoopShape, type NodeKind, type NodeState, type PlanMode, questionAnswer, type RunStatus, type RunView } from "./protocol";
+import { type Decision, type FindingView, type LoopShape, type NodeKind, type NodeState, type PlanMode, questionAnswer, type RunStatus, type RunView, withPlanMode } from "./protocol";
 
 export type Phase = "plan" | "change";
 
@@ -284,15 +284,17 @@ function diagram(loop: LoopShape, run: RunView | null, handlers: RenderHandlers,
 			? {
 					phase: "plan",
 					title: "Plan loop",
-					agent: { title: "Plan", sub: plan === "planning" ? "planning…" : plan === "review" ? "in review" : "", active: plan === "planning", icon: "pencil" },
+					agent: { title: "Plan", sub: plan === "planning" ? "planning…" : plan === "checking" || plan === "review" ? "in review" : "", active: plan === "planning", icon: "pencil" },
 					output: { title: "Plan", sub: plan === "approved" ? "approved" : "", icon: "file" },
 					stages: loop.plan === "ai" && loop.planReviewer ? [{ nodes: [loop.planReviewer] }] : [],
 					implicit:
 						loop.plan === "you"
 							? { id: "@plan-review", name: "You approve", kind: "you", fact: plan === "approved" ? "approved" : plan === "review" ? "waiting for you" : "", state: plan === "approved" ? "passed" : plan === "review" ? "running" : run ? "waiting" : null }
-							: null,
+							: loop.plan === "ai" && plan === "review"
+								? { id: "@plan-review", name: "You approve", kind: "you", fact: "waiting for you", state: "running" }
+								: null,
 					hot: run?.findings.some((f) => f.id.startsWith("plan.")) && plan !== "approved" ? { text: "revise", tone: "warn" } : null,
-					active: plan === "planning" || plan === "review",
+					active: plan === "planning" || plan === "checking" || plan === "review",
 					add: loop.plan === "ai" && !loop.planReviewer ? "+ plan reviewer" : null,
 					together: false,
 				}
@@ -310,7 +312,7 @@ function diagram(loop: LoopShape, run: RunView | null, handlers: RenderHandlers,
 		stages: loop.stages,
 		implicit: review,
 		hot: open ? { text: `${open} for you`, tone: "warn" } : fixing ? { text: `${fixing} to fix`, tone: "accent" } : null,
-		active: !!run && plan !== "planning" && plan !== "review",
+		active: !!run && plan !== "planning" && plan !== "checking" && plan !== "review",
 		add: "+ add check",
 		together: true,
 	};
@@ -518,6 +520,7 @@ function findings(run: RunView, handlers: RenderHandlers, filter: string | null)
 
 /** Draws the flow's block diagram with the run's live state, then the findings that need a decision (unless `decisions: false`). */
 export function renderLoop(root: HTMLElement, loop: LoopShape, run: RunView | null, handlers: RenderHandlers = {}, options: { decisions?: boolean } = {}): void {
+	loop = withPlanMode(loop);
 	const filter = root.dataset.filter && run?.findings.some((f) => f.node === root.dataset.filter) ? root.dataset.filter : null;
 	const onFilter = (id: string | null) => {
 		if (id) root.dataset.filter = id;

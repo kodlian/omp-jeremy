@@ -2,13 +2,20 @@
 // plugins/control/src/extension.ts
 import { rm as rm3 } from "fs/promises";
 import { homedir as homedir4 } from "os";
-import { join as join5 } from "path";
+import { join as join6 } from "path";
 import * as omp from "@oh-my-pi/pi-coding-agent";
 
 // packages/control-view/src/protocol.ts
 var RUN_EVENT = "control:run";
 var LIBRARY_EVENT = "control:library";
 var COMMAND_EVENT = "control:command";
+function withPlanMode(loop) {
+  const stored = loop;
+  if (typeof stored.plan !== "boolean")
+    return stored.planReviewer === undefined ? { ...loop, planReviewer: null } : loop;
+  const { planStages: _, ...rest } = stored;
+  return { ...rest, plan: stored.plan ? "you" : "none", planReviewer: null };
+}
 function questionAnswer(f, picked) {
   if (!f.question || !picked)
     return null;
@@ -30,6 +37,20 @@ var STATUS_LABELS = {
   paused: "Paused",
   stalled: "Stalled"
 };
+
+// packages/integrations/src/bus.ts
+function busAsk(events, event, request, timeoutMs, unavailable) {
+  const { promise, resolve } = Promise.withResolvers();
+  const timer = setTimeout(() => resolve({ ok: false, message: unavailable }), timeoutMs);
+  events.emit(event, {
+    ...request,
+    reply: (r) => {
+      clearTimeout(timer);
+      resolve(r);
+    }
+  });
+  return promise;
+}
 
 // packages/integrations/src/theme.ts
 import { existsSync } from "fs";
@@ -256,7 +277,17 @@ var TOKEN_VARS = {
   "--syn-number": "syntaxNumber",
   "--syn-type": "syntaxType",
   "--syn-operator": "syntaxOperator",
-  "--syn-punctuation": "syntaxPunctuation"
+  "--syn-punctuation": "syntaxPunctuation",
+  "--md-heading": "mdHeading",
+  "--md-link": "mdLink",
+  "--md-link-url": "mdLinkUrl",
+  "--md-code": "mdCode",
+  "--md-code-block": "mdCodeBlock",
+  "--md-code-border": "mdCodeBlockBorder",
+  "--md-quote": "mdQuote",
+  "--md-quote-border": "mdQuoteBorder",
+  "--md-hr": "mdHr",
+  "--md-bullet": "mdListBullet"
 };
 function toAppearance(omp, terminal) {
   const theme = resolveTheme(omp, terminal);
@@ -303,8 +334,56 @@ ${decls.join("")}}
 `;
 }
 
+// packages/integrations/src/page.ts
+function recordedPort(ctx, entryType) {
+  let port = null;
+  for (const entry of ctx.sessionManager.getBranch()) {
+    if (entry.type === "custom" && entry.customType === entryType && typeof entry.data?.port === "number")
+      port = entry.data.port;
+  }
+  return port;
+}
+function appearanceSync(omp, page) {
+  const api = hasThemeApi(omp) ? omp : null;
+  let epoch = null;
+  let timer;
+  const sync = async (force = false) => {
+    if (!api || !page())
+      return;
+    const now = api.getThemeEpoch();
+    if (now === epoch && !force)
+      return;
+    epoch = now;
+    const [theme, terminal] = await Promise.all([currentTheme(api), terminalConfig()]);
+    if (epoch === now)
+      page()?.setAppearance(toAppearance(theme, terminal));
+  };
+  return {
+    sync,
+    start() {
+      if (api && !timer)
+        timer = setInterval(() => void sync().catch(() => {}), 1000);
+    },
+    stop() {
+      clearInterval(timer);
+      timer = undefined;
+      epoch = null;
+    }
+  };
+}
+
+// packages/integrations/src/plan.ts
+var PLAN_APPROVALS = { execute: true, compact: true, keep: true };
+function approvalChoice(options) {
+  return options.find((o) => !o.disabled && PLAN_APPROVALS[o.id]);
+}
+
 // packages/integrations/src/review.ts
 var REVIEW_EVENT = "git-diff-review:open";
+
+// packages/integrations/src/text.ts
+var errorText = (e) => e instanceof Error ? e.message : String(e);
+var toolReply = (text, isError = false) => ({ content: [{ type: "text", text }], isError });
 
 // plugins/control/src/library.ts
 import { realpathSync } from "fs";
@@ -488,7 +567,7 @@ function nodeFrom(id, fields, body, where) {
     instructions: body.trim()
   };
 }
-function flowFrom(raw, where, plan, node, idOf) {
+function flowFrom(raw, where, plan, node, idOf, kindOf) {
   const seen = new Set;
   const unique = (n) => {
     const id = idOf(n);
@@ -501,6 +580,8 @@ function flowFrom(raw, where, plan, node, idOf) {
   if (named !== (plan === "ai"))
     throw new Error(`${where}: planReviewer names the plan's reviewer when plan is ai, and only then`);
   const planReviewer = named ? unique(node(raw.planReviewer, `${where}: planReviewer`)) : null;
+  if (planReviewer !== null && kindOf(planReviewer) === "check")
+    throw new Error(`${where}: planReviewer must be an AI reviewer, not a command check`);
   const stages = raw.stages ?? [];
   if (!Array.isArray(stages) || stages.length > 8)
     throw new Error(`${where}: stages must list 0\u20138 stages`);
@@ -543,7 +624,7 @@ function loopFrom(id, raw, where) {
       throw new Error(`${at}: nodes must be node ids`);
     checkId(n, at, "node id");
     return n;
-  }, (n) => n);
+  }, (n) => n, () => null);
   return { id, ...header, ...flow };
 }
 function validateSnapshot(value) {
@@ -566,15 +647,11 @@ function validateSnapshot(value) {
       throw new Error(`${at}: each node needs an id`);
     const body = typeof fields.instructions === "string" ? fields.instructions : "";
     return nodeFrom(fields.id, fields, body, `${at}: node ${fields.id}`);
-  }, (n) => n.id);
+  }, (n) => n.id, (n) => n.kind);
   return { id, ...header, ...flow };
 }
 function savedSnapshot(loop) {
-  const saved = loop;
-  if (typeof saved.plan !== "boolean")
-    return loop;
-  const { planStages: _, ...rest } = saved;
-  return { ...rest, plan: saved.plan ? "you" : "none", planReviewer: null };
+  return validateSnapshot(withPlanMode(loop));
 }
 async function listDir(dir, ext) {
   try {
@@ -585,7 +662,7 @@ async function listDir(dir, ext) {
 }
 async function loadLibrary(root) {
   const roots = libraryRoots(root);
-  const library = { loops: new Map, nodes: new Map, errors: [] };
+  const library = { loops: new Map, nodes: new Map, errors: [], broken: new Map };
   const sources = [
     ["built-in", roots.builtIn],
     ["global", roots.global],
@@ -602,7 +679,7 @@ async function loadLibrary(root) {
         const below = library.nodes.get(id);
         library.nodes.set(id, { node: nodeFrom(id, fields, body, path), source, path, overrides: below ? [below.source, ...below.overrides] : [] });
       } catch (e) {
-        library.errors.push({ path, message: e instanceof Error ? e.message : String(e) });
+        library.errors.push({ path, message: errorText(e) });
       }
     }
     for (const file of await listDir(join2(dir, "loops"), ".json")) {
@@ -613,12 +690,15 @@ async function loadLibrary(root) {
         try {
           raw = JSON.parse(await readFile(path, "utf8"));
         } catch (e) {
-          throw new Error(`${path}: invalid JSON (${e instanceof Error ? e.message : String(e)})`);
+          throw new Error(`${path}: invalid JSON (${errorText(e)})`);
         }
         const below = library.loops.get(id);
         library.loops.set(id, { loop: loopFrom(id, raw, path), source, path, overrides: below ? [below.source, ...below.overrides] : [] });
+        library.broken.delete(id);
       } catch (e) {
-        library.errors.push({ path, message: e instanceof Error ? e.message : String(e) });
+        library.loops.delete(id);
+        library.broken.set(id, errorText(e));
+        library.errors.push({ path, message: errorText(e) });
       }
     }
   }
@@ -639,14 +719,16 @@ async function saveNode(root, scope, node) {
   await writeFile(path, text);
   return path;
 }
-function missingNodes(loop, library) {
-  return [...loop.planReviewer ? [loop.planReviewer] : [], ...loop.stages.flatMap((s) => s.nodes)].filter((n) => !library.nodes.has(n));
+function checkLoop(loop, library) {
+  const missing = [...loop.planReviewer ? [loop.planReviewer] : [], ...loop.stages.flatMap((s) => s.nodes)].filter((n) => !library.nodes.has(n));
+  if (missing.length)
+    throw new Error(`Loop ${loop.id} needs missing nodes: ${missing.join(", ")}`);
+  if (loop.planReviewer && library.nodes.get(loop.planReviewer)?.node.kind === "check")
+    throw new Error(`Loop ${loop.id}: planReviewer must be an AI reviewer, not a command check`);
 }
 async function saveLoop(root, scope, loop, library) {
   const valid = loopFrom(loop.id, loop, `loop ${loop.id}`);
-  const missing = missingNodes(valid, library);
-  if (missing.length)
-    throw new Error(`Loop ${loop.id} needs missing nodes: ${missing.join(", ")}`);
+  checkLoop(valid, library);
   const path = join2(await scopeDir(root, scope), "loops", `${loop.id}.json`);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify({ name: valid.name, description: valid.description, maxPasses: valid.maxPasses, plan: valid.plan, ...valid.planReviewer ? { planReviewer: valid.planReviewer } : {}, stages: valid.stages, finish: valid.finish }, null, 2)}
@@ -682,10 +764,8 @@ async function copyItem(root, library, kind, id, to, move) {
 function resolveLoop(library, id) {
   const entry = library.loops.get(id);
   if (!entry)
-    throw new Error(`No loop ${id} in the library`);
-  const missing = missingNodes(entry.loop, library);
-  if (missing.length)
-    throw new Error(`Loop ${id} needs missing nodes: ${missing.join(", ")}`);
+    throw new Error(library.broken.get(id) ?? `No loop ${id} in the library`);
+  checkLoop(entry.loop, library);
   const { loop } = entry;
   const node = (n) => library.nodes.get(n).node;
   return { id, name: loop.name, description: loop.description, maxPasses: loop.maxPasses, plan: loop.plan, planReviewer: loop.planReviewer ? node(loop.planReviewer) : null, stages: loop.stages.map((s) => ({ nodes: s.nodes.map(node) })), finish: loop.finish };
@@ -704,7 +784,13 @@ function shape(loop) {
   };
 }
 function summarize(library, repo) {
-  const loops = [...library.loops.values()].flatMap(({ loop, source }) => missingNodes(loop, library).length ? [] : [{ ...shape(resolveLoop(library, loop.id)), id: loop.id, source }]);
+  const loops = [...library.loops.values()].flatMap(({ loop, source }) => {
+    try {
+      return [{ ...shape(resolveLoop(library, loop.id)), id: loop.id, source }];
+    } catch {
+      return [];
+    }
+  });
   return { repo, loops: loops.sort((a, b) => a.name.localeCompare(b.name)) };
 }
 
@@ -822,7 +908,7 @@ function parseFindings(text) {
   try {
     parsed = JSON.parse(block[1]);
   } catch (e) {
-    throw fail(e instanceof Error ? e.message : String(e));
+    throw fail(errorText(e));
   }
   if (!parsed || typeof parsed !== "object" || !("findings" in parsed) || !Array.isArray(parsed.findings))
     throw fail('expected {"findings": [...]}');
@@ -1044,6 +1130,7 @@ class Controller {
   #gateReason = null;
   #gate = null;
   #running = null;
+  #planRun = 0;
   #passAbort = null;
   #lastEmit = 0;
   #lastStatus = null;
@@ -1125,7 +1212,7 @@ class Controller {
     if (state === "planning" && view)
       Object.assign(view, { state: "waiting", detail: null, findings: 0 });
     if (!s.paused && s.status !== "checking" && s.status !== "deciding")
-      s.status = state === "planning" || state === "review" ? "planning" : "implementing";
+      s.status = state === "planning" || state === "checking" || state === "review" ? "planning" : "implementing";
     this.#persist();
     this.#emit(true);
   }
@@ -1133,7 +1220,7 @@ class Controller {
     const s = this.#state;
     if (!this.#attached || s.paused)
       return { block: false };
-    if (s.planState === "planning" || s.planState === "review")
+    if (s.planState === "planning" || s.planState === "checking" || s.planState === "review")
       return { block: false };
     if (fp === "clean" || fp === s.promptFingerprint || s.settled?.fingerprint === fp)
       return { block: false };
@@ -1268,20 +1355,22 @@ class Controller {
       return { action: "ask", reason: null };
     const { loop } = attached;
     const s = this.#state;
-    s.planRounds += 1;
     const view = this.#nodes[node.id];
     Object.assign(view, { state: "running", detail: "reading the plan", findings: 0 });
     this.#emit();
     const started = Date.now();
     let outcome;
+    const run = ++this.#planRun;
     try {
-      outcome = node.kind === "check" ? await this.#deps.runCheck(node, signal) : await this.#deps.runReview(node, planPacketText({ loopName: loop.name, nodeName: node.name, prompts: s.prompts, plan: planText }), signal, (detail) => {
+      outcome = await this.#deps.runReview(node, planPacketText({ loopName: loop.name, nodeName: node.name, prompts: s.prompts, plan: planText }), signal, (detail) => {
         view.detail = detail;
         this.#emit();
       });
     } catch (e) {
-      outcome = { kind: "error", message: e instanceof Error ? e.message : String(e) };
+      outcome = { kind: "error", message: errorText(e) };
     }
+    if (run !== this.#planRun || this.#attached !== attached || this.#state !== s)
+      return { action: "ask", reason: null };
     view.durationMs = Date.now() - started;
     view.artifacts = outcome.artifacts ?? [];
     view.detail = null;
@@ -1290,9 +1379,11 @@ class Controller {
       this.#emit(true);
       return { action: "ask", reason: null };
     }
+    s.planRounds += 1;
+    const kept = s.findings.filter((f) => !f.id.startsWith("plan."));
     if (outcome.kind === "passed") {
       view.state = "passed";
-      s.findings = s.findings.filter((f) => !f.id.startsWith("plan."));
+      s.findings = kept;
       this.#persist();
       this.#emit(true);
       return { action: "approve" };
@@ -1300,6 +1391,7 @@ class Controller {
     if (outcome.kind !== "findings") {
       view.state = "error";
       view.detail = cut2(outcome.message, 200);
+      s.findings = kept;
       this.#persist();
       this.#emit(true);
       return { action: "ask", reason: `${node.name} couldn't review the plan: ${cut2(outcome.message, 200)}` };
@@ -1404,7 +1496,7 @@ class Controller {
               report();
             });
           } catch (e) {
-            outcome = { kind: "error", message: e instanceof Error ? e.message : String(e) };
+            outcome = { kind: "error", message: errorText(e) };
           }
           if (abort.signal.aborted)
             return;
@@ -1913,7 +2005,7 @@ ${tail2}` : ""}` };
       const findings = parseFindings(finalText(lines));
       return findings.length ? { kind: "findings", findings } : { kind: "passed" };
     } catch (e) {
-      return { kind: "error", message: e instanceof Error ? e.message : String(e) };
+      return { kind: "error", message: errorText(e) };
     }
   } finally {
     await rm2(dir, { recursive: true, force: true });
@@ -1921,19 +2013,24 @@ ${tail2}` : ""}` };
 }
 
 // plugins/control/src/server.ts
-import { randomBytes } from "crypto";
-import { mkdirSync, readFileSync, realpathSync as realpathSync2, writeFileSync } from "fs";
+import { realpathSync as realpathSync2 } from "fs";
 import { homedir as homedir3 } from "os";
-import { dirname as dirname2, extname as extname2, join as join4, resolve as resolve2, sep } from "path";
-var WEB_DIR = resolve2(dirname2(realpathSync2(import.meta.path)), "..", "web");
-var DEFAULT_PORTS = Array.from({ length: 10 }, (_, i) => 9880 + i);
-var STATE_DIR = join4(homedir3(), ".omp", "cache", "control");
-var PING_MS = 15000;
+import { dirname as dirname2, join as join5, resolve as resolve3 } from "path";
+
+// packages/integrations/src/server.ts
+import { randomBytes, timingSafeEqual } from "crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "fs";
+import { extname as extname2, join as join4, resolve as resolve2, sep } from "path";
 var CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8"
+  ".js": "text/javascript; charset=utf-8",
+  ".woff2": "font/woff2"
 };
+var portRange = (base) => Array.from({ length: 10 }, (_, i) => base + i);
+function json(body, status = 200) {
+  return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
+}
 
 class HttpError extends Error {
   status;
@@ -1942,35 +2039,106 @@ class HttpError extends Error {
     this.status = status;
   }
 }
-function json(body, status = 200) {
-  return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
-}
-function token(dir) {
+function storedToken(dir) {
   const file = join4(dir, "token");
   try {
-    const existing = readFileSync(file, "utf8").trim();
-    if (existing)
-      return existing;
+    const token2 = readFileSync(file, "utf8").trim();
+    if (token2)
+      return token2;
   } catch {}
-  const fresh2 = randomBytes(16).toString("hex");
+  const token = randomBytes(16).toString("hex");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(file, fresh2, { mode: 384 });
-  return fresh2;
+  writeFileSync(file, token, { mode: 384 });
+  return token;
 }
-async function serveStatic(pathname, token2) {
-  const file = resolve2(WEB_DIR, `.${pathname === "/" ? "/index.html" : pathname}`);
+async function serveStatic(webDir, pathname, token) {
+  const file = resolve2(webDir, `.${pathname === "/" ? "/index.html" : pathname}`);
   const type = CONTENT_TYPES[extname2(file)];
-  if (!type || !file.startsWith(WEB_DIR + sep))
+  if (!type || !file.startsWith(webDir + sep))
     return new Response("Not found", { status: 404 });
   if (!await Bun.file(file).exists())
     return new Response("Not found", { status: 404 });
   const headers = { "Content-Type": type, "Cache-Control": "no-store" };
   if (type.startsWith("text/html")) {
     const html = await Bun.file(file).text();
-    return new Response(html.replace('href="/appearance.css"', `href="/appearance.css?token=${token2}"`), { headers });
+    return new Response(html.replace('href="/appearance.css"', `href="/appearance.css?token=${token}"`), { headers });
   }
   return new Response(Bun.file(file), { headers });
 }
+function startPageServer(options) {
+  const token = storedToken(options.stateDir);
+  const expected = Buffer.from(token);
+  let css = "";
+  let font;
+  const authorized = (url) => {
+    const given = Buffer.from(url.searchParams.get("token") ?? "");
+    return given.length === expected.length && timingSafeEqual(given, expected);
+  };
+  async function fetch(req, srv2) {
+    const url = new URL(req.url);
+    const ok = authorized(url);
+    if (url.pathname === "/ws") {
+      if (options.websocket && ok && srv2.upgrade(req, { data: undefined }))
+        return;
+      return new Response("Forbidden", { status: 403 });
+    }
+    if (options.fonts && url.pathname === "/api/font") {
+      if (!ok)
+        return new Response("Forbidden", { status: 403 });
+      if (!font || url.searchParams.get("id") !== font.id)
+        return new Response("Not found", { status: 404 });
+      return new Response(Bun.file(font.path), { headers: { "Cache-Control": "no-store" } });
+    }
+    if (url.pathname.startsWith("/api/")) {
+      if (!ok)
+        return json({ error: "forbidden" }, 403);
+      try {
+        return await options.api(req, url);
+      } catch (e) {
+        return json({ error: errorText(e) }, e instanceof HttpError ? e.status : 500);
+      }
+    }
+    if (url.pathname === "/appearance.css") {
+      if (!ok)
+        return new Response("Forbidden", { status: 403 });
+      return new Response(css, { headers: { "Content-Type": CONTENT_TYPES[".css"], "Cache-Control": "no-store" } });
+    }
+    return serveStatic(options.webDir, url.pathname, ok ? token : "");
+  }
+  let server = null;
+  for (const port of [...options.ports, 0]) {
+    try {
+      server = options.websocket ? Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: options.idleTimeout, fetch, websocket: options.websocket }) : Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: options.idleTimeout, fetch });
+      break;
+    } catch {}
+  }
+  if (!server)
+    throw new Error(`${options.name}: could not bind a local port`);
+  const srv = server;
+  return {
+    port: srv.port,
+    token,
+    server: srv,
+    url: () => `http://127.0.0.1:${srv.port}/?token=${token}`,
+    setAppearance(appearance) {
+      font = options.fonts ? appearance?.font : undefined;
+      const next = appearance ? options.fonts ? appearanceCss(appearance, `/api/font?token=${token}&id=${font?.id}`) : appearanceCss({ ...appearance, font: undefined }) : "";
+      if (next === css)
+        return;
+      css = next;
+      options.onAppearance();
+    },
+    stop() {
+      srv.stop(true);
+    }
+  };
+}
+
+// plugins/control/src/server.ts
+var WEB_DIR = resolve3(dirname2(realpathSync2(import.meta.path)), "..", "web");
+var DEFAULT_PORTS = portRange(9880);
+var STATE_DIR = join5(homedir3(), ".omp", "cache", "control");
+var PING_MS = 15000;
 function scopeOf(value) {
   if (value !== "repo" && value !== "global")
     throw new HttpError(400, "scope must be repo or global");
@@ -2001,8 +2169,6 @@ function decisionsOf(value) {
   return out;
 }
 function startControlServer(hooks, { ports = DEFAULT_PORTS, stateDir = STATE_DIR } = {}) {
-  const secret = token(stateDir);
-  let themeCss = "";
   const clients = new Set;
   const encoder = new TextEncoder;
   const push = (client, text) => {
@@ -2136,56 +2302,31 @@ data: ${JSON.stringify(await hooks.state())}
         throw new HttpError(404, "not found");
     }
   }
-  let server = null;
-  for (const port of [...ports, 0]) {
-    try {
-      server = Bun.serve({
-        hostname: "127.0.0.1",
-        port,
-        idleTimeout: 0,
-        async fetch(req) {
-          const url = new URL(req.url);
-          const authorized = url.searchParams.get("token") === secret;
-          if (url.pathname.startsWith("/api/")) {
-            if (!authorized)
-              return json({ error: "forbidden" }, 403);
-            try {
-              return await api(req, url.pathname);
-            } catch (e) {
-              const status = e instanceof HttpError ? e.status : 400;
-              return json({ error: e instanceof Error ? e.message : String(e) }, status);
-            }
-          }
-          if (url.pathname === "/appearance.css") {
-            if (!authorized)
-              return new Response("Forbidden", { status: 403 });
-            return new Response(themeCss, { headers: { "Content-Type": CONTENT_TYPES[".css"], "Cache-Control": "no-store" } });
-          }
-          return serveStatic(url.pathname, authorized ? secret : "");
-        }
-      });
-      break;
-    } catch {}
-  }
-  if (!server)
-    throw new Error("control: could not bind a local port");
-  const srv = server;
-  return {
-    port: srv.port,
-    token: secret,
-    url: () => `http://127.0.0.1:${srv.port}/?token=${secret}`,
-    notify: () => void sendState().catch(() => {}),
-    clients: () => clients.size,
-    setAppearance(appearance) {
-      const next = appearance ? appearanceCss({ ...appearance, font: undefined }) : "";
-      if (next === themeCss)
-        return;
-      themeCss = next;
-      broadcast(`event: appearance
+  const page = startPageServer({
+    name: "control",
+    webDir: WEB_DIR,
+    stateDir,
+    ports,
+    idleTimeout: 0,
+    api: async (req, url) => {
+      try {
+        return await api(req, url.pathname);
+      } catch (e) {
+        return json({ error: errorText(e) }, e instanceof HttpError ? e.status : 400);
+      }
+    },
+    onAppearance: () => broadcast(`event: appearance
 data: {}
 
-`);
-    },
+`)
+  });
+  return {
+    port: page.port,
+    token: page.token,
+    url: page.url,
+    notify: () => void sendState().catch(() => {}),
+    clients: () => clients.size,
+    setAppearance: page.setAppearance,
     stop() {
       clearInterval(ping);
       for (const client of clients) {
@@ -2194,7 +2335,7 @@ data: {}
         } catch {}
       }
       clients.clear();
-      srv.stop(true);
+      page.stop();
     }
   };
 }
@@ -2226,12 +2367,8 @@ var SEND_BACK = "Send back";
 var DISMISS_ALL = "Dismiss all remaining";
 var PAUSE = "Pause the loop";
 var GATE_HELP = "Esc pauses the loop";
-var PLAN_APPROVALS = { execute: true, compact: true, keep: true };
 var REVIEW_PROBE_MS = 500;
 var REVIEW_OPEN_MS = 15000;
-var themeApi = hasThemeApi(omp);
-var errorText = (e) => e instanceof Error ? e.message : String(e);
-var reply = (text, isError = false) => ({ content: [{ type: "text", text }], isError });
 function findingQuestion(f) {
   if (f.approval)
     return `${f.rule}
@@ -2291,7 +2428,7 @@ function control(pi) {
   if (process.env.OMP_CONTROL_REVIEWER === "1")
     return;
   const z = pi.zod;
-  const artifactsDir = join5(homedir4(), ".omp", "cache", "control", "artifacts", crypto.randomUUID());
+  const artifactsDir = join6(homedir4(), ".omp", "cache", "control", "artifacts", crypto.randomUUID());
   let sessionCtx = null;
   let root = null;
   let attached = null;
@@ -2299,8 +2436,7 @@ function control(pi) {
   let library = null;
   let server = null;
   let resumePort = null;
-  let themeEpoch = null;
-  let themeTimer;
+  const appearance = appearanceSync(omp, () => server);
   let lastNote = null;
   let lastPrompt = null;
   let planChecks = null;
@@ -2436,7 +2572,7 @@ ${findingQuestion(f)}`;
     },
     runCheck: async (node, signal) => {
       const at = await currentSha();
-      return runCheck((command, args, options) => pi.exec(command, args, options), node, at.root, at.sha, join5(artifactsDir, node.id), signal);
+      return runCheck((command, args, options) => pi.exec(command, args, options), node, at.root, at.sha, join6(artifactsDir, node.id), signal);
     },
     runReview: (node, packet, signal, progress) => runReviewer(node, root ?? ".", { system: reviewerSystemPrompt(node), packet }, signal, progress),
     hasUI: () => sessionCtx?.hasUI === true,
@@ -2481,9 +2617,14 @@ ${findingQuestion(f)}`;
           return;
         await Bun.sleep(250);
       }
-    })();
+    })().catch(() => {});
+  };
+  const dropPlanCheck = () => {
+    planChecks?.abort();
+    planChecks = null;
   };
   const setLoop = async (next) => {
+    dropPlanCheck();
     attached = next;
     lastNote = null;
     controller.attach(next.loop, next.source, next.baseline);
@@ -2492,6 +2633,7 @@ ${findingQuestion(f)}`;
     armPlan(sessionCtx);
   };
   const detach = async () => {
+    dropPlanCheck();
     attached = null;
     controller.detach();
     pi.appendEntry(LOOP_ENTRY, { loop: null, source: null, baseline: null });
@@ -2548,31 +2690,14 @@ ${findingQuestion(f)}`;
     const parts = [commits ? `${commits} commit${commits === 1 ? "" : "s"}` : null, dirty ? "uncommitted changes" : null].filter(Boolean);
     return `since ${from} \xB7 ${parts.length ? parts.join(" and ") : "no changes yet"}`;
   };
-  const syncAppearance = async (force = false) => {
-    if (!themeApi)
+  const askReview = (request) => busAsk(pi.events, REVIEW_EVENT, request, request.type === "probe" ? REVIEW_PROBE_MS : REVIEW_OPEN_MS, "git-diff-review isn't loaded in this omp");
+  let reviewLoaded = false;
+  const probeReview = () => void askReview({ type: "probe" }).then((r) => {
+    if (r.ok === reviewLoaded)
       return;
-    const epoch = omp.getThemeEpoch();
-    if (!server || epoch === themeEpoch && !force)
-      return;
-    themeEpoch = epoch;
-    const [theme, terminal] = await Promise.all([currentTheme(omp), terminalConfig()]);
-    if (themeEpoch === epoch)
-      server?.setAppearance(toAppearance(theme, terminal));
-  };
-  const askReview = (request) => {
-    const { promise, resolve: resolve3 } = Promise.withResolvers();
-    const timer = setTimeout(() => resolve3({ ok: false, message: "git-diff-review isn't loaded in this omp" }), request.type === "probe" ? REVIEW_PROBE_MS : REVIEW_OPEN_MS);
-    pi.events.emit(REVIEW_EVENT, {
-      ...request,
-      reply: (r) => {
-        clearTimeout(timer);
-        resolve3(r);
-      }
-    });
-    return promise;
-  };
-  let reviewProbe = null;
-  const reviewLoaded = () => reviewProbe ??= askReview({ type: "probe" }).then((r) => r.ok);
+    reviewLoaded = r.ok;
+    server?.notify();
+  });
   const state = async () => {
     const lib = library ?? await refreshLibrary();
     return {
@@ -2582,7 +2707,7 @@ ${findingQuestion(f)}`;
         return snap ? { ...snap, since: await sinceLabel().catch(() => "") } : null;
       })(),
       run: controller.view(),
-      review: await reviewLoaded(),
+      review: reviewLoaded,
       library: {
         loops: [...lib.loops.values()].map((e) => ({ ...e.loop, source: e.source, path: e.path, overrides: e.overrides })),
         nodes: [...lib.nodes.values()].map((e) => ({ ...e.node, source: e.source, path: e.path, overrides: e.overrides })),
@@ -2641,29 +2766,21 @@ ${findingQuestion(f)}`;
         since,
         setPaused: (paused) => controller.setPaused(paused)
       }, { ports: port ? [port, ...DEFAULT_PORTS] : DEFAULT_PORTS });
-      if (themeApi)
-        themeTimer = setInterval(() => syncAppearance(), 1000);
+      appearance.start();
     }
-    if (themeApi)
-      await syncAppearance(true);
+    probeReview();
+    await appearance.sync(true);
     return server;
-  };
-  const recordedPort = (ctx) => {
-    let port = null;
-    for (const entry of ctx.sessionManager.getBranch()) {
-      if (entry.type === "custom" && entry.customType === SERVER_ENTRY && typeof entry.data?.port === "number")
-        port = entry.data.port;
-    }
-    return port;
   };
   const openPage = async () => {
     const page = await ensureServer(null);
-    if (sessionCtx && recordedPort(sessionCtx) !== page.port)
+    if (sessionCtx && recordedPort(sessionCtx, SERVER_ENTRY) !== page.port)
       pi.appendEntry(SERVER_ENTRY, { port: page.port });
     await openBoard(page.url(), { focus: true });
     return page.url();
   };
   const restore = async (ctx, withServer) => {
+    dropPlanCheck();
     sessionCtx = ctx;
     root = await repoRoot(ctx.cwd);
     library = null;
@@ -2685,13 +2802,23 @@ ${findingQuestion(f)}`;
         deps.emit(failedView(envLoop, errorText(e)));
       });
     } else {
-      attached = entry?.loop && entry.source && entry.baseline ? { loop: savedSnapshot(entry.loop), source: entry.source, baseline: entry.baseline } : null;
+      attached = null;
+      if (entry?.loop && entry.source && entry.baseline) {
+        try {
+          attached = { loop: savedSnapshot(entry.loop), source: entry.source, baseline: entry.baseline };
+        } catch (e) {
+          ctx.ui.notify(`Control: this session's flow no longer loads (${errorText(e)}); attach one with /control use`, "warning");
+        }
+      }
       controller.restore(attached, attached ? checkpoint : null);
+      const plan = controller.view()?.plan;
+      if (plan === "checking" || plan === "review")
+        controller.onPlan(ctx.getPendingPlanReview() ? "review" : ctx.sessionModes?.getState().plan.status === "active" ? "planning" : "unused");
       await activate(attached !== null);
       armPlan(ctx);
     }
     if (withServer) {
-      const port = resumePort ?? recordedPort(ctx);
+      const port = resumePort ?? recordedPort(ctx, SERVER_ENTRY);
       resumePort = null;
       if (port !== null)
         await ensureServer(port);
@@ -2746,29 +2873,36 @@ ${findingQuestion(f)}`;
   pi.on("plan_review_requested", (event, ctx) => {
     if (ctx.agent?.kind === "sub")
       return;
-    controller.onPlan("review", event.planContent);
-    if (attached?.loop.plan !== "ai")
+    dropPlanCheck();
+    const ai = attached?.loop.plan === "ai" && !controller.paused;
+    controller.onPlan(ai ? "checking" : "review", event.planContent);
+    if (!ai)
       return;
-    planChecks?.abort();
     const ctl = new AbortController;
     planChecks = ctl;
+    const yours = (why) => {
+      controller.onPlan("review");
+      sessionCtx?.ui.notify(`Control: ${why}; approve the plan or send it back`, "warning");
+    };
     controller.checkPlan(event.planContent, ctl.signal).then((r) => {
       const review = ctx.getPendingPlanReview();
       if (ctl.signal.aborted || !review || review.reviewId !== event.reviewId)
         return;
-      if (r.action === "refine")
-        ctx.resolvePlanReview(event.reviewId, "refine", { feedback: r.feedback });
-      else if (r.action === "approve") {
-        const choice = review.options.find((o) => !o.disabled && PLAN_APPROVALS[o.id]);
+      if (r.action === "refine") {
+        if (!ctx.resolvePlanReview(event.reviewId, "refine", { feedback: r.feedback }))
+          yours("omp didn't take the plan reviewer's feedback");
+      } else if (r.action === "approve") {
+        const choice = approvalChoice(review.options);
         if (!choice || !ctx.resolvePlanReview(event.reviewId, choice.id))
-          ctx.ui.notify("Control: the plan reviewer passed the plan, but omp took no approval; approve it yourself", "warning");
-      } else if (r.reason)
-        ctx.ui.notify(`Control: ${r.reason}; approve the plan or send it back`, "warning");
-    }, (e) => ctx.ui.notify(`Control: the plan review failed: ${errorText(e)}`, "warning"));
+          yours("the plan reviewer passed the plan, but omp took no approval");
+      } else
+        yours(r.reason ?? "the plan reviewer didn't finish");
+    }).catch((e) => yours(`the plan review failed: ${errorText(e)}`));
   });
   pi.on("plan_review_resolved", (event, ctx) => {
     if (ctx.agent?.kind === "sub")
       return;
+    dropPlanCheck();
     if (PLAN_APPROVALS[event.choice])
       controller.onPlan("approved");
     else if (event.choice === "refine")
@@ -2803,10 +2937,8 @@ ${findingQuestion(f)}`;
     if (ctx.agent?.kind === "sub")
       return;
     controller.abort();
-    planChecks?.abort();
-    clearInterval(themeTimer);
-    themeTimer = undefined;
-    themeEpoch = null;
+    dropPlanCheck();
+    appearance.stop();
     await rm3(artifactsDir, { recursive: true, force: true });
     if (!server)
       return;
@@ -2909,17 +3041,17 @@ ${nodes.join(`
             parts.push(`Files with errors:
 ${lib.errors.map((e) => `- ${e.message}`).join(`
 `)}`);
-          return reply(parts.join(`
+          return toolReply(parts.join(`
 
 `));
         }
         if (!params.kind || !params.id)
-          return reply(`${params.action} needs kind and id`, true);
+          return toolReply(`${params.action} needs kind and id`, true);
         if (params.action === "read") {
           const entry = params.kind === "node" ? lib.nodes.get(params.id) : lib.loops.get(params.id);
           if (!entry)
-            return reply(`No ${params.kind} ${params.id} in the library`, true);
-          return reply(`${entry.path} (${entry.source})
+            return toolReply(`No ${params.kind} ${params.id} in the library`, true);
+          return toolReply(`${entry.path} (${entry.source})
 
 ${await Bun.file(entry.path).text()}`);
         }
@@ -2927,19 +3059,19 @@ ${await Bun.file(entry.path).text()}`);
         let path;
         if (params.kind === "node") {
           if (!params.node)
-            return reply("save of a node needs node", true);
+            return toolReply("save of a node needs node", true);
           const node = nodeFrom(params.id, params.node, params.node.instructions ?? "", `node ${params.id}`);
           path = await saveNode(root, scope, node);
         } else {
           if (!params.loop)
-            return reply("save of a loop needs loop", true);
+            return toolReply("save of a loop needs loop", true);
           path = await saveLoop(root, scope, loopFrom(params.id, params.loop, `loop ${params.id}`), lib);
         }
         const existed = (params.kind === "node" ? lib.nodes.get(params.id) : lib.loops.get(params.id))?.path === path;
         await emitLibrary();
-        return reply(existed ? `Updated ${params.kind} ${params.id} at ${path}` : `Saved ${params.kind} ${params.id} to ${path}`);
+        return toolReply(existed ? `Updated ${params.kind} ${params.id} at ${path}` : `Saved ${params.kind} ${params.id} to ${path}`);
       } catch (e) {
-        return reply(errorText(e), true);
+        return toolReply(errorText(e), true);
       }
     }
   });
@@ -2954,12 +3086,12 @@ ${await Bun.file(entry.path).text()}`);
       try {
         if (params.loop === "none") {
           await detach();
-          return reply("Detached the control loop");
+          return toolReply("Detached the control loop");
         }
         const loop = await attach(ctx.cwd, params.loop);
-        return reply(`Attached \xAB${loop.name}\xBB (${stagesText(loop)}). Call control_check when your implementation is complete.`);
+        return toolReply(`Attached \xAB${loop.name}\xBB (${stagesText(loop)}). Call control_check when your implementation is complete.`);
       } catch (e) {
-        return reply(errorText(e), true);
+        return toolReply(errorText(e), true);
       }
     }
   });
@@ -2970,7 +3102,7 @@ ${await Bun.file(entry.path).text()}`);
     parameters: z.object({}),
     approval: "read",
     async execute() {
-      return reply(statusText(controller.view()));
+      return toolReply(statusText(controller.view()));
     }
   });
   pi.registerCommand("control", {

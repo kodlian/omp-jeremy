@@ -1,13 +1,12 @@
-import { confirmBox, h, toast } from "./dom.js";
+import { reloadAppearance, withToken } from "omp-web-client";
+import { toast } from "omp-web-design-system/toast";
+import { confirmBox, h } from "./dom.js";
 import { createEditor } from "./editor.js";
 import { renderLibrary } from "./library.js";
 import { renderHome } from "./run.js";
 
-const token = new URLSearchParams(location.search).get("token") ?? "";
-
 async function api(method, path, body) {
-  const sep = path.includes("?") ? "&" : "?";
-  const res = await fetch(`${path}${sep}token=${encodeURIComponent(token)}`, {
+  const res = await fetch(withToken(path), {
     method,
     headers: body === undefined ? {} : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -39,7 +38,7 @@ const page = {
       if (done) toast(done);
       return r;
     } catch (e) {
-      toast(e.message, true);
+      toast(e.message, { error: true });
       return null;
     }
   },
@@ -87,7 +86,7 @@ addEventListener("keydown", (e) => {
 });
 
 function connect() {
-  const events = new EventSource(`/api/events?token=${encodeURIComponent(token)}`);
+  const events = new EventSource(withToken("/api/events"));
   events.addEventListener("state", (e) => {
     const first = !page.payload;
     page.payload = JSON.parse(e.data);
@@ -95,9 +94,7 @@ function connect() {
     if (!first && isEditor(page.route)) page.editor.onState();
     else render();
   });
-  events.addEventListener("appearance", () => {
-    document.getElementById("appearance").href = `/appearance.css?token=${encodeURIComponent(token)}&t=${Date.now()}`;
-  });
+  events.addEventListener("appearance", reloadAppearance);
 }
 
 render();

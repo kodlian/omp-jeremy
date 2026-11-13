@@ -1,8 +1,10 @@
+import { connectSocket, esc, reloadAppearance, token, withToken } from "omp-web-client";
+import { toast } from "omp-web-design-system/toast";
 import { expandRows, revealRange } from "../src/shared/expand.js";
 import { PROTOCOL } from "../src/shared/protocol.js";
 import { blockStarts, changeBlockAround, pairRows, rowsIn } from "../src/shared/layout.js";
 import { formatPin, pinCovers, pinFromSelection, referenceFor, reviewMessage, singleMessage } from "../src/shared/reference.js";
-import { copyText, esc, isTextField, openMenu, splitPath, toast } from "./dom.js";
+import { copyText, isTextField, openMenu, splitPath } from "./dom.js";
 import { icon } from "./icons.js";
 import { bodyHtml, composerHtml, highlightRows, wordSpans } from "./render.js";
 
@@ -11,7 +13,6 @@ const LARGE_DIFF_ROWS = 1500;
 const RENDER_MARGIN = 1500;
 const FONT_SIZES = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
 const params = new URLSearchParams(location.search);
-const token = params.get("token") ?? "";
 const prefs = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}");
 
 const state = {
@@ -165,37 +166,14 @@ function toggleSidebar() {
 
 // MARK: socket
 
-let socket = null;
-let retry = 0;
-
-function connect() {
-  socket = new WebSocket(`ws://${location.host}/ws?token=${encodeURIComponent(token)}`);
-  socket.onopen = () => {
-    retry = 0;
-    state.connected = true;
-    renderBanner();
-  };
-  socket.onmessage = (e) => onSocket(JSON.parse(e.data));
-  socket.onclose = () => {
-    state.connected = false;
-    renderBanner();
-    setTimeout(connect, Math.min(5000, 500 * 2 ** retry++));
-  };
-}
-
 function send(msg) {
-  if (socket?.readyState !== WebSocket.OPEN) {
-    toast("Not connected to omp. Run /review again.");
-    return false;
-  }
-  socket.send(JSON.stringify(msg));
-  return true;
+  if (socket.send(msg)) return true;
+  toast("Not connected to omp. Run /review again.");
+  return false;
 }
 
 function onSocket(msg) {
-  if (msg.type === "appearance" || (msg.type === "hello" && state.root)) {
-    document.getElementById("appearance").href = `/appearance.css?token=${encodeURIComponent(token)}&t=${Date.now()}`;
-  }
+  if (msg.type === "appearance" || (msg.type === "hello" && state.root)) reloadAppearance();
   if (msg.type === "hello") {
     const moved = state.root && state.root !== msg.root;
     state.root = msg.root;
@@ -251,7 +229,8 @@ function setViewed(path, viewed) {
 // MARK: data
 
 async function api(path, query = {}) {
-  const res = await fetch(`${path}?${new URLSearchParams({ token, ...query })}`);
+  const q = new URLSearchParams(query).toString();
+  const res = await fetch(withToken(q ? `${path}?${q}` : path));
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
   return body;
@@ -1730,5 +1709,8 @@ document.getElementById("appearance").addEventListener("load", syncFontSize);
 syncFontSize();
 renderSidebar();
 renderFiles();
-connect();
+const socket = connectSocket(onSocket, (connected) => {
+  state.connected = connected;
+  renderBanner();
+});
 refresh();

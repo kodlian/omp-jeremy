@@ -1,4 +1,5 @@
 import type { FindingView, Scope, Severity } from "omp-control-view/protocol";
+import { errorText } from "omp-integrations/text";
 import type { ChangedFile } from "./git";
 import type { LoopSnapshot, NodeDefinition } from "./library";
 
@@ -114,7 +115,7 @@ export function parseFindings(text: string): RawFinding[] {
 	try {
 		parsed = JSON.parse(block[1]);
 	} catch (e) {
-		throw fail(e instanceof Error ? e.message : String(e));
+		throw fail(errorText(e));
 	}
 	if (!parsed || typeof parsed !== "object" || !("findings" in parsed) || !Array.isArray(parsed.findings)) throw fail('expected {"findings": [...]}');
 	return parsed.findings.map((item: unknown, i: number): RawFinding => {

@@ -2,6 +2,24 @@
 // plugins/plan-review/src/extension.ts
 import * as omp from "@oh-my-pi/pi-coding-agent";
 
+// packages/control-view/src/protocol.ts
+var RUN_EVENT = "control:run";
+var COMMAND_EVENT = "control:command";
+
+// packages/integrations/src/bus.ts
+function busAsk(events, event, request, timeoutMs, unavailable) {
+  const { promise, resolve } = Promise.withResolvers();
+  const timer = setTimeout(() => resolve({ ok: false, message: unavailable }), timeoutMs);
+  events.emit(event, {
+    ...request,
+    reply: (r) => {
+      clearTimeout(timer);
+      resolve(r);
+    }
+  });
+  return promise;
+}
+
 // packages/integrations/src/theme.ts
 import { existsSync } from "fs";
 import { homedir } from "os";
@@ -227,7 +245,17 @@ var TOKEN_VARS = {
   "--syn-number": "syntaxNumber",
   "--syn-type": "syntaxType",
   "--syn-operator": "syntaxOperator",
-  "--syn-punctuation": "syntaxPunctuation"
+  "--syn-punctuation": "syntaxPunctuation",
+  "--md-heading": "mdHeading",
+  "--md-link": "mdLink",
+  "--md-link-url": "mdLinkUrl",
+  "--md-code": "mdCode",
+  "--md-code-block": "mdCodeBlock",
+  "--md-code-border": "mdCodeBlockBorder",
+  "--md-quote": "mdQuote",
+  "--md-quote-border": "mdQuoteBorder",
+  "--md-hr": "mdHr",
+  "--md-bullet": "mdListBullet"
 };
 function toAppearance(omp, terminal) {
   const theme = resolveTheme(omp, terminal);
@@ -274,50 +302,72 @@ ${decls.join("")}}
 `;
 }
 
+// packages/integrations/src/page.ts
+function recordedPort(ctx, entryType) {
+  let port = null;
+  for (const entry of ctx.sessionManager.getBranch()) {
+    if (entry.type === "custom" && entry.customType === entryType && typeof entry.data?.port === "number")
+      port = entry.data.port;
+  }
+  return port;
+}
+function appearanceSync(omp, page) {
+  const api = hasThemeApi(omp) ? omp : null;
+  let epoch = null;
+  let timer;
+  const sync = async (force = false) => {
+    if (!api || !page())
+      return;
+    const now = api.getThemeEpoch();
+    if (now === epoch && !force)
+      return;
+    epoch = now;
+    const [theme, terminal] = await Promise.all([currentTheme(api), terminalConfig()]);
+    if (epoch === now)
+      page()?.setAppearance(toAppearance(theme, terminal));
+  };
+  return {
+    sync,
+    start() {
+      if (api && !timer)
+        timer = setInterval(() => void sync().catch(() => {}), 1000);
+    },
+    stop() {
+      clearInterval(timer);
+      timer = undefined;
+      epoch = null;
+    }
+  };
+}
+
+// packages/integrations/src/text.ts
+var errorText = (e) => e instanceof Error ? e.message : String(e);
+
 // plugins/plan-review/src/server.ts
-import { randomBytes } from "crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir as homedir2 } from "os";
+import { join as join3, resolve as resolve3 } from "path";
+
+// packages/integrations/src/server.ts
+import { randomBytes, timingSafeEqual } from "crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { extname as extname2, join as join2, resolve as resolve2, sep } from "path";
-
-// plugins/plan-review/src/shared/protocol.js
-var PROTOCOL = 2;
-
-// plugins/plan-review/src/server.ts
-var WEB_DIR = resolve2(import.meta.dir, "..", "web");
-var DEFAULT_PORTS = Array.from({ length: 10 }, (_, i) => 9900 + i);
-var DEFAULT_STATE_DIR = join2(homedir2(), ".omp", "cache", "plan-review");
 var CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8"
+  ".js": "text/javascript; charset=utf-8",
+  ".woff2": "font/woff2"
 };
+var portRange = (base) => Array.from({ length: 10 }, (_, i) => base + i);
 function json(body, status = 200) {
   return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
 }
-async function serveStatic(pathname, token) {
-  const file = resolve2(WEB_DIR, `.${pathname === "/" ? "/index.html" : pathname}`);
-  const type = CONTENT_TYPES[extname2(file)];
-  if (!type || !file.startsWith(WEB_DIR + sep))
-    return new Response("Not found", { status: 404 });
-  const headers = { "Content-Type": type, "Cache-Control": "no-store" };
-  if (type.startsWith("text/html")) {
-    const html = await Bun.file(file).text();
-    return new Response(html.replace('href="/appearance.css"', `href="/appearance.css?token=${token}"`), { headers });
+
+class HttpError extends Error {
+  status;
+  constructor(status, message) {
+    super(message);
+    this.status = status;
   }
-  return new Response(Bun.file(file), { headers });
-}
-function parseResolve(body) {
-  if (!body || typeof body !== "object")
-    return null;
-  const { reviewId, choice, feedback, role } = body;
-  if (typeof reviewId !== "string" || typeof choice !== "string")
-    return null;
-  if (feedback !== undefined && typeof feedback !== "string")
-    return null;
-  if (role !== undefined && typeof role !== "string")
-    return null;
-  return { reviewId, choice, feedback, role };
 }
 function storedToken(dir) {
   const file = join2(dir, "token");
@@ -331,13 +381,112 @@ function storedToken(dir) {
   writeFileSync(file, token, { mode: 384 });
   return token;
 }
+async function serveStatic(webDir, pathname, token) {
+  const file = resolve2(webDir, `.${pathname === "/" ? "/index.html" : pathname}`);
+  const type = CONTENT_TYPES[extname2(file)];
+  if (!type || !file.startsWith(webDir + sep))
+    return new Response("Not found", { status: 404 });
+  if (!await Bun.file(file).exists())
+    return new Response("Not found", { status: 404 });
+  const headers = { "Content-Type": type, "Cache-Control": "no-store" };
+  if (type.startsWith("text/html")) {
+    const html = await Bun.file(file).text();
+    return new Response(html.replace('href="/appearance.css"', `href="/appearance.css?token=${token}"`), { headers });
+  }
+  return new Response(Bun.file(file), { headers });
+}
+function startPageServer(options) {
+  const token = storedToken(options.stateDir);
+  const expected = Buffer.from(token);
+  let css = "";
+  let font;
+  const authorized = (url) => {
+    const given = Buffer.from(url.searchParams.get("token") ?? "");
+    return given.length === expected.length && timingSafeEqual(given, expected);
+  };
+  async function fetch(req, srv2) {
+    const url = new URL(req.url);
+    const ok = authorized(url);
+    if (url.pathname === "/ws") {
+      if (options.websocket && ok && srv2.upgrade(req, { data: undefined }))
+        return;
+      return new Response("Forbidden", { status: 403 });
+    }
+    if (options.fonts && url.pathname === "/api/font") {
+      if (!ok)
+        return new Response("Forbidden", { status: 403 });
+      if (!font || url.searchParams.get("id") !== font.id)
+        return new Response("Not found", { status: 404 });
+      return new Response(Bun.file(font.path), { headers: { "Cache-Control": "no-store" } });
+    }
+    if (url.pathname.startsWith("/api/")) {
+      if (!ok)
+        return json({ error: "forbidden" }, 403);
+      try {
+        return await options.api(req, url);
+      } catch (e) {
+        return json({ error: errorText(e) }, e instanceof HttpError ? e.status : 500);
+      }
+    }
+    if (url.pathname === "/appearance.css") {
+      if (!ok)
+        return new Response("Forbidden", { status: 403 });
+      return new Response(css, { headers: { "Content-Type": CONTENT_TYPES[".css"], "Cache-Control": "no-store" } });
+    }
+    return serveStatic(options.webDir, url.pathname, ok ? token : "");
+  }
+  let server = null;
+  for (const port of [...options.ports, 0]) {
+    try {
+      server = options.websocket ? Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: options.idleTimeout, fetch, websocket: options.websocket }) : Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: options.idleTimeout, fetch });
+      break;
+    } catch {}
+  }
+  if (!server)
+    throw new Error(`${options.name}: could not bind a local port`);
+  const srv = server;
+  return {
+    port: srv.port,
+    token,
+    server: srv,
+    url: () => `http://127.0.0.1:${srv.port}/?token=${token}`,
+    setAppearance(appearance) {
+      font = options.fonts ? appearance?.font : undefined;
+      const next = appearance ? options.fonts ? appearanceCss(appearance, `/api/font?token=${token}&id=${font?.id}`) : appearanceCss({ ...appearance, font: undefined }) : "";
+      if (next === css)
+        return;
+      css = next;
+      options.onAppearance();
+    },
+    stop() {
+      srv.stop(true);
+    }
+  };
+}
+
+// plugins/plan-review/src/shared/protocol.js
+var PROTOCOL = 2;
+
+// plugins/plan-review/src/server.ts
+var WEB_DIR = resolve3(import.meta.dir, "..", "web");
+var DEFAULT_PORTS = portRange(9900);
+var DEFAULT_STATE_DIR = join3(homedir2(), ".omp", "cache", "plan-review");
+function parseResolve(body) {
+  if (!body || typeof body !== "object")
+    return null;
+  const { reviewId, choice, feedback, role } = body;
+  if (typeof reviewId !== "string" || typeof choice !== "string")
+    return null;
+  if (feedback !== undefined && typeof feedback !== "string")
+    return null;
+  if (role !== undefined && typeof role !== "string")
+    return null;
+  return { reviewId, choice, feedback, role };
+}
 function startPlanReviewServer(hooks, { ports = DEFAULT_PORTS, stateDir = DEFAULT_STATE_DIR } = {}) {
-  const token = storedToken(stateDir);
   let review = null;
   let working = false;
-  let themeCss = "";
-  let font;
-  const publish = () => server?.publish("plan", JSON.stringify({ type: "review", review }));
+  const publish = () => page.server.publish("plan", JSON.stringify({ type: "review", review }));
   async function resolveReview(req) {
     const body = parseResolve(await req.json().catch(() => null));
     if (!body)
@@ -353,59 +502,26 @@ function startPlanReviewServer(hooks, { ports = DEFAULT_PORTS, stateDir = DEFAUL
     }
     return json({ ok: true });
   }
-  let server = null;
-  for (const port of [...ports, 0]) {
-    try {
-      server = Bun.serve({
-        hostname: "127.0.0.1",
-        port,
-        fetch(req, srv2) {
-          const url = new URL(req.url);
-          const authorized = url.searchParams.get("token") === token;
-          if (url.pathname === "/ws") {
-            if (authorized && srv2.upgrade(req, { data: undefined }))
-              return;
-            return new Response("Forbidden", { status: 403 });
-          }
-          if (url.pathname === "/api/font") {
-            if (!authorized)
-              return new Response("Forbidden", { status: 403 });
-            if (!font || url.searchParams.get("id") !== font.id)
-              return new Response("Not found", { status: 404 });
-            return new Response(Bun.file(font.path), { headers: { "Cache-Control": "no-store" } });
-          }
-          if (url.pathname === "/api/resolve") {
-            if (!authorized)
-              return json({ error: "forbidden" }, 403);
-            return req.method === "POST" ? resolveReview(req) : json({ error: "method not allowed" }, 405);
-          }
-          if (url.pathname.startsWith("/api/"))
-            return json({ error: authorized ? "not found" : "forbidden" }, authorized ? 404 : 403);
-          if (url.pathname === "/appearance.css") {
-            if (!authorized)
-              return new Response("Forbidden", { status: 403 });
-            return new Response(themeCss, { headers: { "Content-Type": CONTENT_TYPES[".css"], "Cache-Control": "no-store" } });
-          }
-          return serveStatic(url.pathname, authorized ? token : "");
-        },
-        websocket: {
-          open(ws) {
-            ws.subscribe("plan");
-            ws.send(JSON.stringify({ type: "hello", protocol: PROTOCOL, session: hooks.sessionName(), review, working }));
-          },
-          message() {}
-        }
-      });
-      break;
-    } catch {}
-  }
-  if (!server)
-    throw new Error("plan-review: could not bind a local port");
-  const srv = server;
+  const page = startPageServer({
+    name: "plan-review",
+    webDir: WEB_DIR,
+    stateDir,
+    ports,
+    fonts: true,
+    api: (req, url) => url.pathname !== "/api/resolve" ? json({ error: "not found" }, 404) : req.method === "POST" ? resolveReview(req) : json({ error: "method not allowed" }, 405),
+    websocket: {
+      open(ws) {
+        ws.subscribe("plan");
+        ws.send(JSON.stringify({ type: "hello", protocol: PROTOCOL, session: hooks.sessionName(), review, working }));
+      },
+      message() {}
+    },
+    onAppearance: () => page.server.publish("plan", JSON.stringify({ type: "appearance" }))
+  });
   return {
-    port: srv.port,
-    token,
-    url: () => `http://127.0.0.1:${srv.port}/?token=${token}`,
+    port: page.port,
+    token: page.token,
+    url: page.url,
     present(request) {
       const previous = review && review.planFilePath === request.planFilePath && review.resolution?.choice === "refine" ? review.planContent : null;
       const { reviewId, title, planFilePath, planContent, options, tiers } = request;
@@ -428,65 +544,43 @@ function startPlanReviewServer(hooks, { ports = DEFAULT_PORTS, stateDir = DEFAUL
       if (next === working)
         return;
       working = next;
-      srv.publish("plan", JSON.stringify({ type: "working", working }));
+      page.server.publish("plan", JSON.stringify({ type: "working", working }));
     },
-    setAppearance(appearance) {
-      font = appearance?.font;
-      const next = appearance ? appearanceCss(appearance, `/api/font?token=${token}&id=${font?.id}`) : "";
-      if (next === themeCss)
-        return;
-      themeCss = next;
-      srv.publish("plan", JSON.stringify({ type: "appearance" }));
-    },
-    stop() {
-      srv.stop(true);
-    }
+    setAppearance: page.setAppearance,
+    stop: page.stop
   };
 }
 
 // plugins/plan-review/src/extension.ts
-var themeApi = hasThemeApi(omp);
 var SERVER_ENTRY = "plan-review.server";
-function recordedPort(sessionCtx) {
-  let port = null;
-  for (const entry of sessionCtx.sessionManager.getBranch()) {
-    if (entry.type === "custom" && entry.customType === SERVER_ENTRY && typeof entry.data?.port === "number")
-      port = entry.data.port;
-  }
-  return port;
-}
+var CONTROL_ASK_MS = 150;
 function planReview(pi) {
   let server = null;
   let ctx = null;
-  let themeEpoch = null;
-  let themeTimer;
   let resumePort = null;
-  async function syncAppearance(force = false) {
-    if (!themeApi)
-      return;
-    const epoch = omp.getThemeEpoch();
-    if (!server || epoch === themeEpoch && !force)
-      return;
-    themeEpoch = epoch;
-    const [theme, terminal] = await Promise.all([currentTheme(omp), terminalConfig()]);
-    if (themeEpoch === epoch)
-      server?.setAppearance(toAppearance(theme, terminal));
-  }
-  async function ensureServer(sessionCtx, port = recordedPort(sessionCtx)) {
+  let pending = null;
+  let opened = null;
+  const appearance = appearanceSync(omp, () => server);
+  async function ensureServer(sessionCtx, port = recordedPort(sessionCtx, SERVER_ENTRY)) {
     if (!server) {
       server = startPlanReviewServer({
         resolve: (reviewId, choice, options) => ctx?.resolvePlanReview(reviewId, choice, options) ?? false,
         sessionName: () => pi.getSessionName() || "omp"
       }, { ports: port ? [port, ...DEFAULT_PORTS] : DEFAULT_PORTS });
-      if (themeApi)
-        themeTimer = setInterval(() => syncAppearance(), 1000);
+      appearance.start();
     }
-    if (recordedPort(sessionCtx) !== server.port)
+    if (recordedPort(sessionCtx, SERVER_ENTRY) !== server.port)
       pi.appendEntry(SERVER_ENTRY, { port: server.port });
-    if (themeApi)
-      await syncAppearance(true);
+    await appearance.sync(true);
     return server;
   }
+  const show = async (reviewId) => {
+    if (opened === reviewId || pending !== reviewId || !ctx || process.env.ORCHESTRATOR_TASK)
+      return;
+    opened = reviewId;
+    await openBoard((await ensureServer(ctx)).url(), { focus: true });
+  };
+  const showFailed = (error) => ctx?.ui.notify(`Plan review: the page didn't open: ${errorText(error)}`, "warning");
   pi.registerCommand("plan-review", {
     description: "Open the plan review page: comment on the plan's lines, then refine or approve it",
     handler: async (_args, commandCtx) => {
@@ -500,16 +594,25 @@ function planReview(pi) {
     if (eventCtx.agent?.kind === "sub")
       return;
     ctx = eventCtx;
+    pending = event.reviewId;
     (async () => {
-      const reviewServer = await ensureServer(eventCtx);
-      reviewServer.present(event);
-      if (!process.env.ORCHESTRATOR_TASK)
-        await openBoard(reviewServer.url(), { focus: true });
-    })().catch((error) => eventCtx.ui.notify(`Plan review: the page didn't open: ${error instanceof Error ? error.message : String(error)}`, "warning"));
+      (await ensureServer(eventCtx)).present(event);
+      const run = (await busAsk(pi.events, COMMAND_EVENT, { type: "run" }, CONTROL_ASK_MS, "")).run;
+      if (run?.loop.plan === "ai" && run.status !== "paused" && run.plan !== "review")
+        return;
+      await show(event.reviewId);
+    })().catch(showFailed);
+  });
+  pi.events.on(RUN_EVENT, (data) => {
+    const view = data ?? null;
+    if (view?.plan === "review" && pending)
+      show(pending).catch(showFailed);
   });
   pi.on("plan_review_resolved", (event, eventCtx) => {
     if (eventCtx.agent?.kind === "sub")
       return;
+    if (event.reviewId === pending)
+      pending = null;
     server?.resolved(event.reviewId, event.choice ?? null, event.by);
   });
   pi.on("before_agent_start", (_event, eventCtx) => {
@@ -521,23 +624,31 @@ function planReview(pi) {
       server?.setWorking(false);
   });
   pi.on("session_start", async (_event, sessionCtx) => {
+    if (sessionCtx.agent?.kind === "sub")
+      return;
     ctx = sessionCtx;
-    const port = resumePort ?? recordedPort(sessionCtx);
+    const port = resumePort ?? recordedPort(sessionCtx, SERVER_ENTRY);
     resumePort = null;
-    if (sessionCtx.agent?.kind !== "sub" && process.env.OMP_CONTROL_REVIEWER !== "1")
-      await ensureServer(sessionCtx, port);
+    if (process.env.OMP_CONTROL_REVIEWER === "1")
+      return;
+    await ensureServer(sessionCtx, port).catch((e) => sessionCtx.ui.notify(`Plan review: the page didn't start: ${errorText(e)}`, "warning"));
   });
   pi.on("session_switch", async (_event, sessionCtx) => {
+    if (sessionCtx.agent?.kind === "sub")
+      return;
     ctx = sessionCtx;
     if (server)
       server.clear();
     else
-      await ensureServer(sessionCtx);
+      await ensureServer(sessionCtx).catch((e) => sessionCtx.ui.notify(`Plan review: the page didn't start: ${errorText(e)}`, "warning"));
   });
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", (_event, sessionCtx) => {
+    if (sessionCtx.agent?.kind === "sub")
+      return;
+    ctx = null;
+    pending = null;
     resumePort = server?.port ?? null;
-    clearInterval(themeTimer);
-    themeEpoch = null;
+    appearance.stop();
     server?.stop();
     server = null;
   });

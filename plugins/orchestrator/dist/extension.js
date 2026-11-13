@@ -38,6 +38,30 @@ async function openBoard(url, options = {}) {
   await helper(args, options);
 }
 
+// packages/integrations/src/plan.ts
+var PLAN_APPROVALS = { execute: true, compact: true, keep: true };
+function approvalChoice(options) {
+  return options.find((o) => !o.disabled && PLAN_APPROVALS[o.id]);
+}
+
+// packages/integrations/src/text.ts
+var errorText = (e) => e instanceof Error ? e.message : String(e);
+var toolReply = (text, isError = false) => ({ content: [{ type: "text", text }], isError });
+
+// packages/integrations/src/bus.ts
+function busAsk(events, event, request, timeoutMs, unavailable) {
+  const { promise, resolve } = Promise.withResolvers();
+  const timer = setTimeout(() => resolve({ ok: false, message: unavailable }), timeoutMs);
+  events.emit(event, {
+    ...request,
+    reply: (r) => {
+      clearTimeout(timer);
+      resolve(r);
+    }
+  });
+  return promise;
+}
+
 // packages/integrations/src/fonts.ts
 var fonts = new Map;
 
@@ -114,7 +138,6 @@ var ORCHESTRATOR_CONTEXT = `Orchestrator mode is on in this checkout: this sessi
 - orchestrator_context reads the findings and outcome a card's agent recorded; a card that depends on it gets them in its brief. Record a decision from this conversation that a started card's agent and later cards need with orchestrator_publish on that card.
 - orchestrator_memory holds this repository's durable project decisions and conventions, shared by every card. Search it on demand when a decision may already exist, and remember a durable decision the user made; task outcomes go on the card with orchestrator_publish. Never load all memories each turn, and never store the user's personal omp preferences there. Forgetting one asks the user first.
 - A plan you propose in this session is for work done here; it doesn't become a card.`;
-var APPROVALS = { execute: true, compact: true, keep: true };
 var DIFF_TOOL_LIMIT = 60000;
 var SHARING = "Record a concise finding other tasks need (a decision, contract, gotcha, where something lives) with orchestrator_publish as you learn it, and your outcome (what changed, where, how dependents use it) once the work is committed, before finishing. Read what a dependency recorded, newer than your brief, with orchestrator_context. orchestrator_memory holds this repository's durable project decisions across all tasks: search it when a past decision may apply, and remember one only when it outlives this task; it's not for task outcomes, progress or the user's personal omp preferences, and it's never loaded in full.";
 var HISTORY_FIELD_LIMIT = 800;
@@ -134,8 +157,6 @@ class BoardError extends Error {
   }
 }
 var tilde = (path) => path.startsWith(homedir()) ? `~${path.slice(homedir().length)}` : path;
-var errorText = (e) => e instanceof Error ? e.message : String(e);
-var reply = (text, isError = false) => ({ content: [{ type: "text", text }], isError });
 var cardNumbers = new Map;
 var CARD_ID = /(?<![\w/-])KB-\d+(?:\.\d+)*\b/g;
 function rememberNumbers(board) {
@@ -721,6 +742,8 @@ function orchestrator(pi) {
   let current = "";
   let planning = false;
   let reviewOpen = false;
+  let planForYou = false;
+  let lastControl = null;
   let currentStep = null;
   let reportedStep = null;
   let stepTimer;
@@ -812,9 +835,9 @@ function orchestrator(pi) {
   };
   const answer = async (work) => {
     try {
-      return reply(withNumbers(await work));
+      return toolReply(withNumbers(await work));
     } catch (e) {
-      return reply(withNumbers(errorText(e)), true);
+      return toolReply(withNumbers(errorText(e)), true);
     }
   };
   const send = (path) => {
@@ -878,22 +901,11 @@ function orchestrator(pi) {
   pi.on("agent_end", (event, ctx) => {
     if (ctx.agent?.kind === "sub" || "willContinue" in event && event.willContinue === true)
       return;
-    report(ctx, reviewOpen ? "plan_ready" : "idle");
+    report(ctx, reviewOpen && planForYou ? "plan_ready" : reviewOpen ? "planning" : "idle");
     if (task)
       autoMerge(ctx);
   });
-  const controlAsk = (command) => {
-    const { promise, resolve } = Promise.withResolvers();
-    const timer = setTimeout(() => resolve({ ok: false, message: "The Control plugin isn't loaded in this omp" }), CONTROL_ASK_MS);
-    pi.events.emit(COMMAND_EVENT, {
-      ...command,
-      reply: (r) => {
-        clearTimeout(timer);
-        resolve(r);
-      }
-    });
-    return promise;
-  };
+  const controlAsk = (command) => busAsk(pi.events, COMMAND_EVENT, command, CONTROL_ASK_MS, "The Control plugin isn't loaded in this omp");
   const postControl = (view) => {
     if (!task || !controlCtx)
       return;
@@ -918,10 +930,20 @@ function orchestrator(pi) {
   };
   pi.events.on(RUN_EVENT, (data) => {
     const view = data ?? null;
+    lastControl = view;
     if (task)
       postControl(view);
     if (!controlCtx || !view)
       return;
+    if (reviewOpen) {
+      if (view.plan === "review" && !planForYou) {
+        planForYou = true;
+        report(controlCtx, "plan_ready");
+      } else if (view.plan === "checking") {
+        planForYou = false;
+        report(controlCtx, "planning", `Control \xB7 ${view.loop.planReviewer?.name ?? "plan reviewer"} reads the plan`);
+      }
+    }
     if (view.gate.open) {
       const undecided = view.findings.filter((f) => f.route === "ask" && !f.decision).length;
       report(controlCtx, "needs_input", `Control: ${undecided} findings need your decision`);
@@ -963,7 +985,7 @@ function orchestrator(pi) {
       ctx.ui.notify(`Control flow \xAB${run.loop.name}\xBB passed: merging ${taskNumber(id)} into ${t.base}`, "info");
       await api("POST", `/api/tasks/${id}/merge`, { cleanup: true, commit: true, terminal: await requestTerminal() });
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
+      const message = errorText(e);
       if (!message.includes(" is still "))
         ctx.ui.notify(`Couldn't merge ${taskNumber(id)} automatically: ${message}`, "error");
     } finally {
@@ -1037,7 +1059,7 @@ Merged ${t.branch} \u2192 ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info
           ok = ctx.resolvePlanReview(review.reviewId, "refine", { feedback: c.feedback });
           message = ok ? "Sent the feedback; it plans again" : "omp didn't take the feedback";
         } else {
-          const choice = review.options.find((o) => !o.disabled && APPROVALS[o.id]);
+          const choice = approvalChoice(review.options);
           ok = choice !== undefined && ctx.resolvePlanReview(review.reviewId, choice.id);
           message = ok && choice ? `Approved its plan (${choice.label})` : "Its plan review took no approval";
         }
@@ -1556,16 +1578,18 @@ Every task in ${tilde(current2.scope)} loses this memory.`);
     if (ctx.agent?.kind === "sub")
       return;
     reviewOpen = true;
+    planForYou = !(lastControl?.loop.plan === "ai" && lastControl.status !== "paused");
     if (!task)
       return;
     const id = task;
-    report(ctx, "plan_ready");
+    report(ctx, planForYou ? "plan_ready" : "planning", planForYou ? undefined : "Control reviews the plan");
     api("PATCH", `/api/tasks/${id}`, { plan: event.planContent }, false).catch((e) => ctx.ui.notify(`${taskNumber(id)}: the plan didn't reach the board: ${errorText(e)}`, "warning"));
   });
   pi.on("plan_review_resolved", (event, ctx) => {
     if (ctx.agent?.kind === "sub")
       return;
     reviewOpen = false;
+    planForYou = false;
     if (!event.choice || event.choice === "save")
       report(ctx, "idle");
   });
@@ -1642,7 +1666,7 @@ ${plan}`;
     approval: "read",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       if (params.id && params.all)
-        return reply("Pass id or all, not both", true);
+        return toolReply("Pass id or all, not both", true);
       return answer((async () => {
         const board = await api("GET", "/api/state");
         const scope = params.id ? { id: await cardId(params.id, ctx) } : params.all ? {} : { flow: sessionFlow(board, ctx) };
@@ -1719,9 +1743,9 @@ ${plan}`;
       const fields = ["title", "description", "ticket", "plan", "planningMode", "loop", "merge", "base", "branch", "dependsOn", "parent"].filter((k) => params[k] !== undefined);
       const side = params.before !== undefined ? "before" : params.after !== undefined ? "after" : undefined;
       if (params.before !== undefined && params.after !== undefined)
-        return reply("Pass before or after, not both", true);
+        return toolReply("Pass before or after, not both", true);
       if (!fields.length && !side) {
-        return reply("Nothing to change: pass title, description, ticket, plan, planningMode, loop, merge, base, branch, dependsOn, parent, before or after", true);
+        return toolReply("Nothing to change: pass title, description, ticket, plan, planningMode, loop, merge, base, branch, dependsOn, parent, before or after", true);
       }
       return answer((async () => {
         const id = await cardId(params.id, ctx);
@@ -1852,7 +1876,7 @@ ${plan}`;
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const id = params.id ? await cardId(params.id, ctx) : task;
       if (!id)
-        return reply("Name the card to read: this session has no task of its own", true);
+        return toolReply("Name the card to read: this session has no task of its own", true);
       return answer(api("GET", `/api/tasks/${id}/context`).then(contextText));
     }
   });
@@ -1869,7 +1893,7 @@ ${plan}`;
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const id = params.id ? await cardId(params.id, ctx) : task;
       if (!id)
-        return reply("Name the card to record on: this session has no task of its own", true);
+        return toolReply("Name the card to record on: this session has no task of its own", true);
       return answer(api("POST", `/api/tasks/${id}/context`, { kind: params.kind, text: params.text, source: task ?? "orchestrator" }).then((c) => `Recorded a ${params.kind} on ${id} (revision ${c.revision}, ${c.entries.length} entr${c.entries.length === 1 ? "y" : "ies"})`));
     }
   });

@@ -1,5 +1,6 @@
 import { KIND_LABELS, renderLoop } from "omp-control-view/render";
-import { h, LEVELS, levelHint, levelLabel, modal, openMenu, slug, toast } from "./dom.js";
+import { toast } from "omp-web-design-system/toast";
+import { h, LEVELS, levelHint, levelLabel, modal, openMenu, slug } from "./dom.js";
 
 const NODE_KEYS = ["id", "name", "kind", "description", "command", "timeout", "ask", "model", "thinking", "tools", "resources", "instructions"];
 const THINKING = ["", "off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"];
@@ -82,7 +83,7 @@ export function draftPanel(page, node) {
     field("What should it check?", intent),
     field("Save to", scope),
     h("div", { class: "row" }, h("button", { class: "btn primary sm", type: "button", onclick: async () => {
-      if (!intent.value.trim()) return toast("Say what it should check", true);
+      if (!intent.value.trim()) return toast("Say what it should check", { error: true });
       const kind = node?.kind;
       if (await page.act("POST", "/api/draft", { kind, name: node?.name, intent: intent.value.trim(), scope: scope.value })) toast("Sent to the agent; the check appears here once it saves it");
     } }, "Send to omp")),
@@ -173,8 +174,8 @@ export function createEditor(page) {
   };
   const base = () => `#/${st.key}`;
 
-  /** The Add a check dialog: a new check of each kind, or one from the library. */
-  function addDialog(place) {
+  /** The Add a check dialog: a new check of each kind, or one from the library; reviewOnly offers AI reviewers alone (the plan reviewer). */
+  function addDialog(place, { reviewOnly = false } = {}) {
     const inFlow = new Set(draftNodes().map((n) => n.id));
     const pick = (node, fresh) => {
       close();
@@ -187,13 +188,13 @@ export function createEditor(page) {
       page.go(`${base()}/node/${encodeURIComponent(node.id)}`);
     };
     const fresh = (kind, sub) => h("button", { type: "button", class: "add-item", onclick: () => pick(blankNode(kind, uniqueId(slug(blankNode(kind, "").name))), true) }, h("strong", {}, `+ ${KIND_LABELS[kind]}`), h("span", { class: "muted" }, sub));
-    const library = libNodes().filter((n) => !inFlow.has(n.id));
+    const library = libNodes().filter((n) => !inFlow.has(n.id) && (!reviewOnly || n.kind === "review"));
     const close = modal(
       h(
         "div",
         { class: "form" },
-        h("h3", {}, "Add a check"),
-        h("div", { class: "add-grid" }, fresh("check", "A command that must exit 0"), fresh("review", "An AI reads the change")),
+        h("h3", {}, reviewOnly ? "Pick the plan reviewer" : "Add a check"),
+        h("div", { class: "add-grid" }, ...(reviewOnly ? [] : [fresh("check", "A command that must exit 0")]), fresh("review", "An AI reads the change")),
         library.length ? h("h4", {}, "From the library") : null,
         h(
           "div",
@@ -207,8 +208,8 @@ export function createEditor(page) {
   function saveLoopTo(level) {
     const d = st.draft;
     const stages = d.stages.filter((s) => s.nodes.length);
-    if (!stages.length) return toast("Add at least one change check first", true);
-    if (d.plan === "ai" && !d.planReviewer) return toast("Pick the AI reviewer that approves the plan first", true);
+    if (!stages.length) return toast("Add at least one change check first", { error: true });
+    if (d.plan === "ai" && !d.planReviewer) return toast("Pick the AI reviewer that approves the plan first", { error: true });
     const id = d.id ?? uniqueId(slug(d.name) || "flow");
     const nodes = [...(d.planReviewer ? [d.planReviewer] : []), ...stages.flatMap((s) => s.nodes)].filter((n) => st.dirtyNodes.has(n.id) || !libNode(n.id));
     const ids = (list) => list.map((s) => ({ nodes: s.nodes.map((n) => n.id) }));
@@ -276,7 +277,7 @@ export function createEditor(page) {
           st.draft.finish = st.draft.finish === "review" ? "auto" : "review";
           touch();
         },
-        onAddStage: (phase, index) => addDialog((node) => (phase === "plan" ? (st.draft.planReviewer = node) : st.draft.stages.splice(index, 0, { nodes: [node] }))),
+        onAddStage: (phase, index) => (phase === "plan" ? addDialog((node) => (st.draft.planReviewer = node), { reviewOnly: true }) : addDialog((node) => st.draft.stages.splice(index, 0, { nodes: [node] }))),
         onAddToStage: (_phase, i) => addDialog((node) => st.draft.stages[i].nodes.push(node)),
       },
     });
@@ -311,8 +312,8 @@ export function createEditor(page) {
         { class: "bar footer" },
         h("button", { class: "btn primary", type: "button", disabled: !page.payload.session.repo, onclick: async () => {
           const stages = d.stages.filter((s) => s.nodes.length);
-          if (!stages.length) return toast("Add at least one change check first", true);
-          if (d.plan === "ai" && !d.planReviewer) return toast("Pick the AI reviewer that approves the plan first", true);
+          if (!stages.length) return toast("Add at least one change check first", { error: true });
+          if (d.plan === "ai" && !d.planReviewer) return toast("Pick the AI reviewer that approves the plan first", { error: true });
           const loop = { ...shapeOf(), planReviewer: d.planReviewer ? cleanNode(d.planReviewer) : null, stages: stages.map((s) => ({ nodes: s.nodes.map(cleanNode) })) };
           if (await page.act("PUT", "/api/session-loop", { loop }, `«${d.name}» runs in this session from now on`)) {
             st.dirty = false;
@@ -368,7 +369,13 @@ export function createEditor(page) {
     onState() {
       if (!st || st.target.kind === "node") return;
       let changed = false;
-      for (const stage of allStages()) {
+      const pr = st.draft.planReviewer;
+      const savedReviewer = pr && libNode(pr.id);
+      if (pr && savedReviewer && !st.dirtyNodes.has(pr.id) && !same(pr, savedReviewer)) {
+        st.draft.planReviewer = cleanNode(savedReviewer);
+        changed = true;
+      }
+      for (const stage of st.draft.stages) {
         stage.nodes.forEach((n, i) => {
           const lib = libNode(n.id);
           if (st.dirtyNodes.has(n.id) || !lib || same(n, lib)) return;

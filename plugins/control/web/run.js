@@ -1,4 +1,5 @@
 import { renderDecisions, renderLoop, runHeadline } from "omp-control-view/render";
+import { withToken } from "omp-web-client";
 import { h, levelLabel, modal, openMenu } from "./dom.js";
 import { describeFlow, libraryShape } from "./flows.js";
 
@@ -6,14 +7,13 @@ let chosen = null;
 
 /** Images the checks wrote to $CONTROL_ARTIFACTS on their last run, with the check's name. */
 function artifacts(run) {
-  const token = new URLSearchParams(location.search).get("token") ?? "";
   const shots = run.loop.stages.flatMap((s) => s.nodes).flatMap((n) => (run.nodes[n.id]?.artifacts ?? []).map((path) => ({ node: n.name, path })));
   if (!shots.length) return null;
   return h(
     "div",
     { class: "review-shots" },
     shots.map(({ node, path }) => {
-      const src = `/api/artifact?path=${encodeURIComponent(path)}&token=${encodeURIComponent(token)}&pass=${run.pass}`;
+      const src = `${withToken(`/api/artifact?path=${encodeURIComponent(path)}`)}&pass=${run.pass}`;
       const name = path.slice(path.lastIndexOf("/") + 1);
       return h("a", { class: "review-shot", href: src, target: "_blank", title: `${node} · ${name}` }, h("img", { src, alt: name, loading: "lazy" }), h("span", { class: "small muted" }, `${node} · ${name}`));
     }),

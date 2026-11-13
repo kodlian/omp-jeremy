@@ -14,8 +14,9 @@
   },
   "devDependencies": {
     "omp-integrations": "workspace:*",
+    "omp-web-design-system": "workspace:*",
+    "omp-web-client": "workspace:*",
     "lucide": "^1.55.0",
-    "shiki": "^4.5.0",
     "@types/bun": "latest"
   }
 }

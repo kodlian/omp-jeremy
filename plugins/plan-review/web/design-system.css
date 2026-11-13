@@ -40,6 +40,29 @@
   --ui: var(--terminal-font, -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif);
 }
 
+/* Terminal syntax and markdown colors; the appearance stylesheet replaces them with omp's theme. */
+:root {
+  --syn-comment: light-dark(#59636e, #8b949e);
+  --syn-keyword: light-dark(#cf222e, #ff7b72);
+  --syn-function: light-dark(#8250df, #d2a8ff);
+  --syn-variable: var(--fg);
+  --syn-string: light-dark(#0a3069, #a5d6ff);
+  --syn-number: light-dark(#0550ae, #79c0ff);
+  --syn-type: light-dark(#953800, #ffa657);
+  --syn-operator: light-dark(#cf222e, #ff7b72);
+  --syn-punctuation: var(--fg);
+  --md-heading: var(--accent);
+  --md-link: light-dark(#0969da, #6cb6ff);
+  --md-link-url: var(--faint);
+  --md-code: light-dark(#0550ae, #79c0ff);
+  --md-code-block: var(--fg);
+  --md-code-border: var(--line);
+  --md-quote: var(--muted);
+  --md-quote-border: var(--line-strong);
+  --md-hr: var(--line);
+  --md-bullet: var(--accent);
+}
+
 /* MARK: reset */
 
 * {
@@ -336,4 +359,35 @@ textarea.field {
 .field:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* MARK: toast */
+
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: var(--toast-bottom, 16px);
+  z-index: 60;
+  max-width: calc(100vw - 32px);
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-solid);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.25);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  transform: translate(-50%, 6px);
+  transition: opacity 0.15s, transform 0.15s;
+  pointer-events: none;
+}
+
+#toast.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+#toast.error {
+  color: var(--remove);
 }

@@ -2,7 +2,8 @@ import { realpathSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import type { AskMode, Finish, LibrarySummary, LoopShape, NodeKind, PlanMode, Scope, Source } from "omp-control-view/protocol";
+import { type AskMode, type Finish, type LibrarySummary, type LoopShape, type NodeKind, type PlanMode, type Scope, type Source, withPlanMode } from "omp-control-view/protocol";
+import { errorText } from "omp-integrations/text";
 import { parseNodeFile, serializeNode } from "./frontmatter";
 
 export interface NodeDefinition {
@@ -46,6 +47,8 @@ export interface Library {
 	loops: Map<string, { loop: LoopDefinition; source: Source; path: string; overrides: Source[] }>;
 	nodes: Map<string, { node: NodeDefinition; source: Source; path: string; overrides: Source[] }>;
 	errors: { path: string; message: string }[];
+	/** Loop ids whose file doesn't load, with why. */
+	broken: Map<string, string>;
 }
 
 export const ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -126,7 +129,14 @@ export function nodeFrom(id: string, fields: Record<string, unknown>, body: stri
 }
 
 /** The ai plan's reviewer and the change loop's stages; node ids are unique across them. */
-function flowFrom<T>(raw: Record<string, unknown>, where: string, plan: PlanMode, node: (value: unknown, where: string) => T, idOf: (n: T) => string): { planReviewer: T | null; stages: { nodes: T[] }[] } {
+function flowFrom<T>(
+	raw: Record<string, unknown>,
+	where: string,
+	plan: PlanMode,
+	node: (value: unknown, where: string) => T,
+	idOf: (n: T) => string,
+	kindOf: (n: T) => NodeKind | null,
+): { planReviewer: T | null; stages: { nodes: T[] }[] } {
 	const seen = new Set<string>();
 	const unique = (n: T) => {
 		const id = idOf(n);
@@ -137,6 +147,7 @@ function flowFrom<T>(raw: Record<string, unknown>, where: string, plan: PlanMode
 	const named = raw.planReviewer !== undefined && raw.planReviewer !== null;
 	if (named !== (plan === "ai")) throw new Error(`${where}: planReviewer names the plan's reviewer when plan is ai, and only then`);
 	const planReviewer = named ? unique(node(raw.planReviewer, `${where}: planReviewer`)) : null;
+	if (planReviewer !== null && kindOf(planReviewer) === "check") throw new Error(`${where}: planReviewer must be an AI reviewer, not a command check`);
 	const stages = raw.stages ?? [];
 	if (!Array.isArray(stages) || stages.length > 8) throw new Error(`${where}: stages must list 0–8 stages`);
 	return {
@@ -179,6 +190,7 @@ export function loopFrom(id: string, raw: unknown, where: string): LoopDefinitio
 			return n;
 		},
 		(n) => n,
+		() => null,
 	);
 	return { id, ...header, ...flow };
 }
@@ -206,16 +218,14 @@ export function validateSnapshot(value: unknown): LoopSnapshot {
 			return nodeFrom(fields.id, fields, body, `${at}: node ${fields.id}`);
 		},
 		(n) => n.id,
+		(n) => n.kind,
 	);
 	return { id, ...header, ...flow };
 }
 
 /** A session's loop as saved; ones saved before plan modes (plan on or off, plan checks) come back with you approving the plan. */
 export function savedSnapshot(loop: LoopSnapshot): LoopSnapshot {
-	const saved = loop as Omit<LoopSnapshot, "plan"> & { plan: PlanMode | boolean; planStages?: unknown };
-	if (typeof saved.plan !== "boolean") return loop;
-	const { planStages: _, ...rest } = saved;
-	return { ...rest, plan: saved.plan ? "you" : "none", planReviewer: null };
+	return validateSnapshot(withPlanMode(loop));
 }
 
 async function listDir(dir: string, ext: string): Promise<string[]> {
@@ -228,7 +238,7 @@ async function listDir(dir: string, ext: string): Promise<string[]> {
 
 export async function loadLibrary(root: string | null): Promise<Library> {
 	const roots = libraryRoots(root);
-	const library: Library = { loops: new Map(), nodes: new Map(), errors: [] };
+	const library: Library = { loops: new Map(), nodes: new Map(), errors: [], broken: new Map() };
 	// Widest first: each narrower level overrides the items it shares an id with.
 	const sources: [Source, string | null][] = [
 		["built-in", roots.builtIn],
@@ -245,7 +255,7 @@ export async function loadLibrary(root: string | null): Promise<Library> {
 				const below = library.nodes.get(id);
 				library.nodes.set(id, { node: nodeFrom(id, fields, body, path), source, path, overrides: below ? [below.source, ...below.overrides] : [] });
 			} catch (e) {
-				library.errors.push({ path, message: e instanceof Error ? e.message : String(e) });
+				library.errors.push({ path, message: errorText(e) });
 			}
 		}
 		for (const file of await listDir(join(dir, "loops"), ".json")) {
@@ -256,12 +266,15 @@ export async function loadLibrary(root: string | null): Promise<Library> {
 				try {
 					raw = JSON.parse(await readFile(path, "utf8"));
 				} catch (e) {
-					throw new Error(`${path}: invalid JSON (${e instanceof Error ? e.message : String(e)})`);
+					throw new Error(`${path}: invalid JSON (${errorText(e)})`);
 				}
 				const below = library.loops.get(id);
 				library.loops.set(id, { loop: loopFrom(id, raw, path), source, path, overrides: below ? [below.source, ...below.overrides] : [] });
+				library.broken.delete(id);
 			} catch (e) {
-				library.errors.push({ path, message: e instanceof Error ? e.message : String(e) });
+				library.loops.delete(id);
+				library.broken.set(id, errorText(e));
+				library.errors.push({ path, message: errorText(e) });
 			}
 		}
 	}
@@ -284,15 +297,16 @@ export async function saveNode(root: string | null, scope: Scope, node: NodeDefi
 	return path;
 }
 
-/** The library ids a loop needs that the library doesn't have. */
-function missingNodes(loop: LoopDefinition, library: Library): string[] {
-	return [...(loop.planReviewer ? [loop.planReviewer] : []), ...loop.stages.flatMap((s) => s.nodes)].filter((n) => !library.nodes.has(n));
+/** Throws unless the library holds every node the loop names and its plan reviewer is an AI reviewer. */
+function checkLoop(loop: LoopDefinition, library: Library): void {
+	const missing = [...(loop.planReviewer ? [loop.planReviewer] : []), ...loop.stages.flatMap((s) => s.nodes)].filter((n) => !library.nodes.has(n));
+	if (missing.length) throw new Error(`Loop ${loop.id} needs missing nodes: ${missing.join(", ")}`);
+	if (loop.planReviewer && library.nodes.get(loop.planReviewer)?.node.kind === "check") throw new Error(`Loop ${loop.id}: planReviewer must be an AI reviewer, not a command check`);
 }
 
 export async function saveLoop(root: string | null, scope: Scope, loop: LoopDefinition, library: Library): Promise<string> {
 	const valid = loopFrom(loop.id, loop, `loop ${loop.id}`);
-	const missing = missingNodes(valid, library);
-	if (missing.length) throw new Error(`Loop ${loop.id} needs missing nodes: ${missing.join(", ")}`);
+	checkLoop(valid, library);
 	const path = join(await scopeDir(root, scope), "loops", `${loop.id}.json`);
 	await mkdir(dirname(path), { recursive: true });
 	await writeFile(path, `${JSON.stringify({ name: valid.name, description: valid.description, maxPasses: valid.maxPasses, plan: valid.plan, ...(valid.planReviewer ? { planReviewer: valid.planReviewer } : {}), stages: valid.stages, finish: valid.finish }, null, 2)}\n`);
@@ -325,9 +339,8 @@ export async function copyItem(root: string | null, library: Library, kind: "nod
 
 export function resolveLoop(library: Library, id: string): LoopSnapshot {
 	const entry = library.loops.get(id);
-	if (!entry) throw new Error(`No loop ${id} in the library`);
-	const missing = missingNodes(entry.loop, library);
-	if (missing.length) throw new Error(`Loop ${id} needs missing nodes: ${missing.join(", ")}`);
+	if (!entry) throw new Error(library.broken.get(id) ?? `No loop ${id} in the library`);
+	checkLoop(entry.loop, library);
 	const { loop } = entry;
 	const node = (n: string) => library.nodes.get(n)!.node;
 	return { id, name: loop.name, description: loop.description, maxPasses: loop.maxPasses, plan: loop.plan, planReviewer: loop.planReviewer ? node(loop.planReviewer) : null, stages: loop.stages.map((s) => ({ nodes: s.nodes.map(node) })), finish: loop.finish };
@@ -348,6 +361,12 @@ export function shape(loop: LoopSnapshot): LoopShape {
 }
 
 export function summarize(library: Library, repo: string | null): LibrarySummary {
-	const loops = [...library.loops.values()].flatMap(({ loop, source }) => (missingNodes(loop, library).length ? [] : [{ ...shape(resolveLoop(library, loop.id)), id: loop.id, source }]));
+	const loops = [...library.loops.values()].flatMap(({ loop, source }) => {
+		try {
+			return [{ ...shape(resolveLoop(library, loop.id)), id: loop.id, source }];
+		} catch {
+			return [];
+		}
+	});
 	return { repo, loops: loops.sort((a, b) => a.name.localeCompare(b.name)) };
 }
