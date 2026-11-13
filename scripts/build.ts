@@ -3,14 +3,14 @@ import { dirname, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
 const designSystem = resolve(root, "packages/web-design-system/design-system.css");
-for (const target of ["plugins/orchestrator/design-system.css", "plugins/git-diff-review/web/design-system.css", "plugins/control/web/design-system.css"]) {
+for (const target of ["plugins/orchestrator/design-system.css", "plugins/git-diff-review/web/design-system.css", "plugins/control/web/design-system.css", "plugins/plan-review/web/design-system.css"]) {
   await copyFile(designSystem, resolve(root, target));
 }
 const controlView = resolve(root, "packages/control-view");
 for (const target of ["plugins/orchestrator/control-view.css", "plugins/control/web/control-view.css"]) {
   await copyFile(resolve(controlView, "control-view.css"), resolve(root, target));
 }
-for (const [name, entry] of [["orchestrator", "omp/orchestrator.ts"], ["git-diff-review", "src/extension.ts"], ["control", "src/extension.ts"]]) {
+for (const [name, entry] of [["orchestrator", "omp/orchestrator.ts"], ["git-diff-review", "src/extension.ts"], ["control", "src/extension.ts"], ["plan-review", "src/extension.ts"]]) {
   const dir = resolve(root, "plugins", name);
   const result = await Bun.build({
     entrypoints: [resolve(dir, entry)],
@@ -53,3 +53,6 @@ if (await web.exited !== 0) throw new Error("Could not build review web assets")
 await rm(resolve(root, "plugins/control/web/dist"), { recursive: true, force: true });
 const controlWeb = Bun.spawn([process.execPath, "run", "build"], { cwd: resolve(root, "plugins/control"), stdout: "inherit", stderr: "inherit" });
 if (await controlWeb.exited !== 0) throw new Error("Could not build Control web assets");
+await rm(resolve(root, "plugins/plan-review/web/dist"), { recursive: true, force: true });
+const planWeb = Bun.spawn([process.execPath, "run", "build"], { cwd: resolve(root, "plugins/plan-review"), stdout: "inherit", stderr: "inherit" });
+if (await planWeb.exited !== 0) throw new Error("Could not build Plan Review web assets");

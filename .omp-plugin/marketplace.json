@@ -23,6 +23,12 @@
       "description": "Control loops: checks and focused reviewer agents verify each change before the agent finishes",
       "source": "./plugins/control",
       "version": "0.1.1"
+    },
+    {
+      "name": "plan-review",
+      "description": "Browser plan review: comment on the plan's lines, then refine or approve it",
+      "source": "./plugins/plan-review",
+      "version": "0.1.0"
     }
   ]
 }
