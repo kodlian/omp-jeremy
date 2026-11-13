@@ -1,6 +1,6 @@
 {
   "name": "omp-plan-review",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "omp plan review in the browser: comment on the plan's lines, then refine or approve it",

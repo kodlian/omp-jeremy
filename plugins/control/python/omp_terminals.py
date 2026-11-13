@@ -534,7 +534,8 @@ def terminal_identity(environ: Any) -> Dict[str, str]:
 
 
 def presenter_cmux(environ: Mapping[str, str]) -> Optional[Dict[str, str]]:
-    """The validated cmux part of the terminal now showing this detached process (PRESENTER_ENV); None without one."""
+    """The validated cmux part of the workspace now showing this detached process (PRESENTER_ENV); None without one.
+    A presenter names a workspace, and a surface only when one terminal shows the process."""
     path = environ.get(PRESENTER_ENV)
     if not path:
         return None
@@ -542,7 +543,17 @@ def presenter_cmux(environ: Mapping[str, str]) -> Optional[Dict[str, str]]:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return _detect_cmux(terminal_identity(data.get("env") if isinstance(data, dict) else None))[0]
+    ident = terminal_identity(data.get("env") if isinstance(data, dict) else None)
+    if not ident.get("CMUX_WORKSPACE_ID"):
+        return None
+    try:
+        part = _cmux_part({"cli": ident.get("CMUX_BUNDLED_CLI_PATH") or _which("cmux"),
+                           "socket": ident.get("CMUX_SOCKET_PATH") or DEFAULT_CMUX_SOCKET,
+                           "workspace": ident["CMUX_WORKSPACE_ID"], "surface": ident.get("CMUX_SURFACE_ID")}, False)
+        _cmux_target(part)
+    except (ValueError, RuntimeError):
+        return None
+    return part
 
 
 def _detect_tmux(environ: Mapping[str, str]) -> Tuple[Optional[Dict[str, str]], str]:
@@ -558,6 +569,48 @@ def _detect_tmux(environ: Mapping[str, str]) -> Tuple[Optional[Dict[str, str]], 
     return part, ""
 
 
+def _tmux_client_cmux(tmux: Dict[str, str], environ: Mapping[str, str]) -> Optional[Dict[str, str]]:
+    """The cmux surface whose terminal runs a client attached to this tmux pane's session (latest active first); None
+    when no cmux terminal shows it."""
+    session = _tmux_show(tmux, tmux["pane"], "#{session_id}")
+    if not session:
+        return None
+    code, out, _ = _tmux(tmux, ["list-clients", "-t", session, "-F", "#{client_activity} #{client_tty}"])
+    if code != 0:
+        return None
+    clients = sorted((line.split(" ", 1) for line in out.splitlines() if " " in line), key=lambda c: -int(c[0] or 0))
+    ttys = [os.path.basename(tty) for _, tty in clients]
+    cli = environ.get("CMUX_BUNDLED_CLI_PATH") or _which("cmux")
+    if not ttys or not cli:
+        return None
+    try:
+        base = {"cli": _cmux_cli(cli), "socket": _socket(environ.get("CMUX_SOCKET_PATH") or DEFAULT_CMUX_SOCKET, "cmux socket")}
+    except ValueError:
+        return None
+    code, out, _ = _cmux(base, ["--json", "--id-format", "uuids", "tree"])
+    try:
+        tree = json.loads(out) if code == 0 else {}
+    except ValueError:
+        return None
+    found: Dict[str, Tuple[str, str]] = {}
+    for window in tree.get("windows") or []:
+        for workspace in window.get("workspaces") or []:
+            for pane in workspace.get("panes") or []:
+                for surface in pane.get("surfaces") or []:
+                    tty = surface.get("tty")
+                    if surface.get("type") != "browser" and tty and tty not in found:
+                        found[tty] = (workspace.get("id"), surface.get("id"))
+    for tty in ttys:
+        if tty in found:
+            try:
+                part = _cmux_part({**base, "workspace": found[tty][0], "surface": found[tty][1]}, True)
+                _cmux_target(part)
+                return part
+            except (ValueError, RuntimeError):
+                continue
+    return None
+
+
 def detect_context(environ: Mapping[str, str], override_envs: Tuple[str, ...] = OVERRIDE_ENVS) -> Dict[str, Any]:
     """The calling terminal's context: nested tmux wins presentation, a valid cmux stays for the browser; the first set `override_envs` forces a kind."""
     name = next((n for n in override_envs if environ.get(n)), override_envs[0] if override_envs else "override")
@@ -565,7 +618,12 @@ def detect_context(environ: Mapping[str, str], override_envs: Tuple[str, ...] = 
     if override not in OVERRIDES:
         raise ValueError(f"{name} must be one of {', '.join(OVERRIDES)}, not {override}")
     cmux, cmux_why = _detect_cmux(environ)
-    tmux, tmux_why = _detect_tmux(environ) if override in ("auto", "tmux") else (None, "")
+    tmux, tmux_why = _detect_tmux(environ) if override in ("auto", "tmux") or not cmux else (None, "")
+    # A tmux pane without cmux identity of its own (cmux's local tmux, a detached task) is shown by the cmux terminal of its client.
+    if not cmux and tmux:
+        cmux = _tmux_client_cmux(tmux, environ)
+    if override not in ("auto", "tmux"):
+        tmux = None
     if override == "cmux" and not cmux:
         raise ValueError(f"{name}=cmux, but {cmux_why}")
     if override == "tmux" and not tmux:

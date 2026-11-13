@@ -29,7 +29,7 @@
     },
     "plugins/control": {
       "name": "omp-control",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "devDependencies": {
         "@types/bun": "latest",
         "omp-control-view": "workspace:*",
@@ -40,7 +40,7 @@
     },
     "plugins/git-diff-review": {
       "name": "omp-git-diff-review",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "devDependencies": {
         "@types/bun": "latest",
         "lucide": "^1.55.0",
@@ -51,7 +51,7 @@
     },
     "plugins/orchestrator": {
       "name": "omp-orchestrator",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "devDependencies": {
         "@dagrejs/dagre": "^3.1.3",
         "omp-control-view": "workspace:*",
@@ -60,7 +60,7 @@
     },
     "plugins/plan-review": {
       "name": "omp-plan-review",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "devDependencies": {
         "@types/bun": "latest",
         "lucide": "^1.55.0",
