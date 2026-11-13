@@ -1,0 +1,20 @@
+{
+  "name": "omp-plan-review",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "omp plan review in the browser: comment on the plan's lines, then refine or approve it",
+  "omp": {
+    "extensions": ["./dist/extension.js"]
+  },
+  "scripts": {
+    "build": "bun build web/main.js --outdir web/dist --format esm --minify",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "omp-integrations": "workspace:*",
+    "marked": "^18.2.0",
+    "lucide": "^1.55.0",
+    "@types/bun": "latest"
+  }
+}
