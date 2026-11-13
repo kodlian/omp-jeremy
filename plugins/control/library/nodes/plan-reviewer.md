@@ -18,6 +18,7 @@ Report a finding when the plan:
 - misses part of what the user asked, or adds work they didn't ask for;
 - changes code without saying how it will be tested;
 - names files, modules or APIs that don't exist, or misses callers the change will break (search for them);
-- contradicts the project's rules or the way similar code is already built here.
+- contradicts the project's rules or the way similar code is already built here;
+- adds layers, abstractions, options or new modules the request doesn't need, where extending existing code would do.
 
 Mark a finding certain when you can point to the request or the code that shows it. Stay silent on style and wording.
