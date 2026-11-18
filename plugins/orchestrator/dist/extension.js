@@ -123,13 +123,13 @@ var DELETE_KEEP = "Delete and keep the worktree";
 var CANCEL = "Cancel";
 var ORCHESTRATOR_CONTEXT = `Orchestrator mode is on in this checkout: this session manages the Orchestrator backlog of its flow. A card is a title and a description. Once started, it runs in its own git worktree branched from this checkout's branch. Auto cards let that task's omp quickly decide whether plan review is useful; Plan requires it and Fast implements directly.
 - Work the board only through the orchestrator_* tools (orchestrator_tasks, orchestrator_plan, orchestrator_children, orchestrator_history, orchestrator_ready, orchestrator_create, orchestrator_edit, orchestrator_amend, orchestrator_link, orchestrator_start, orchestrator_move, orchestrator_message, orchestrator_review, orchestrator_stop, orchestrator_screen, orchestrator_diff, orchestrator_context, orchestrator_publish, orchestrator_memory, orchestrator_cleanup, orchestrator_recover, orchestrator_done, orchestrator_delete). Never git merge a task's branch, create or remove its worktree, or call the board's HTTP API or bd by hand.
-- When the user asks for a task (or several), first call orchestrator_tasks once for that flow. Compare the open card titles and dependencies; read orchestrator_plan only for a plausible same-subject card or prerequisite, then set dependsOn when that card must land first. Keep this preflight bounded: don't explore the repository and don't turn it into planning.
-- Every card costs a worktree and a build, so group work by subject. An ask on the same subject as an open card (same screen, feature, component or bug area) that fits its branch without changing its direction goes to that card with orchestrator_amend, even when the card has started; don't create a card for it. If orchestrator_amend refuses because the card is done or its agent isn't running, create a new card; if the card is still starting, tell the user to retry shortly.
+- When the user asks for a task (or several), first call orchestrator_tasks once for that flow. Compare the card titles and dependencies, the done cards it lists included; read orchestrator_plan only for a plausible same-subject card or prerequisite. Set dependsOn for every card the new work builds on: an open card that must land first, and a done card still on the board whose change it extends or fixes. A done dependency doesn't block; it gives the new card that card's recorded outcome in its brief. Keep this preflight bounded: don't explore the repository and don't turn it into planning.
+- Every card costs a worktree and a build, so group work by subject. An ask on the same subject as an open card (same screen, feature, component or bug area) that fits its branch without changing its direction goes to that card with orchestrator_amend, even when the card has started; don't create a card for it. If orchestrator_amend refuses because the card is done or its agent isn't running, create a new card that depends on it; if the card is still starting, tell the user to retry shortly.
 - Otherwise create cards right away with orchestrator_create. The card's omp owns implementation decisions when it starts. Read only what the user points you to when the description needs it (a ticket, a design). The description says what to build and why, what the user decided in this conversation, the acceptance and the links (ticket, design, files the user named), not how.
 - After creating cards, or amending a Backlog card, call orchestrator_start for those card IDs when the user's wording commits to doing the work now. Bug reports, missing behavior and assertive requests to check, fix, add, change or implement something all count. Keep cards in Backlog for ideas, "maybe" or "later" requests, and while the user is still discussing or deciding. Started cards still wait for dependsOn and flow capacity.
 - Leave planningMode as auto unless the user explicitly wants mandatory plan review or a fast direct implementation.
 - A card's loop is the Control loop its task session runs after implementing; set it with orchestrator_create/orchestrator_edit only when the user names one.
-- Keep related asks from one request in one card. Split into several cards only when the parts are large and touch independent areas, when one must land before another, or when the user asks to split; each split card's description starts with the line "Part of: <the overall need in one line>". Set dependsOn for earlier new cards that must land first, as well as existing prerequisites found by the preflight.
+- Keep related asks from one request in one card. Split into several cards only when the parts are large and touch independent areas, when one must land before another, or when the user asks to split; each split card's description starts with the line "Part of: <the overall need in one line>". Set dependsOn for earlier new cards that must land first, as well as the open and done cards the preflight found it builds on.
 - In the reply, say where each ask went: the card it was added to and whether its agent received it, the cards you created, and which cards you started or left in Backlog.
 - For existing cards, an explicit "start", "do" or "run" #n is one trigger for orchestrator_start (it runs in its own worktree), not a request to implement it in this session unless the user says to do it here. Explicit wording is not required for new or amended cards that meet the intent rule above. "Merge #n" means orchestrator_done; "drop" or "delete #n" means orchestrator_delete; changing a card's title or description means orchestrator_edit. To replace or remove dependencies, pass the complete desired dependsOn list to orchestrator_edit; [] clears it.
 - parent groups a card under another card of the same flow (an epic and its parts) when the user asks for that structure; it isn't a prerequisite, so use dependsOn for ordering, but children also inherit their parent's blockers under Beads readiness. Set it with orchestrator_create or orchestrator_edit (parent "none" clears it) and read the hierarchy with orchestrator_children.
@@ -393,10 +393,12 @@ function presentationText(t) {
     return `in its ${p.kind} ${p.kind === "tmux" ? "window" : "workspace"}`;
   return t.attachCommand ? `after attaching with: ${t.attachCommand}` : "in its omp session";
 }
-function listTasks(board, flows, all, includeDone, self) {
+function listTasks(board, flows, all, self) {
   const rank = (t) => t.flow === flows[0] ? 0 : flows.includes(t.flow) ? 1 : 2;
-  const shown = board.tasks.filter((t) => (includeDone || t.column !== "done") && (all || flows.includes(t.flow))).sort((a, b) => rank(a) - rank(b));
-  const several = all || new Set(shown.map((t) => t.flow)).size > 1;
+  const listed = board.tasks.filter((t) => all || flows.includes(t.flow)).sort((a, b) => rank(a) - rank(b));
+  const shown = listed.filter((t) => t.column !== "done");
+  const done = listed.filter((t) => t.column === "done");
+  const several = all || new Set(listed.map((t) => t.flow)).size > 1;
   const lines = shown.map((t) => {
     const column = board.columns.find((c) => c.id === t.column)?.title ?? t.column;
     let line = `${t.id} \xB7 ${column} \xB7 ${t.title} \xB7 ${t.branch} \u2192 ${t.base} (${t.merge})`;
@@ -430,6 +432,13 @@ function listTasks(board, flows, all, includeDone, self) {
       line += ` \xB7 flow ${t.flow}`;
     return line;
   });
+  if (done.length) {
+    if (lines.length)
+      lines.push("");
+    lines.push("Done, still on the board (depend on one when new work builds on it; it doesn't block):");
+    for (const t of done)
+      lines.push(`${t.id} \xB7 ${t.title}${several ? ` \xB7 flow ${t.flow}` : ""}`);
+  }
   const header = all ? [`All flows: ${board.flows.map((f) => f.id).join(", ") || "none"}`] : flows.map((id) => {
     const checkout = board.flows.find((f) => f.id === id)?.checkout;
     return `Flow ${id}${checkout ? ` (${tilde(checkout)})` : ""}`;
@@ -1596,15 +1605,15 @@ Every task in ${tilde(current2.scope)} loses this memory.`);
   pi.registerTool({
     name: "orchestrator_tasks",
     label: "Orchestrator tasks",
-    description: "List the Orchestrator cards of this checkout's flow (in a task session, its sibling tasks first): column, title, branch, base and merge mode, planning route, dependencies, parent and child count, agent state and whether it has a plan. all lists every flow; done cards only with includeDone.",
-    parameters: z.object({ all: z.boolean().optional(), includeDone: z.boolean().optional() }),
+    description: "List the Orchestrator cards of this checkout's flow (in a task session, its sibling tasks first): column, title, branch, base and merge mode, planning route, dependencies, parent and child count, agent state and whether it has a plan; then its done cards, still on the board, by title. all lists every flow.",
+    parameters: z.object({ all: z.boolean().optional() }),
     approval: "read",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       return answer((async () => {
         const board = await api("GET", "/api/state");
         const own = task ? board.tasks.find((t) => t.id === task) : undefined;
         const flows = [...new Set([own?.flow, on || !own ? sessionFlow(board, ctx) : undefined].filter((f) => Boolean(f)))];
-        return listTasks(board, flows, params.all === true, params.includeDone === true, own?.id);
+        return listTasks(board, flows, params.all === true, own?.id);
       })());
     }
   });
@@ -1677,7 +1686,7 @@ ${plan}`;
   pi.registerTool({
     name: "orchestrator_link",
     label: "Orchestrator link",
-    description: "Make an Orchestrator card wait for other cards: it starts only once every dependsOn card is done.",
+    description: "Make an Orchestrator card depend on other cards: it starts only once every open dependsOn card is done. A done card still on the board can be a dependency too: it doesn't block, and its recorded outcome goes into the card's brief when the card starts.",
     parameters: z.object({ task: z.string(), dependsOn: z.array(z.string()).min(1) }),
     approval: "read",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1691,7 +1700,7 @@ ${plan}`;
   pi.registerTool({
     name: "orchestrator_create",
     label: "Orchestrator create",
-    description: "Create an Orchestrator backlog card after the required bounded preflight, only when no open card covers the same subject (add to that card with orchestrator_amend instead): a title and a description of what to build and why (what the user decided, the acceptance, links), not a plan. Set dependsOn for open cards that must land first. parent (a card of the same flow) groups it under that card; use dependsOn for ordering, though a child also inherits its parent's blockers. planningMode defaults to auto; plan requires review and fast implements directly. loop names a Control loop from the library that the task session runs (only when the user asks); fixed once the card starts. Once started, it runs in its own git worktree branched from this checkout's branch. Created from a task's own worktree, the card joins that task's flow and, unless dependsOn is given, depends on that task as its follow-up; pass dependsOn [] when it should run alongside.",
+    description: "Create an Orchestrator backlog card after the required bounded preflight, only when no open card covers the same subject (add to that card with orchestrator_amend instead): a title and a description of what to build and why (what the user decided, the acceptance, links), not a plan. Set dependsOn for every card it builds on: open cards that must land first, and done cards still on the board whose change it extends or fixes (a done dependency doesn't block; its recorded outcome goes into the card's brief). parent (a card of the same flow) groups it under that card; use dependsOn for ordering, though a child also inherits its parent's blockers. planningMode defaults to auto; plan requires review and fast implements directly. loop names a Control loop from the library that the task session runs (only when the user asks); fixed once the card starts. Once started, it runs in its own git worktree branched from this checkout's branch. Created from a task's own worktree, the card joins that task's flow and, unless dependsOn is given, depends on that task as its follow-up; pass dependsOn [] when it should run alongside.",
     parameters: z.object({
       title: z.string(),
       description: z.string(),
