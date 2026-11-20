@@ -236,6 +236,7 @@ function renderDoc() {
     return;
   }
   doc.innerHTML = state.html;
+  renderDiagrams();
   highlightCode();
   state.hunks.forEach((hunk, i) => {
     const kind = hunk.before.length ? "changed" : "added";
@@ -284,6 +285,125 @@ function highlightCode() {
     }
   }
 }
+
+// MARK: diagrams
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const pictures = new Map();
+let mermaid = null;
+let loadingMermaid = null;
+
+/** The page's colors as values: a picture drawn as an image sees none of the page's CSS variables. */
+function diagramColors() {
+  const probe = doc.appendChild(document.createElement("span"));
+  const color = (name) => {
+    probe.style.color = `var(${name})`;
+    return getComputedStyle(probe).color;
+  };
+  const colors = {
+    bg: color("--bg"), fg: color("--fg"), muted: color("--muted"), surface: color("--surface"), border: color("--line-strong"),
+    accent: color("--accent"), success: color("--add"), warning: color("--warning"), error: color("--remove"),
+    c1: color("--accent"), c2: color("--add"), c3: color("--warning"), c4: color("--merged"), c5: color("--cyan"), c6: color("--remove"),
+  };
+  probe.remove();
+  return colors;
+}
+
+/** SVG markup as a standalone image: no script runs and nothing loads in it; `vars` become its CSS variables. */
+function svgPicture(markup, vars) {
+  const text = /<svg\b[^>]*\sxmlns=/.test(markup) ? markup : markup.replace(/<svg\b/, `<svg xmlns="${SVG_NS}"`);
+  const parsed = new DOMParser().parseFromString(text, "image/svg+xml");
+  const svg = parsed.documentElement;
+  if (svg.namespaceURI !== SVG_NS || svg.localName !== "svg" || parsed.getElementsByTagName("parsererror").length) throw new Error("not valid SVG");
+  const box = (svg.getAttribute("viewBox") ?? "").trim().split(/[\s,]+/).map(Number);
+  if (!svg.hasAttribute("width") && box.length === 4 && box.every(Number.isFinite)) {
+    svg.setAttribute("width", String(box[2]));
+    svg.setAttribute("height", String(box[3]));
+  }
+  if (vars) {
+    const style = parsed.createElementNS(SVG_NS, "style");
+    style.textContent = `:root{${Object.entries(vars).map(([k, v]) => `--${k}:${v}`).join(";")};color:var(--fg);font-family:system-ui,sans-serif}`;
+    svg.prepend(style);
+  }
+  const width = Number.parseFloat(svg.getAttribute("width") ?? "");
+  return {
+    src: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(new XMLSerializer().serializeToString(svg))}`,
+    width: Number.isFinite(width) ? width : null,
+    alt: svg.querySelector("title")?.textContent.trim() || "Diagram",
+  };
+}
+
+/** A block's picture, drawn once per source until the colors change; `{ error }` when it doesn't draw. */
+function picture(lang, source, colors) {
+  const key = `${lang}\0${source}`;
+  if (!pictures.has(key)) {
+    try {
+      const { bg, fg, muted, surface, border, accent } = colors();
+      pictures.set(key, lang === "svg"
+        ? svgPicture(source, colors())
+        : svgPicture(mermaid.renderMermaidSVG(source, { bg, fg, muted, surface, border, accent, transparent: true }), null));
+    } catch (error) {
+      pictures.set(key, { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return pictures.get(key);
+}
+
+function imageOf({ src, width, alt }) {
+  const img = document.createElement("img");
+  img.src = src;
+  img.alt = alt;
+  if (width) img.width = width;
+  return img;
+}
+
+/** Shows each mermaid and svg fenced block as its picture; one that doesn't draw stays code and says why on hover. */
+function renderDiagrams() {
+  let colors = null;
+  const resolved = () => (colors ??= diagramColors());
+  for (const code of doc.querySelectorAll("pre > code.language-mermaid, pre > code.language-svg")) {
+    const lang = code.className.slice("language-".length);
+    if (lang === "mermaid" && !mermaid) {
+      loadMermaid();
+      continue;
+    }
+    const source = code.textContent.replace(/\n$/, "");
+    const drawn = picture(lang, source, resolved);
+    if (drawn.error) {
+      code.parentElement.title = `Not drawn: ${drawn.error}`;
+      continue;
+    }
+    const figure = document.createElement("figure");
+    figure.className = "diagram";
+    figure.dataset.lang = lang;
+    figure.dataset.source = source;
+    figure.append(imageOf(drawn));
+    code.parentElement.replaceWith(figure);
+  }
+}
+
+function loadMermaid() {
+  loadingMermaid ??= import("beautiful-mermaid")
+    .then((module) => {
+      mermaid = module;
+      renderDiagrams();
+    })
+    .catch((error) => console.warn("mermaid failed to load", error));
+}
+
+/** Draws the pictures again once the terminal's appearance or the system's light or dark mode changes. */
+function repaintDiagrams() {
+  pictures.clear();
+  let colors = null;
+  const resolved = () => (colors ??= diagramColors());
+  for (const figure of doc.querySelectorAll("figure.diagram")) {
+    const drawn = picture(figure.dataset.lang, figure.dataset.source, resolved);
+    if (!drawn.error) figure.replaceChildren(imageOf(drawn));
+  }
+}
+
+document.getElementById("appearance").addEventListener("load", repaintDiagrams);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", repaintDiagrams);
 
 // MARK: outline width
 

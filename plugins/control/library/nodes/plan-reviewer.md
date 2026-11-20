@@ -2,7 +2,6 @@
 name: Plan check
 kind: review
 description: The plan covers the request, the tests and the code it touches
-timeout: 600
 ask: never
 tools:
   - read

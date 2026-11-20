@@ -27,7 +27,7 @@ const reviewer: NodeDefinition = {
 	kind: "review",
 	description: "Docs match: the code's behavior",
 	command: null,
-	timeout: 600,
+	timeout: null,
 	ask: "all",
 	model: "anthropic/claude-sonnet-4-5",
 	thinking: "low",
@@ -44,6 +44,10 @@ test("a node survives a write and a read: lists, quoted text and '' escapes", ()
 	const check: NodeDefinition = { ...reviewer, id: "tests", name: "Tests", kind: "check", command: `bun test --grep "a: b" && echo 'done'`, timeout: 120, ask: "doubts", tools: [], model: null, thinking: null, resources: [], instructions: "" };
 	const parsed = parseNodeFile(serializeNode(check), "c.md");
 	expect(nodeFrom("tests", parsed.fields, parsed.body, "c.md")).toEqual(check);
+
+	// A reviewer has no time limit; one an older file gives it is ignored.
+	const old = parseNodeFile(serializeNode(reviewer).replace("kind: review\n", "kind: review\ntimeout: 600\n"), "o.md");
+	expect(nodeFrom(reviewer.id, old.fields, old.body, "o.md")).toEqual(reviewer);
 
 	const hand = parseNodeFile("---\nname: 'It''s a check'\n# comment\n\nkind: check\ncommand: \"make \\\"all\\\"\"\ntimeout: 30\n---\n", "h.md");
 	expect(hand.fields).toEqual({ name: "It's a check", kind: "check", command: 'make "all"', timeout: 30 });

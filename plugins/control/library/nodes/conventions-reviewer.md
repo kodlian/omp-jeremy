@@ -2,7 +2,6 @@
 name: Conventions
 kind: review
 description: Naming, structure and patterns consistent with the codebase, as simple as the goal allows
-timeout: 600
 ask: doubts
 tools:
   - read

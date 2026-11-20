@@ -2,7 +2,6 @@
 name: Quality
 kind: review
 description: Bugs, edge cases and regressions in the change
-timeout: 600
 ask: doubts
 tools:
   - read

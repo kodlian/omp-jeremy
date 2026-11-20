@@ -675,7 +675,7 @@ export default function control(pi: ExtensionAPI) {
 		kind: z.enum(["check", "review"]),
 		description: z.string().optional(),
 		command: z.string().optional(),
-		timeout: z.number().int().optional(),
+		timeout: z.number().int().optional().describe("Checks only: seconds before the command is stopped (default 900); a reviewer has no time limit"),
 		ask: z.enum(["doubts", "all", "never"]).optional(),
 		model: z.string().optional(),
 		thinking: z.string().optional(),

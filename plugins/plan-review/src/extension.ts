@@ -3,7 +3,7 @@ import * as omp from "@oh-my-pi/pi-coding-agent";
 import { COMMAND_EVENT, type ControlReply, RUN_EVENT, type RunView } from "omp-control-view/protocol";
 import { busAsk } from "omp-integrations/bus";
 import { appearanceSync, recordedPort } from "omp-integrations/page";
-import { openBoard } from "omp-integrations/terminal";
+import { closeTab, openTab, type PageTab } from "omp-integrations/terminal";
 import { errorText } from "omp-integrations/text";
 import { DEFAULT_PORTS, type PlanReviewServer, startPlanReviewServer } from "./server";
 
@@ -18,6 +18,7 @@ export default function planReview(pi: ExtensionAPI) {
 	let resumePort: number | null = null;
 	let pending: string | null = null; // the review omp waits on
 	let opened: string | null = null; // the review the page was opened for
+	let tab: PageTab | null = null; // the browser tab showing the page, closed once its review ends
 	const appearance = appearanceSync(omp, () => server);
 
 	async function ensureServer(sessionCtx: ExtensionContext, port: number | null = recordedPort(sessionCtx, SERVER_ENTRY)): Promise<PlanReviewServer> {
@@ -37,12 +38,26 @@ export default function planReview(pi: ExtensionAPI) {
 		return server;
 	}
 
+	/** Closes the page's tab, if one is open. */
+	const closePage = async () => {
+		const current = tab;
+		tab = null;
+		if (current) await closeTab(current).catch(() => {});
+	};
+
+	/** Opens the page in a tab beside the session's terminal and jumps to it. */
+	const openPage = async (sessionCtx: ExtensionContext) => {
+		const next = await openTab((await ensureServer(sessionCtx)).url());
+		if (tab && tab.surface !== next?.surface) await closePage();
+		tab = next;
+	};
+
 	/** Brings the page forward for a review, once. */
 	const show = async (reviewId: string) => {
 		// Orchestrator task sessions already show their plan on the board.
 		if (opened === reviewId || pending !== reviewId || !ctx || process.env.ORCHESTRATOR_TASK) return;
 		opened = reviewId;
-		await openBoard((await ensureServer(ctx)).url(), { focus: true });
+		await openPage(ctx);
 	};
 	const showFailed = (error: unknown) => ctx?.ui.notify(`Plan review: the page didn't open: ${errorText(error)}`, "warning");
 
@@ -50,9 +65,8 @@ export default function planReview(pi: ExtensionAPI) {
 		description: "Open the plan review page: comment on the plan's lines, then refine or approve it",
 		handler: async (_args, commandCtx) => {
 			ctx = commandCtx;
-			const url = (await ensureServer(commandCtx)).url();
-			await openBoard(url, { focus: true });
-			commandCtx.ui.notify(`plan review open at ${url}`, "info");
+			await openPage(commandCtx);
+			commandCtx.ui.notify(`plan review open at ${(await ensureServer(commandCtx)).url()}`, "info");
 		},
 	});
 
@@ -75,10 +89,12 @@ export default function planReview(pi: ExtensionAPI) {
 		if (view?.plan === "review" && pending) void show(pending).catch(showFailed);
 	});
 
+	// However the review ends (answered on the page or in the terminal, dismissed, replaced, plan mode left), its tab closes.
 	pi.on("plan_review_resolved", (event, eventCtx) => {
 		if (eventCtx.agent?.kind === "sub") return;
 		if (event.reviewId === pending) pending = null;
 		server?.resolved(event.reviewId, event.choice ?? null, event.by);
+		void closePage();
 	});
 
 	pi.on("before_agent_start", (_event, eventCtx) => {
@@ -102,11 +118,13 @@ export default function planReview(pi: ExtensionAPI) {
 	pi.on("session_switch", async (_event, sessionCtx) => {
 		if (sessionCtx.agent?.kind === "sub") return;
 		ctx = sessionCtx;
-		if (server) server.clear();
-		else await ensureServer(sessionCtx).catch((e) => sessionCtx.ui.notify(`Plan review: the page didn't start: ${errorText(e)}`, "warning"));
+		if (server) {
+			server.clear();
+			await closePage();
+		} else await ensureServer(sessionCtx).catch((e) => sessionCtx.ui.notify(`Plan review: the page didn't start: ${errorText(e)}`, "warning"));
 	});
 
-	pi.on("session_shutdown", (_event, sessionCtx) => {
+	pi.on("session_shutdown", async (_event, sessionCtx) => {
 		if (sessionCtx.agent?.kind === "sub") return;
 		ctx = null;
 		pending = null;
@@ -114,5 +132,6 @@ export default function planReview(pi: ExtensionAPI) {
 		appearance.stop();
 		server?.stop();
 		server = null;
+		await closePage();
 	});
 }

@@ -150,6 +150,13 @@ function sinceDialog(page) {
   ref.focus();
 }
 
+/** The headline's status dot: something waits for you, the run works, it passed, or it rests. */
+function headlineTone(run, waiting) {
+  if (waiting || run.status === "stalled") return "waiting";
+  if (run.status === "passed") return "passed";
+  return ["paused", "idle", "deferred"].includes(run.status) ? "idle" : "active";
+}
+
 function running(page) {
   const { attached, run, session } = page.payload;
   const paused = run.status === "paused";
@@ -197,7 +204,8 @@ function running(page) {
     ),
     h(
       "div",
-      { class: `run-headline${waiting ? " is-waiting" : ""}` },
+      { class: `run-headline tone-${headlineTone(run, waiting)}` },
+      h("span", { class: "run-dot", "aria-hidden": "true" }),
       h("div", { class: "run-status" }, runHeadline(run)),
       attached.since ? h("div", { class: "run-request muted" }, `Checking the changes ${attached.since}`) : null,
       requests.length > 1

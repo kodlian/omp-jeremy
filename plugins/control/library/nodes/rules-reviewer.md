@@ -2,7 +2,6 @@
 name: Project rules
 kind: review
 description: The change follows AGENTS.md / CLAUDE.md, the docs they link, the project's rules and the skills that apply
-timeout: 600
 ask: doubts
 tools:
   - read

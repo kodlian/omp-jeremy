@@ -14,7 +14,7 @@ const node: NodeDefinition = {
 	kind: "review",
 	description: "",
 	command: null,
-	timeout: 60,
+	timeout: null,
 	ask: "doubts",
 	model: null,
 	thinking: null,

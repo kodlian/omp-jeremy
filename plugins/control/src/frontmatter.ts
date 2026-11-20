@@ -67,7 +67,8 @@ export function serializeNode(node: NodeDefinition): string {
 	const out = ["---", `name: ${quote(node.name)}`, `kind: ${node.kind}`];
 	if (node.description) out.push(`description: ${quote(node.description)}`);
 	if (node.kind === "check" && node.command !== null) out.push(`command: ${quote(node.command)}`);
-	out.push(`timeout: ${node.timeout}`, `ask: ${node.ask}`);
+	if (node.timeout !== null) out.push(`timeout: ${node.timeout}`);
+	out.push(`ask: ${node.ask}`);
 	if (node.model) out.push(`model: ${quote(node.model)}`);
 	if (node.thinking) out.push(`thinking: ${quote(node.thinking)}`);
 	if (node.kind === "review") out.push("tools:", ...node.tools.map((t) => `  - ${quote(t)}`));

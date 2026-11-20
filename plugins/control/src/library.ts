@@ -12,7 +12,8 @@ export interface NodeDefinition {
 	kind: NodeKind;
 	description: string;
 	command: string | null;
-	timeout: number;
+	/** Seconds a check's command may run; null for a reviewer, which runs until it answers or its run stops. */
+	timeout: number | null;
 	ask: AskMode;
 	model: string | null;
 	thinking: string | null;
@@ -94,19 +95,19 @@ export function nodeFrom(id: string, fields: Record<string, unknown>, body: stri
 	const description = optionalText(fields, "description", where) ?? "";
 	const ask = optionalText(fields, "ask", where) ?? "doubts";
 	if (!ASK_MODES.includes(ask as AskMode)) throw new Error(`${where}: ask must be doubts, all or never`);
-	const [min, max, fallback] = kind === "check" ? [1, 7200, 900] : [30, 3600, 600];
-	const timeout = fields.timeout ?? fallback;
-	if (typeof timeout !== "number" || !Number.isInteger(timeout) || timeout < min || timeout > max) {
-		throw new Error(`${where}: timeout must be ${min}–${max} seconds`);
-	}
 	const resources = textList(fields, "resources", where) ?? [];
 	if (resources.length > 20) throw new Error(`${where}: resources has at most 20 entries`);
 	let command: string | null = null;
+	let timeout: number | null = null;
 	let tools: string[] = [];
 	if (kind === "check") {
 		command = optionalText(fields, "command", where)?.trim() || null;
 		if (!command) throw new Error(`${where}: a check needs a command`);
+		const seconds = fields.timeout ?? 900;
+		if (typeof seconds !== "number" || !Number.isInteger(seconds) || seconds < 1 || seconds > 7200) throw new Error(`${where}: timeout must be 1–7200 seconds`);
+		timeout = seconds;
 	} else {
+		// A timeout an older reviewer file has is ignored.
 		if (!body.trim()) throw new Error(`${where}: a reviewer needs instructions (the text after the header)`);
 		tools = textList(fields, "tools", where) ?? DEFAULT_TOOLS;
 		const bad = tools.filter((t) => !REVIEWER_TOOLS.includes(t));

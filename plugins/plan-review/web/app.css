@@ -342,6 +342,21 @@ body {
   line-height: var(--line-height);
 }
 
+.doc figure.diagram {
+  margin: 0.55em 0;
+  padding: 12px;
+  border: 1px solid var(--md-code-border);
+  border-radius: var(--radius);
+  overflow-x: auto;
+}
+
+.doc figure.diagram img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
 .doc blockquote {
   padding-left: 12px;
   border-left: 3px solid var(--md-quote-border);

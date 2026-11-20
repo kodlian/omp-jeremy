@@ -154,11 +154,14 @@ async function terminalCellHeight(options = {}) {
     return;
   }
 }
-async function openBoard(url, options = {}) {
-  const args = ["board", url, options.focus ? "--focus" : "--no-focus"];
+async function openTab(url, options = {}) {
+  const args = ["tab", url];
   if (options.context)
     args.push("--context", JSON.stringify(options.context));
-  await helper(args, options);
+  return JSON.parse(await helper(args, options));
+}
+async function closeTab(tab, options = {}) {
+  await helper(["close-tab", JSON.stringify(tab)], options);
 }
 
 // packages/integrations/src/theme.ts
@@ -560,6 +563,7 @@ function planReview(pi) {
   let resumePort = null;
   let pending = null;
   let opened = null;
+  let tab = null;
   const appearance = appearanceSync(omp, () => server);
   async function ensureServer(sessionCtx, port = recordedPort(sessionCtx, SERVER_ENTRY)) {
     if (!server) {
@@ -574,20 +578,31 @@ function planReview(pi) {
     await appearance.sync(true);
     return server;
   }
+  const closePage = async () => {
+    const current = tab;
+    tab = null;
+    if (current)
+      await closeTab(current).catch(() => {});
+  };
+  const openPage = async (sessionCtx) => {
+    const next = await openTab((await ensureServer(sessionCtx)).url());
+    if (tab && tab.surface !== next?.surface)
+      await closePage();
+    tab = next;
+  };
   const show = async (reviewId) => {
     if (opened === reviewId || pending !== reviewId || !ctx || process.env.ORCHESTRATOR_TASK)
       return;
     opened = reviewId;
-    await openBoard((await ensureServer(ctx)).url(), { focus: true });
+    await openPage(ctx);
   };
   const showFailed = (error) => ctx?.ui.notify(`Plan review: the page didn't open: ${errorText(error)}`, "warning");
   pi.registerCommand("plan-review", {
     description: "Open the plan review page: comment on the plan's lines, then refine or approve it",
     handler: async (_args, commandCtx) => {
       ctx = commandCtx;
-      const url = (await ensureServer(commandCtx)).url();
-      await openBoard(url, { focus: true });
-      commandCtx.ui.notify(`plan review open at ${url}`, "info");
+      await openPage(commandCtx);
+      commandCtx.ui.notify(`plan review open at ${(await ensureServer(commandCtx)).url()}`, "info");
     }
   });
   pi.on("plan_review_requested", (event, eventCtx) => {
@@ -614,6 +629,7 @@ function planReview(pi) {
     if (event.reviewId === pending)
       pending = null;
     server?.resolved(event.reviewId, event.choice ?? null, event.by);
+    closePage();
   });
   pi.on("before_agent_start", (_event, eventCtx) => {
     if (eventCtx.agent?.kind !== "sub")
@@ -637,12 +653,13 @@ function planReview(pi) {
     if (sessionCtx.agent?.kind === "sub")
       return;
     ctx = sessionCtx;
-    if (server)
+    if (server) {
       server.clear();
-    else
+      await closePage();
+    } else
       await ensureServer(sessionCtx).catch((e) => sessionCtx.ui.notify(`Plan review: the page didn't start: ${errorText(e)}`, "warning"));
   });
-  pi.on("session_shutdown", (_event, sessionCtx) => {
+  pi.on("session_shutdown", async (_event, sessionCtx) => {
     if (sessionCtx.agent?.kind === "sub")
       return;
     ctx = null;
@@ -651,6 +668,7 @@ function planReview(pi) {
     appearance.stop();
     server?.stop();
     server = null;
+    await closePage();
   });
 }
 export {

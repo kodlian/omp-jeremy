@@ -467,7 +467,9 @@ function serializeNode(node) {
     out.push(`description: ${quote(node.description)}`);
   if (node.kind === "check" && node.command !== null)
     out.push(`command: ${quote(node.command)}`);
-  out.push(`timeout: ${node.timeout}`, `ask: ${node.ask}`);
+  if (node.timeout !== null)
+    out.push(`timeout: ${node.timeout}`);
+  out.push(`ask: ${node.ask}`);
   if (node.model)
     out.push(`model: ${quote(node.model)}`);
   if (node.thinking)
@@ -530,20 +532,20 @@ function nodeFrom(id, fields, body, where) {
   const ask = optionalText(fields, "ask", where) ?? "doubts";
   if (!ASK_MODES.includes(ask))
     throw new Error(`${where}: ask must be doubts, all or never`);
-  const [min, max, fallback] = kind === "check" ? [1, 7200, 900] : [30, 3600, 600];
-  const timeout = fields.timeout ?? fallback;
-  if (typeof timeout !== "number" || !Number.isInteger(timeout) || timeout < min || timeout > max) {
-    throw new Error(`${where}: timeout must be ${min}\u2013${max} seconds`);
-  }
   const resources = textList(fields, "resources", where) ?? [];
   if (resources.length > 20)
     throw new Error(`${where}: resources has at most 20 entries`);
   let command = null;
+  let timeout = null;
   let tools = [];
   if (kind === "check") {
     command = optionalText(fields, "command", where)?.trim() || null;
     if (!command)
       throw new Error(`${where}: a check needs a command`);
+    const seconds = fields.timeout ?? 900;
+    if (typeof seconds !== "number" || !Number.isInteger(seconds) || seconds < 1 || seconds > 7200)
+      throw new Error(`${where}: timeout must be 1\u20137200 seconds`);
+    timeout = seconds;
   } else {
     if (!body.trim())
       throw new Error(`${where}: a reviewer needs instructions (the text after the header)`);
@@ -1886,7 +1888,7 @@ async function runCheck(exec, node, root, base, artifacts, signal) {
   await mkdir2(artifacts, { recursive: true });
   const script = `CONTROL_BASE='${base.replace(/[^0-9a-f]/gi, "")}'; CONTROL_ARTIFACTS='${artifacts.replaceAll("'", "'\\''")}'; export CONTROL_BASE CONTROL_ARTIFACTS
 ${node.command ?? ""}`;
-  const r = await exec("/bin/sh", ["-c", script], { cwd: root, timeout: node.timeout * 1000, signal });
+  const r = await exec("/bin/sh", ["-c", script], { cwd: root, timeout: node.timeout === null ? undefined : node.timeout * 1000, signal });
   if (signal.aborted)
     return { kind: "error", message: "Interrupted" };
   const images = (await readdir2(artifacts).catch(() => [])).filter((name) => IMAGE.test(name)).sort().slice(0, ARTIFACT_LIMIT).map((name) => join3(artifacts, name));
@@ -1919,7 +1921,10 @@ async function runReviewer(node, root, input, signal, progress) {
   try {
     const systemPath = join3(dir, "system.md");
     const packetPath = join3(dir, "packet.md");
-    await Promise.all([writeFile2(systemPath, input.system), writeFile2(packetPath, input.packet)]);
+    const configPath = join3(dir, "config.yml");
+    await Promise.all([writeFile2(systemPath, input.system), writeFile2(packetPath, input.packet), writeFile2(configPath, `memory:
+  backend: off
+`)]);
     if (signal.aborted)
       return { kind: "error", message: "Interrupted" };
     const args = [
@@ -1933,23 +1938,18 @@ async function runReviewer(node, root, input, signal, progress) {
       "--no-title",
       "--tools",
       node.tools.join(","),
-      "--max-time",
-      String(node.timeout),
       "--append-system-prompt",
       systemPath,
+      "--config",
+      configPath,
       ...node.model ? ["--model", node.model] : [],
       ...node.thinking ? ["--thinking", node.thinking] : [],
       `@${packetPath}`,
       REVIEW_PROMPT
     ];
     const proc = Bun.spawn(args, { cwd: root, env: reviewerEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-    let timedOut = false;
     const kill = () => proc.kill();
     signal.addEventListener("abort", kill, { once: true });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      proc.kill();
-    }, (node.timeout + 30) * 1000);
     const stderr = new Response(proc.stderr).text();
     const lines = [];
     let lastProgress = 0;
@@ -1984,14 +1984,11 @@ async function runReviewer(node, root, input, signal, progress) {
       }
       onLine(buffered);
     } finally {
-      clearTimeout(timer);
       signal.removeEventListener("abort", kill);
     }
     const code = await proc.exited;
     if (signal.aborted)
       return { kind: "error", message: "Interrupted" };
-    if (timedOut)
-      return { kind: "error", message: `timed out after ${node.timeout + 30}s` };
     if (code === 3)
       return { kind: "error", message: "cost cap reached" };
     if (code !== 0) {
@@ -2991,7 +2988,7 @@ ${findingQuestion(f)}`;
     kind: z.enum(["check", "review"]),
     description: z.string().optional(),
     command: z.string().optional(),
-    timeout: z.number().int().optional(),
+    timeout: z.number().int().optional().describe("Checks only: seconds before the command is stopped (default 900); a reviewer has no time limit"),
     ask: z.enum(["doubts", "all", "never"]).optional(),
     model: z.string().optional(),
     thinking: z.string().optional(),

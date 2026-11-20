@@ -18,7 +18,7 @@ export async function runCheck(exec: ExtensionAPI["exec"], node: NodeDefinition,
 	await rm(artifacts, { recursive: true, force: true });
 	await mkdir(artifacts, { recursive: true });
 	const script = `CONTROL_BASE='${base.replace(/[^0-9a-f]/gi, "")}'; CONTROL_ARTIFACTS='${artifacts.replaceAll("'", "'\\''")}'; export CONTROL_BASE CONTROL_ARTIFACTS\n${node.command ?? ""}`;
-	const r = await exec("/bin/sh", ["-c", script], { cwd: root, timeout: node.timeout * 1000, signal });
+	const r = await exec("/bin/sh", ["-c", script], { cwd: root, timeout: node.timeout === null ? undefined : node.timeout * 1000, signal });
 	if (signal.aborted) return { kind: "error", message: "Interrupted" };
 	const images = (await readdir(artifacts).catch(() => []))
 		.filter((name) => IMAGE.test(name))
@@ -58,7 +58,8 @@ export async function runReviewer(
 	try {
 		const systemPath = join(dir, "system.md");
 		const packetPath = join(dir, "packet.md");
-		await Promise.all([writeFile(systemPath, input.system), writeFile(packetPath, input.packet)]);
+		const configPath = join(dir, "config.yml");
+		await Promise.all([writeFile(systemPath, input.system), writeFile(packetPath, input.packet), writeFile(configPath, "memory:\n  backend: off\n")]);
 		if (signal.aborted) return { kind: "error", message: "Interrupted" };
 		const args = [
 			omp,
@@ -71,23 +72,18 @@ export async function runReviewer(
 			"--no-title",
 			"--tools",
 			node.tools.join(","),
-			"--max-time",
-			String(node.timeout),
 			"--append-system-prompt",
 			systemPath,
+			"--config",
+			configPath,
 			...(node.model ? ["--model", node.model] : []),
 			...(node.thinking ? ["--thinking", node.thinking] : []),
 			`@${packetPath}`,
 			REVIEW_PROMPT,
 		];
 		const proc = Bun.spawn(args, { cwd: root, env: reviewerEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-		let timedOut = false;
 		const kill = () => proc.kill();
 		signal.addEventListener("abort", kill, { once: true });
-		const timer = setTimeout(() => {
-			timedOut = true;
-			proc.kill();
-		}, (node.timeout + 30) * 1000);
 		const stderr = new Response(proc.stderr).text();
 		const lines: string[] = [];
 		let lastProgress = 0;
@@ -118,12 +114,10 @@ export async function runReviewer(
 			}
 			onLine(buffered);
 		} finally {
-			clearTimeout(timer);
 			signal.removeEventListener("abort", kill);
 		}
 		const code = await proc.exited;
 		if (signal.aborted) return { kind: "error", message: "Interrupted" };
-		if (timedOut) return { kind: "error", message: `timed out after ${node.timeout + 30}s` };
 		if (code === 3) return { kind: "error", message: "cost cap reached" };
 		if (code !== 0) {
 			const tail = (await stderr).trimEnd().split("\n").slice(-20).join("\n");

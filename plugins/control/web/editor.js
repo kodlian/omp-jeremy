@@ -16,9 +16,9 @@ export function cleanNode(node) {
 }
 
 function blankNode(kind, id) {
-  const base = { id, kind, description: "", command: null, timeout: 0, ask: "doubts", model: null, thinking: null, tools: [], resources: [], instructions: "" };
+  const base = { id, kind, description: "", command: null, timeout: null, ask: "doubts", model: null, thinking: null, tools: [], resources: [], instructions: "" };
   if (kind === "check") return { ...base, name: "New command check", command: "", timeout: 900 };
-  if (kind === "review") return { ...base, name: "New AI check", timeout: 600, tools: ["read", "grep", "glob"] };
+  if (kind === "review") return { ...base, name: "New AI check", tools: ["read", "grep", "glob"] };
   return { ...base, name: "You", instructions: "Approve this change?" };
 }
 
@@ -65,7 +65,6 @@ export function nodeForm(node, onChange, { idEditable = false } = {}) {
     advanced.push(
       field("Model", text("model", { placeholder: "Default model" })),
       field("Thinking", h("select", { class: "field", onchange: (e) => set("thinking", e.target.value || null) }, THINKING.map((t) => h("option", { value: t, selected: (node.thinking ?? "") === t }, t || "Default")))),
-      field("Timeout (seconds)", number("timeout", 30, 3600)),
     );
   } else {
     main.push(field("Question", h("input", { class: "field", value: node.instructions, oninput: (e) => set("instructions", e.target.value) }), "You answer Approve, or Send back with what to change"), field("Description", text("description")));

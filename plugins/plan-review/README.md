@@ -27,12 +27,13 @@ omp plugin link plugins/plan-review
 
 ## Usage
 
-The page opens where the other plugins' pages do: a browser split in the calling cmux workspace (reusing the panel already showing it), else the default browser. Orchestrator task sessions don't open it on their own, since the board already shows their plans; `/plan-review` still does.
+In cmux the page opens as a tab beside the session's terminal, in the same pane, and takes the focus; elsewhere it opens in the default browser. The tab closes once the review ends: you refine or approve from the page or the terminal, the review is dismissed, or plan mode ends. Each new review opens it again. Orchestrator task sessions don't open it on their own, since the board already shows their plans; `/plan-review` still does.
 
 - Hover a block (heading, paragraph, list item, code, table) and click **+** to comment on it; shift-click another block's **+** to stretch the open comment over the range. Selecting text and pressing **Comment** (or `c`) quotes just the selection.
 - **Refine plan** sends every comment, each quoting its plan lines, plus the overall feedback field. The revised plan replaces the page, its added and rewritten blocks marked in the gutter, with the previous text under **Previous version**.
 - **Approve and execute** answers as omp's dialog would; its menu holds omp's other answers (compact or keep context, save for later). When omp offers several models to continue with, pick one beside the buttons.
 - The sidebar lists the plan's headings, marks the sections that changed or carry comments, and follows the scroll.
+- ` ```mermaid ` blocks (flowchart, state, sequence, class, ER and XY charts, drawn by [beautiful-mermaid](https://github.com/lukilabs/beautiful-mermaid) as omp's terminal does) and ` ```svg ` blocks show as pictures in the page's colors; an SVG can use `currentColor` and `var(--fg)`, `--muted`, `--border`, `--surface`, `--accent`, `--success`, `--warning`, `--error` and `--c1` to `--c6`. Each is drawn as an image, so nothing in it runs or loads. A diagram that doesn't draw stays code, and hovering it says why.
 
 Between reviews the page shows what omp is doing: a placeholder while it works on a plan, then the answered plan with "revising" or "executing" while its turn runs. Comments are kept in the browser per review, so a reload keeps them until the plan is answered.
 
