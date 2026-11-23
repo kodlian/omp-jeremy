@@ -20,6 +20,9 @@
 .pipeline-node.running{background:color-mix(in srgb,var(--accent) 9%,var(--raised))}
 .pipeline-node.running::before{content:"";position:absolute;left:-1px;top:12px;bottom:12px;width:3px;border-radius:0 3px 3px 0;background:var(--accent)}
 .pipeline-node.running.needs{background:color-mix(in srgb,var(--warning) 8%,var(--raised))}
+.pipeline-node.untracked{border:1px dashed var(--line-strong);background:transparent}
+.pipeline-node.untracked:hover{background:var(--hover)}
+.pipeline-node.untracked .pipeline-title{font-family:var(--mono);font-size:var(--font-size-sm)}
 .pipeline-node.running.needs::before{background:var(--warning)}
 .pipeline-node[data-column="doing"] .pipeline-node-head>span{background:var(--accent-soft);color:var(--accent)}
 .pipeline-node[data-column="review"] .pipeline-node-head>span{background:color-mix(in srgb,var(--warning) 15%,transparent);color:var(--warning)}

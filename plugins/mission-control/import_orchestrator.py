@@ -170,11 +170,10 @@ def run(home: Path) -> None:
             continue
         entry = next((p for p in projects if os.path.realpath(p["repo"]) == os.path.realpath(flow["repo"])), None)
         if not entry:
-            entry = {"repo": flow["repo"], "concurrencyLimit": None, "controlSets": None}
+            entry = {"repo": flow["repo"], "controlSets": None}
             projects.append(entry)
-        for key in ("concurrencyLimit", "controlSets"):
-            if entry[key] is None and flow.get(key) is not None:
-                entry[key] = flow[key]
+        if entry["controlSets"] is None and flow.get("controlSets") is not None:
+            entry["controlSets"] = flow["controlSets"]
     counters = [int(m[1]) for m in (TOP_ID.match(i) for i in beads) if m]
     write_atomic(home / "board.json", json.dumps({"nextId": max(counters, default=0) + 1, "projects": projects}, indent=2))
     print(f"mission-control: imported {len(imported)} cards from ~/.orchestrator ({len(left)} without a worktree listed in "

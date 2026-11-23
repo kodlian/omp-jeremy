@@ -460,7 +460,7 @@ const tagOk = t => !tagSel?.size || (t.tags || []).some(x => tagSel.has(x));
 const hiddenBranch = branch => !!branch && (selectedProject()?.hidden || []).includes(branch);
 const shownOk = x => showHidden || !hiddenBranch(x.branch);
 const matches = t => shownOk(t) && tagOk(t) && (!filter || `${t.id} ${taskNumber(t.id)} ${t.title} ${t.ticket || ""} ${t.branch} ${(t.tags || []).join(" ")}`.toLowerCase().includes(filter));
-const worktreeMatches = w => shownOk(w) && tagOk(w) && (!filter || `${w.branch} ${w.tags.join(" ")}`.toLowerCase().includes(filter));
+const worktreeMatches = w => shownOk(w) && tagOk(w) && (!filter || `${worktreeName(w)} ${w.tags.join(" ")}`.toLowerCase().includes(filter));
 
 function setBoard(b) {
   board = b;
@@ -487,10 +487,7 @@ function lockProject() {
 function renderContext() {
   const c = $("#ctx"), p = selectedProject();
   if (p) {
-    const parts = [I("repo", 13), h("strong", {}, p.name), I("branch", 12), h("span", { class: "mono" }, p.defaultBranch)];
-    if (p.concurrencyLimit != null) parts.push(h("span", { class: "chip" }, `${p.concurrencyLimit} at once`));
-    parts.push(I("chevronDown", 12));
-    c.replaceChildren(...parts);
+    c.replaceChildren(I("repo", 13), h("strong", {}, p.name), I("branch", 12), h("span", { class: "mono" }, p.defaultBranch), I("chevronDown", 12));
     c.title = `${p.repo} · pull requests go into ${p.defaultBranch}. Project settings`;
   } else {
     c.replaceChildren(I("repo", 13), h("strong", {}, "Project unavailable"), I("chevronDown", 12));
@@ -502,7 +499,6 @@ function projectMenu() {
   const cur = selectedProject();
   if (!cur) return [{ header: "Project unavailable: run /mission in its checkout" }];
   return [{ header: "Project settings" },
-    { icon: "wrench", label: "Concurrent tasks", sub: cur.concurrencyLimit == null ? "Unlimited" : String(cur.concurrencyLimit), action: () => showConcurrencyModal(cur) },
     { icon: "tag", label: "Tag rules", sub: cur.tagRules.length ? plural(cur.tagRules.length, "rule") : "None", action: () => showTagRulesModal(cur) },
     { icon: "play", label: "Setup script", sub: scriptName(cur.setupScript), action: () => showScriptsModal(cur) },
     { icon: "trash", label: "Teardown script", sub: scriptName(cur.teardownScript), action: () => showScriptsModal(cur) }];
@@ -578,41 +574,6 @@ function showTagRulesModal(project) {
     h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), save)]);
   setTimeout(() => area.focus(), 0);
 }
-function showConcurrencyModal(project) {
-  const input = h("input", { class: "field mono", type: "number", min: "1", step: "1", inputmode: "numeric",
-    placeholder: "Unlimited", value: project.concurrencyLimit ?? "" });
-  const save = h("button", { class: "btn primary" }, "Save");
-  const submit = async () => {
-    const raw = input.value.trim();
-    if (raw && (!/^\d+$/.test(raw) || Number(raw) < 1)) {
-      toast("Concurrent tasks must be a positive whole number", true);
-      input.focus();
-      return;
-    }
-    save.disabled = true;
-    try {
-      const limit = raw ? Number(raw) : null;
-      const r = await act("PATCH", "/api/projects", { id: project.id, concurrencyLimit: limit },
-        limit == null ? "Concurrent tasks are unlimited" : `Concurrent tasks limited to ${limit}`);
-      const current = projects().find(p => p.id === project.id);
-      if (current) Object.assign(current, r.project);
-      closeModal();
-      renderContext();
-      renderBoard();
-    } catch { save.disabled = false; }
-  };
-  save.onclick = submit;
-  input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); submit(); } });
-  openModal([
-    h("div", { class: "m-body" },
-      h("h2", {}, "Concurrent tasks"),
-      h("p", { class: "m-text" }, `Maximum agents In Progress for ${project.name}. Approved plans wait in Waiting until a slot frees up.`),
-      h("label", { class: "m-label" }, "Tasks at once"),
-      input,
-      h("div", { class: "m-note" }, "Leave blank for unlimited. Lowering the limit does not stop tasks already running.")),
-    h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), save)]);
-  setTimeout(() => { input.focus(); input.select(); }, 0);
-}
 const scriptName = path => (path ? path.split("/").pop() : "None");
 function showScriptsModal(project) {
   const field = value => h("input", { class: "field mono", type: "text", spellcheck: "false", autocomplete: "off",
@@ -684,14 +645,13 @@ function statusOf(t) {
   if (t.column === "waiting") {
     if (t.held) return { tone: "faint", icon: "pause", text: "Paused" };
     if (t.blockedBy.length) return { tone: "faint", icon: "link", text: "Waiting for " + taskNumbers(t.blockedBy) };
-    if (t.waitingForSlot) return { tone: "faint", icon: "pause", text: "Waiting for a slot" };
     if (t.planned) return { tone: "faint", icon: "play", text: "Resuming" };
   }
   const s = t.agent?.state;
   if (s === "needs_input") return { tone: "needs", icon: "hand", text: "Needs you", since: t.agent.since };
   if (s === "plan_ready") return { tone: "needs", icon: "file", text: "Plan ready for review", since: t.agent.since };
   if (s === "disconnected") return { tone: "needs", icon: "alert", text: "Session disconnected" };
-  if (AGENT_LABEL[s]) return { tone: "busy", spin: true, text: AGENT_LABEL[s], since: t.agent.since };
+  if (AGENT_LABEL[s]) return { tone: "busy", spin: true, text: AGENT_LABEL[s], since: t.agent.startedAt || t.agent.since };
   if (t.column === "review") return t.land?.mergeInto ? { tone: "ok", icon: "merge", text: "Ready to merge" } : { tone: "ok", icon: "pr", text: "Ready for pull request" };
   if (t.column === "pr" && t.pr) {
     if (t.pr.checks === "failing") return { tone: "needs", icon: "alert", text: "Checks failing" };
@@ -741,6 +701,7 @@ function prChip(pr) {
   if (pr.review === "approved") { kids.push(I("check", 10, "approved")); words.push("approved"); }
   else if (pr.review === "changes_requested") { kids.push(I("x", 10, "changes")); words.push("changes requested"); }
   if (pr.conflicts) { kids.push(I("alert", 10, "conflict")); words.push("conflicts"); }
+  if (pr.unresolved > 0) { kids.push(I("message", 10), String(pr.unresolved)); words.push(plural(pr.unresolved, "unresolved review comment")); }
   return h("a", { class: "pr-chip", href: pr.url, target: "_blank", rel: "noopener", draggable: "false", style: `color:${color}`, title: words.join(" · "), onclick: e => e.stopPropagation() }, ...kids);
 }
 function fromChip(x) {
@@ -839,14 +800,43 @@ function cardEl(t) {
   });
   return el;
 }
+// A worktree on a detached HEAD has no branch: it shows by its folder and the folder above it.
+const worktreeName = w => w.branch || w.path.split("/").slice(-2).join("/");
+const worktreeAt = path => ((board && board.worktrees) || []).find(w => w.path === path) || null;
+function worktreeChip(w) {
+  if (w.main) return h("span", { class: "chip", title: "The project's main checkout: tasks get worktrees of their own, so it never becomes one" }, "main checkout");
+  return w.detached ? h("span", { class: "chip mono", title: `A detached HEAD at ${w.detached}: with no branch it can't become a task` }, `detached ${w.detached}`)
+    : h("span", { class: "chip", title: "No task tracks this worktree yet" }, "untracked");
+}
+// What one running omp does, from its own report; "omp running" when it reports nothing.
+function agentInfo(a) {
+  if (a.state === "needs_input") return { tone: "needs", icon: "hand", text: "Needs you", since: a.since };
+  if (a.state === "plan_ready") return { tone: "needs", icon: "file", text: "Plan ready for review", since: a.since };
+  if (AGENT_LABEL[a.state]) return { tone: "busy", spin: true, text: AGENT_LABEL[a.state], since: a.startedAt || a.since };
+  return { tone: "idle", dot: true, text: a.state === "idle" ? "Idle" : "omp running" };
+}
+// The omp that needs you first, else one at work, else the newest; the count when several run.
+function worktreeStatus(w) {
+  const running = w.agents || [];
+  if (running.length) {
+    const lead = running.find(a => a.state === "needs_input" || a.state === "plan_ready") || running.find(a => AGENT_LABEL[a.state]) || running[0];
+    const info = agentInfo(lead);
+    return running.length > 1 ? { ...info, text: `${info.text} · ${running.length} omp` } : info;
+  }
+  const a = w.agent || {};
+  if (a.state === "asleep") return { tone: "faint", icon: "pause", text: `Asleep · ${ago(a.at)}`, title: `Its omp session was last active ${ago(a.at)}; Resume reopens it` };
+  return { tone: "faint", text: "No omp session" };
+}
 function worktreeCard(w) {
-  const top = h("div", { class: "c-top" }, h("span", { class: "chip", title: "No task tracks this worktree yet" }, "untracked"), h("span", { class: "spacer" }));
+  const top = h("div", { class: "c-top" }, worktreeChip(w), h("span", { class: "spacer" }));
   if (w.pr) top.append(prChip(w.pr));
-  const el = h("div", { class: "card untracked" + (hiddenBranch(w.branch) ? " is-hidden" : ""), "data-path": w.path, tabindex: "0", title: w.path }, top, h("div", { class: "c-title" }, w.branch));
+  const el = h("div", { class: "card untracked" + (hiddenBranch(w.branch) ? " is-hidden" : ""), "data-path": w.path, tabindex: "0", title: w.path }, top, h("div", { class: "c-title" }, worktreeName(w)));
   el.onclick = () => openMenu(el, worktreeMenu(w, el));
   el.onkeydown = e => { if (e.key === "Enter") el.click(); };
   const tags = tagRow(w);
   if (tags) el.append(tags);
+  el.append(h("div", { class: "c-line" }, stateEl(worktreeStatus(w))));
+  if (w.agent?.title) el.append(h("div", { class: "c-line", title: w.agent.title }, I("message", 12), h("span", {}, w.agent.title)));
   if (w.git && (w.git.added || w.git.removed || w.git.dirty > 0)) {
     const foot = h("div", { class: "c-foot" }, h("span", { class: "spacer" }));
     if (w.git.added || w.git.removed) foot.append(diffstat(w.git));
@@ -865,13 +855,32 @@ async function adoptWorktree(w, extra = {}) {
 }
 const adoptThen = (w, fn, extra) => async () => { try { await fn(await adoptWorktree(w, extra)); } catch {} };
 function worktreeMenu(w, anchor) {
+  const state = w.agent?.state;
+  const open = state === "running" ? { icon: "terminal", label: "Open its terminal", action: () => openListedWorktree(w) }
+    : { icon: "openIn", label: "Open worktree", action: () => openListedWorktree(w) };
+  if (w.detached || w.main) {
+    return [{ header: worktreeName(w) },
+      ...(state === "asleep" ? [{ icon: "play", label: "Resume in a terminal", action: () => resumeListedWorktree(w) }] : []),
+      open,
+      ...(w.main ? (w.branch ? [hideItem(w.project, w.branch)] : []) : ["-", { icon: "trash", label: "Remove worktree…", danger: true, action: () => confirmModal("Remove the worktree?",
+        `Deletes ${w.path}, a detached HEAD at ${w.detached}. Refused while omp runs there or it has uncommitted changes.`, "Remove worktree",
+        async () => {
+          try { await act("POST", "/api/worktrees/remove", { path: w.path }, "Worktree removed"); }
+          catch { return; }
+          board.worktrees = board.worktrees.filter(x => x.path !== w.path);
+          renderBoard();
+        }) }])];
+  }
+  const move = message => t => act("POST", tpath(t.id, "/move"), { column: "doing" }, message(taskNumber(t.id)));
+  const agent = state === "asleep" ? { icon: "play", label: "Resume", action: adoptThen(w, move(n => `${n} is reopening its omp session`), { session: w.agent.session.id }) }
+    : state === "running" ? null : { icon: "play", label: "Start agent", action: adoptThen(w, move(n => `${n} is starting its agent`)) };
   const prOpen = w.pr && (w.pr.state === "open" || w.pr.state === "draft");
   return [{ header: w.branch },
     { icon: "kanban", label: "Track as task", action: adoptThen(w, t => openPanel(t.id)) },
     { icon: "tag", label: "Add tags…", action: () => openMenu(anchor, tagMenu([], tags => adoptThen(w, t => openPanel(t.id), { tags })())) },
-    { icon: "play", label: "Start agent", action: adoptThen(w, t => act("POST", tpath(t.id, "/move"), { column: "doing" }, `${taskNumber(t.id)} is starting its agent`)) },
+    ...(agent ? [agent] : []),
     { icon: "pr", label: "Create pull request", disabled: prOpen, action: adoptThen(w, createPr) },
-    { icon: "openIn", label: "Open worktree", action: adoptThen(w, t => openWorktree(t.id)) },
+    open,
     hideItem(w.project, w.branch),
     "-", { icon: "trash", label: "Remove worktree…", danger: true, action: () => confirmModal("Remove the worktree?",
       `Deletes ${w.path} and branch ${w.branch}, after stopping any agent the board runs there.`, "Remove worktree",
@@ -880,6 +889,18 @@ function worktreeMenu(w, anchor) {
         if (r && r.pending) toast(r.message || "The worktree is removed once its agent has stopped");
         else { board.tasks = board.tasks.filter(x => x.id !== t.id); if (openId === t.id) closePanel(); renderBoard(); toast("Worktree removed"); }
       })) }];
+}
+async function openListedWorktree(w) {
+  try {
+    const r = await act("POST", "/api/worktrees/open", { path: w.path });
+    if (!r.opened) commandModal(`Open ${worktreeName(w)}`, "Run this in any terminal to work in the worktree.", r.cd);
+  } catch {}
+}
+async function resumeListedWorktree(w) {
+  try {
+    const r = await act("POST", "/api/worktrees/resume", { path: w.path, session: w.agent.session.id });
+    if (!r.opened) commandModal(`Resume ${worktreeName(w)}`, "Run this in any terminal to reopen its omp session.", r.command);
+  } catch {}
 }
 function refreshCard(t) {
   if (dragging) { pendingRender = true; return; }
@@ -921,7 +942,7 @@ function wireDrop(body, col) {
     placeholder.remove();
     dragging = null;
     const t = findTask(id);
-    if (t && t.column === col) { if (col === "waiting" && (prev || next)) reorderCard(t, order, next ? { before: next.id } : { after: prev.id }); else renderBoard(); }
+    if (t && t.column === col) renderBoard();
     else requestMove(id, col, order);
   });
 }
@@ -958,14 +979,6 @@ async function doMove(t, col, order, force, confirmedWorking = false) {
   }
   renderBoard();
   if (openId === t.id) updatePanel();
-}
-async function reorderCard(t, order, place) {
-  const prev = t.order;
-  t.order = order;
-  renderBoard();
-  try { const r = await act("POST", tpath(t.id, "/reorder"), place); if (r && r.id) Object.assign(t, r); }
-  catch { t.order = prev; }
-  renderBoard();
 }
 
 // MARK: menus
@@ -1040,7 +1053,7 @@ function confirmModal(title, text, label, fn, opts = {}) {
 function confirmWorkingMove(t, col, order) {
   const pauses = col === "waiting" && !!t.worktree && !t.paused;
   confirmModal(pauses ? `Pause ${taskNumber(t.id)}?` : `Move working ${taskNumber(t.id)} to ${colTitle(col)}?`,
-    pauses ? "Its agent stops what it's doing; the worktree and omp session stay. It waits until you move it back to In Progress, and frees its task slot meanwhile."
+    pauses ? "Its agent stops what it's doing; the worktree and omp session stay. It waits until you move it back to In Progress."
       : "Moving the card only changes its column; it does not stop omp or remove the worktree.",
     pauses ? "Pause" : "Move anyway", () => doMove(t, col, order, false, true));
 }
@@ -1188,25 +1201,21 @@ async function openWorkspace() {
   const id = openId;
   try {
     const r = await act("POST", tpath(id, "/open"), {});
-    if (r.attachCommand && (!r.presentation?.capabilities?.focus || r.presentation.kind === "plain")) {
-      const command = h("textarea", { class: "field mono", rows: "3", readonly: true, "aria-label": "Terminal attach command" }, r.attachCommand);
-      openModal([h("div", { class: "m-body" }, h("h2", {}, `Connect to ${id}`),
-        h("p", { class: "m-text" }, "Run this command in a terminal. Detach with Ctrl-b d; the agent keeps running."), command),
-        h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Close"),
-          h("button", { class: "btn primary", onclick: () => copyText(r.attachCommand, "Attach command copied") }, "Copy command"))]);
-    }
+    if (r.opened) return;
+    if (r.attachCommand) commandModal(`Connect to ${taskNumber(id)}`, "No terminal shows its agent. Run this in a terminal to attach; Ctrl-b d detaches and the agent keeps running.", r.attachCommand);
+    else commandModal(`Open ${taskNumber(id)}`, "No terminal is open in its worktree. Run this in a terminal to go there.", r.cd);
   } catch {}
+}
+function commandModal(title, text, command) {
+  const field = h("textarea", { class: "field mono", rows: "2", readonly: true, "aria-label": "Command" }, command);
+  openModal([h("div", { class: "m-body" }, h("h2", {}, title), h("p", { class: "m-text" }, text), field),
+    h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Close"),
+      h("button", { class: "btn primary", onclick: () => copyText(command, "Command copied") }, "Copy command"))]);
 }
 async function openWorktree(id = openId) {
   try {
     const r = await act("POST", tpath(id, "/worktree/open"), {});
-    if (!r.opened) {
-      const command = h("textarea", { class: "field mono", rows: "2", readonly: true, "aria-label": "Worktree command" }, r.cd);
-      openModal([h("div", { class: "m-body" }, h("h2", {}, `Open ${taskNumber(id)}'s worktree`),
-        h("p", { class: "m-text" }, "Run this in any terminal to work in the task's worktree; its agent is left as it is."), command),
-        h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Close"),
-          h("button", { class: "btn primary", onclick: () => copyText(r.cd, "Command copied") }, "Copy command"))]);
-    }
+    if (!r.opened) commandModal(`Open ${taskNumber(id)}'s worktree`, "Run this in any terminal to work in the task's worktree; its agent is left as it is.", r.cd);
   } catch {}
 }
 
@@ -1585,6 +1594,58 @@ async function submitComposer() {
 }
 
 // MARK: terminal peek
+const SCREEN_BYTE = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
+const SCREEN_COLOR = new RegExp(`^(?:#[0-9a-f]{3}|#[0-9a-f]{6}|rgb\\(\\s*${SCREEN_BYTE}\\s*,\\s*${SCREEN_BYTE}\\s*,\\s*${SCREEN_BYTE}\\s*\\))$`, "i");
+const SCREEN_FLAGS = ["bold", "dim", "italic", "underline", "strike", "inverse"];
+function screenRun(r) {
+  const text = typeof r?.text === "string" ? r.text.replace(/[\x00-\x1f\x7f-\x9f]/g, "") : "";
+  if (!text) return null;
+  const run = { text };
+  for (const k of ["fg", "bg"]) if (typeof r[k] === "string" && SCREEN_COLOR.test(r[k])) run[k] = r[k];
+  for (const k of SCREEN_FLAGS) if (r[k] === true) run[k] = true;
+  return run;
+}
+function screenRow(row) {
+  const runs = row.map(screenRun).filter(Boolean);
+  if (runs.reduce((len, r) => len + r.text.length, 0) <= 240) return runs;
+  const out = [];
+  let left = 239;
+  for (const r of runs) {
+    if (r.text.length >= left) { out.push({ ...r, text: r.text.slice(0, left) + "…" }); break; }
+    out.push(r);
+    left -= r.text.length;
+  }
+  return out;
+}
+function screenView(data) {
+  if (Array.isArray(data?.rows) && data.rows.every(Array.isArray)) { const rows = data.rows.map(screenRow); return { key: "r" + JSON.stringify(rows), rows }; }
+  const text = String(data?.text ?? "").split("\n").map(l => l.length > 240 ? l.slice(0, 239) + "…" : l).join("\n");
+  return { key: "t" + text, text };
+}
+function screenRunEl(r) {
+  if (Object.keys(r).length === 1) return document.createTextNode(r.text);
+  let fg = r.fg, bg = r.bg;
+  if (r.inverse) [fg, bg] = [bg ?? "var(--bg)", fg ?? "var(--fg)"];
+  const el = document.createElement("span"), s = el.style;
+  el.textContent = r.text;
+  if (fg) s.color = fg;
+  if (bg) s.backgroundColor = bg;
+  if (r.bold) s.fontWeight = "700";
+  if (r.dim) s.opacity = "0.6";
+  if (r.italic) s.fontStyle = "italic";
+  const deco = [r.underline && "underline", r.strike && "line-through"].filter(Boolean);
+  if (deco.length) s.textDecorationLine = deco.join(" ");
+  return el;
+}
+function paintScreen(term, view) {
+  if (!view.rows) { term.textContent = view.text; return; }
+  const nodes = [];
+  view.rows.forEach((row, i) => {
+    if (i) nodes.push(document.createTextNode("\n"));
+    for (const r of row) nodes.push(screenRunEl(r));
+  });
+  term.replaceChildren(...nodes);
+}
 function peekWanted() {
   const t = openId && findTask(openId);
   return !!(P && t && t.worktree && (t.execution?.kind === "tmux" || sessionConnected(t)) && currentTab(t) === "agent" && document.visibilityState === "visible");
@@ -1596,10 +1657,10 @@ function startPeek() {
     if (!peekWanted()) { stopPeek(); return; }
     const id = openId;
     try {
-      const view = wbScreen(await api("GET", tpath(id, "/screen")), Infinity);
+      const view = screenView(await api("GET", tpath(id, "/screen")));
       if (P && openId === id && P.termKey !== view.key) {
         P.termKey = view.key;
-        wbPaint(P.term, view);
+        paintScreen(P.term, view);
         if (P.termPinned) P.term.scrollTop = P.term.scrollHeight;
       }
     } catch {}
@@ -1661,14 +1722,12 @@ for (const [view, id, glyph] of [["board", "boardViewBtn", "kanban"], ["pipeline
   button.setAttribute("aria-pressed", String(boardView === view));
   button.onclick = () => {
     if (boardView === view) return;
-    if (boardView === "live") stopWorkbench();
     boardView = view;
     LS.set("boardView", view);
     for (const b of document.querySelectorAll(".view-switch button")) b.setAttribute("aria-pressed", String(b === button));
     renderBoard();
   };
 }
-window.addEventListener("pagehide", () => stopWorkbench());
 $("#filter").addEventListener("input", e => { filter = e.target.value.trim().toLowerCase(); renderBoard(); });
 $("#filter").addEventListener("keydown", e => { if (e.key === "Escape" && e.target.value) { e.preventDefault(); e.stopPropagation(); e.target.value = ""; filter = ""; renderBoard(); } });
 document.addEventListener("keydown", e => {

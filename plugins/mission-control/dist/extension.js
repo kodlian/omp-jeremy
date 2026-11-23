@@ -322,6 +322,43 @@ function stepText(event) {
   const detail = [args.path, args.pattern, args.query].find((v) => typeof v === "string") ?? "";
   return `${event.toolName} ${detail}`.trim();
 }
+function field(value, key) {
+  return typeof value === "object" && value !== null ? Reflect.get(value, key) : undefined;
+}
+function oneLine(text, max = 300) {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}\u2026` : flat;
+}
+function lastSentence(text, finished) {
+  const parts = text.slice(-1200).replace(/```[\s\S]*?(?:```|$)/g, `
+`).split(/(?<=[.!?\u2026])\s+|\n+/);
+  if (!finished)
+    parts.pop();
+  for (let i = parts.length - 1;i >= 0; i--) {
+    const plain = parts[i].replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\*\*|__|[`*]/g, "").replace(/^\s*(?:#+|[-+>]|\d+\.)\s+/, "").trim();
+    if (plain.length > 2 && !plain.startsWith("|"))
+      return oneLine(plain);
+  }
+  return null;
+}
+function todoProgress(result) {
+  const phases = field(field(result, "details"), "phases");
+  if (!Array.isArray(phases))
+    return;
+  const tasks = phases.flatMap((phase) => {
+    const list = field(phase, "tasks");
+    return Array.isArray(list) ? list : [];
+  }).map((t) => ({ content: field(t, "content"), status: field(t, "status") })).filter((t) => t.status !== "dropped" && t.status !== "abandoned");
+  if (!tasks.length)
+    return null;
+  const current = tasks.find((t) => t.status === "in_progress")?.content;
+  return { done: tasks.filter((t) => t.status === "completed").length, total: tasks.length, current: typeof current === "string" ? oneLine(current, 200) : null };
+}
+function askQuestion(args) {
+  const questions = field(args, "questions");
+  const first = Array.isArray(questions) ? field(questions[0], "question") : undefined;
+  return typeof first === "string" && first.trim() ? oneLine(first) : null;
+}
 function inPlanMode(ctx) {
   const branch = ctx.sessionManager.getBranch();
   for (let i = branch.length - 1;i >= 0; i--) {
@@ -372,7 +409,7 @@ function waitsUntil(t) {
   ].filter(Boolean).join(" and ");
 }
 function listTasks(board, projects, self) {
-  const hidden = (x) => projects.some((p) => p.id === x.project && p.hidden.includes(x.branch));
+  const hidden = (x) => !!x.branch && projects.some((p) => p.id === x.project && p.hidden.includes(x.branch));
   const ids = new Set(projects.map((p) => p.id));
   const several = projects.length > 1;
   const listed = board.tasks.filter((t) => ids.has(t.project));
@@ -400,10 +437,10 @@ function listTasks(board, projects, self) {
       line += " \xB7 paused";
     if (t.blockedBy.length)
       line += ` \xB7 waits until ${waitsUntil(t)}`;
-    else if (t.waitingForSlot)
-      line += " \xB7 waiting for a task slot";
     if (t.agent && t.agent.state !== "idle")
       line += ` \xB7 ${t.agent.state.replace("_", " ")}`;
+    if (t.agents.length)
+      line += ` \xB7 also ${plural(t.agents.length, "other omp")} running in its worktree`;
     if (t.worktree && (t.presentation || t.attachCommand))
       line += ` \xB7 reach it ${presentationText(t)}`;
     if (t.health?.worktreeMissing)
@@ -432,11 +469,17 @@ function listTasks(board, projects, self) {
   }
   const others = board.worktrees.filter((w) => ids.has(w.project));
   if (others.length) {
-    lines.push("", "Other worktrees (no card; mission_control_adopt tracks one):");
+    lines.push("", "Other checkouts (no card; mission_control_adopt tracks a linked worktree on a branch):");
     for (const w of others) {
       const work = w.git ? ` \xB7 ${plural(w.git.commits, "commit")}${w.git.dirty ? `, ${w.git.dirty} uncommitted` : ""}` : "";
       const tags2 = w.tags.length ? ` \xB7 tags ${w.tags.join(", ")}` : "";
-      lines.push(`${w.branch} from ${w.base} \xB7 ${tilde(w.path)} \xB7 ${columnTitle(board, w.column)}${work}${w.pr ? ` \xB7 ${prText(w.pr)}` : ""}${tags2}${hidden(w) ? " \xB7 hidden on the page" : ""}`);
+      const a = w.agent;
+      const title = a.title ? ` "${a.title}"` : "";
+      const running = w.agents.map((r) => `${r.state === "running" ? "omp" : r.state.replace("_", " ")}${r.title ? ` "${r.title}"` : ""}`);
+      const agent = running.length ? ` \xB7 running: ${running.join("; ")}` : a.state === "asleep" ? ` \xB7 omp asleep since ${a.at?.slice(0, 10)}, session ${a.session?.id}${title}` : " \xB7 no omp session";
+      const on = w.branch ? `${w.branch} from ${w.base}` : `detached at ${w.detached}`;
+      const name = w.main ? `main checkout on ${w.branch ?? `detached ${w.detached}`}` : on;
+      lines.push(`${name} \xB7 ${tilde(w.path)} \xB7 ${columnTitle(board, w.column)}${work}${w.pr ? ` \xB7 ${prText(w.pr)}` : ""}${agent}${tags2}${hidden(w) ? " \xB7 hidden on the page" : ""}`);
     }
   }
   return lines.join(`
@@ -498,7 +541,7 @@ function cardLine(board, id) {
   const t = board.tasks.find((x) => x.id === id);
   if (!t)
     return `${id} (not on the board)`;
-  const state = t.merged ? `merged into ${t.merged.into}` : t.paused ? "paused" : t.blockedBy.length ? `waits until ${waitsUntil(t)}` : t.waitingForSlot ? "waiting for a task slot" : t.agent && t.agent.state !== "idle" ? t.agent.state.replace("_", " ") : "";
+  const state = t.merged ? `merged into ${t.merged.into}` : t.paused ? "paused" : t.blockedBy.length ? `waits until ${waitsUntil(t)}` : t.agent && t.agent.state !== "idle" ? t.agent.state.replace("_", " ") : "";
   return `${t.id} \xB7 ${columnTitle(board, t.column)} \xB7 ${t.title}${state ? ` \xB7 ${state}` : ""}`;
 }
 function childrenText(board, t) {
@@ -556,7 +599,7 @@ function cardLook(t) {
   if (t.column === "pr" && t.pr)
     return [t.pr.checks === "failing" || t.pr.review === "changes_requested" || t.pr.conflicts ? "warning" : "success", prText(t.pr)];
   if (t.column === "waiting")
-    return ["warning", t.held || t.paused ? "paused" : t.waitingForSlot ? "waiting for a task slot" : "waiting"];
+    return ["warning", t.held || t.paused ? "paused" : "waiting"];
   return t.agent && AGENT_LOOK[t.agent.state] || null;
 }
 function widgetLines(p, board, id) {
@@ -611,6 +654,12 @@ function missionControl(pi) {
   let reviewOpen = false;
   let currentStep = null;
   let reportedStep = null;
+  let runStart = 0;
+  let todo = null;
+  let said = null;
+  let question = null;
+  let reportedDetail = "";
+  const detailKey = () => JSON.stringify([runStart, todo, said, question]);
   let stepTimer;
   let sentAt = 0;
   let reports = Promise.resolve();
@@ -720,11 +769,12 @@ function missionControl(pi) {
     const step = currentStep;
     reported = state;
     reportedStep = step;
+    reportedDetail = detailKey();
     sentAt = Date.now();
-    reports = reports.then(() => api("POST", "/api/agent", { path, task: task ?? process.env.MISSION_CONTROL_TASK ?? null, state, step, sessionId, sessionFile, message: lastMessage }, false).then(() => {}, (e) => {
+    reports = reports.then(() => api("POST", "/api/agent", { path, task: task ?? process.env.MISSION_CONTROL_TASK ?? null, state, step, sessionId, sessionFile, message: lastMessage, startedAt: runStart || null, todo, said, question }, false).then(() => {}, (e) => {
       reported = "";
       if (e instanceof BoardError && e.status === 404)
-        reportRetryAt = Date.now() + 3000;
+        reportRetryAt = Date.now() + (process.env.MISSION_CONTROL_TASK ? 3000 : 30000);
     }));
     return reports;
   };
@@ -733,9 +783,9 @@ function missionControl(pi) {
       return reports;
     current = state;
     currentStep = step;
-    if (state === reported && step === reportedStep)
+    if (state === reported && step === reportedStep && detailKey() === reportedDetail)
       return reports;
-    reporting ??= Boolean(process.env.MISSION_CONTROL_TASK) || linkedWorktree(ctx.cwd);
+    reporting ??= Boolean(process.env.MISSION_CONTROL_TASK) || mainCheckout(ctx.cwd) !== null;
     if (!reporting || Date.now() < reportRetryAt)
       return reports;
     const path = ctx.cwd;
@@ -743,7 +793,7 @@ function missionControl(pi) {
     if (state === reported && wait > 0) {
       stepTimer ??= setTimeout(() => {
         stepTimer = undefined;
-        if (current !== reported || currentStep !== reportedStep)
+        if (current !== reported || currentStep !== reportedStep || detailKey() !== reportedDetail)
           send(path);
       }, wait);
       return reports;
@@ -765,6 +815,8 @@ function missionControl(pi) {
       return;
     if ("prompt" in event && typeof event.prompt === "string")
       lastMessage = event.prompt.slice(0, 2000);
+    runStart ||= Math.floor(Date.now() / 1000);
+    said = null;
   });
   pi.on("turn_start", (_event, ctx) => {
     if (ctx.agent?.kind === "sub")
@@ -774,22 +826,54 @@ function missionControl(pi) {
       return;
     }
     planning = inPlanMode(ctx);
+    runStart ||= Math.floor(Date.now() / 1000);
     report(ctx, planning ? "planning" : "thinking");
+  });
+  pi.on("message_update", (event, ctx) => {
+    if (ctx.agent?.kind === "sub" || !["planning", "thinking", "working"].includes(current))
+      return;
+    const update = event.assistantMessageEvent;
+    if (update.type !== "thinking_delta" && update.type !== "thinking_end" && update.type !== "text_delta" && update.type !== "text_end")
+      return;
+    const content = field(event.message, "content");
+    const block = Array.isArray(content) ? content[update.contentIndex] : undefined;
+    const text = field(block, "thinking") ?? field(block, "text");
+    const sentence = typeof text === "string" ? lastSentence(text, update.type.endsWith("_end")) : null;
+    if (!sentence || sentence === said)
+      return;
+    said = sentence;
+    report(ctx, current, currentStep);
   });
   pi.on("tool_execution_start", (event, ctx) => {
     if (ctx.agent?.kind === "sub")
       return;
     if (event.toolName.startsWith("mission_control_"))
       engage(ctx);
+    if (event.toolName === "ask")
+      question = askQuestion(event.args);
     report(ctx, event.toolName === "ask" ? "needs_input" : planning ? "planning" : "working", stepText(event));
   });
   pi.on("tool_execution_end", (event, ctx) => {
-    if (ctx.agent?.kind !== "sub" && event.toolName === "ask")
+    if (ctx.agent?.kind === "sub")
+      return;
+    if (event.toolName === "todo") {
+      const progress = todoProgress(event.result);
+      if (progress === undefined)
+        return;
+      todo = progress;
+      if (current)
+        report(ctx, current, currentStep);
+    } else if (event.toolName === "ask") {
+      question = null;
+      runStart = Math.floor(Date.now() / 1000);
       report(ctx, planning ? "planning" : "working");
+    }
   });
   pi.on("agent_end", (event, ctx) => {
     if (ctx.agent?.kind === "sub" || "willContinue" in event && event.willContinue === true)
       return;
+    runStart = 0;
+    question = null;
     report(ctx, reviewOpen ? "plan_ready" : "idle");
     if (task)
       autoMerge(ctx);
@@ -1327,7 +1411,7 @@ ${r.output}` : `Deleted ${id}`;
     api("POST", `/api/tasks/${id}/planned`, {}, false).then((r) => {
       if (!r.hold)
         return;
-      holding = r.waitingFor?.length ? `waiting for ${r.waitingFor.join(", ")}` : "waiting for a free task slot";
+      holding = `waiting for ${r.waitingFor.join(", ")}`;
       const current2 = sessionCtx ?? ctx;
       if (!current2.isIdle())
         stopHeld(current2);
@@ -1372,8 +1456,8 @@ ${r.output}` : `Deleted ${id}`;
   pi.registerTool({
     name: "mission_control_adopt",
     label: "Mission Control adopt",
-    description: "Track a linked git worktree (default: this checkout) as a Mission Control card, with an optional title and tags. Returns its card when it already has one. No agent starts until the card is moved to In Progress.",
-    parameters: z.object({ path: z.string().optional(), title: z.string().optional(), tags: z.array(z.string()).optional() }),
+    description: "Track a linked git worktree on a branch (default: this checkout) as a Mission Control card, with an optional title and tags. Returns its card when it already has one. An omp running there becomes its agent; otherwise none starts until the card is moved to In Progress, which reopens `session` (an asleep worktree's session from mission_control_tasks) when given, else omp's latest session there.",
+    parameters: z.object({ path: z.string().optional(), title: z.string().optional(), tags: z.array(z.string()).optional(), session: z.string().optional() }),
     approval: "read",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       return answer(api("POST", "/api/worktrees/adopt", { ...params, path: params.path ?? checkoutRoot(ctx.cwd) }).then((t) => `${t.id} ${t.title} \xB7 ${t.branch} from ${t.base} \xB7 ${t.column}`));
@@ -1441,7 +1525,7 @@ ${r.output}` : `Deleted ${id}`;
   pi.registerTool({
     name: "mission_control_move",
     label: "Mission Control move",
-    description: "Move a Mission Control card as dragging it on the board does. waiting pauses its agent (worktree and session stay, it frees its task slot) until it's moved to doing (In Progress), which resumes it now; doing is refused while it waits for open dependencies unless force; doing also starts again a card whose start failed. done records it as done without merging. Other columns are reached on their own. Use it when the user asks to pause, hold, resume or finish a card.",
+    description: "Move a Mission Control card as dragging it on the board does. waiting pauses its agent (worktree and session stay) until it's moved to doing (In Progress), which resumes it now; doing is refused while it waits for open dependencies unless force; doing also starts again a card whose start failed. done records it as done without merging. Other columns are reached on their own. Use it when the user asks to pause, hold, resume or finish a card.",
     parameters: z.object({ id: z.string(), column: z.enum(["waiting", "doing", "done"]), force: z.boolean().optional() }),
     approval: "read",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

@@ -61,7 +61,7 @@ test.skipIf(!BD)("an Orchestrator board's open cards with a worktree are importe
 	expect(existsSync(join(board, "tasks", "KB-1"))).toBe(false);
 	expect(existsSync(join(board, "tasks", "KB-3"))).toBe(false);
 	expect(readFileSync(join(board, "not-imported.md"), "utf8")).toContain("#3 Never started");
-	expect(JSON.parse(readFileSync(join(board, "board.json"), "utf8"))).toEqual({ nextId: 4, projects: [{ repo, concurrencyLimit: 2, controlSets: null }] });
+	expect(JSON.parse(readFileSync(join(board, "board.json"), "utf8"))).toEqual({ nextId: 4, projects: [{ repo, controlSets: null }] });
 	const config = readFileSync(join(board, "config.json"), "utf8");
 	expect(config).toContain("MISSION_CONTROL_BRANCH");
 	expect(config).not.toContain("ORCHESTRATOR_");

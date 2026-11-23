@@ -94,7 +94,6 @@ interface Task {
 	parent: string | null;
 	children: string[];
 	blockedBy: string[];
-	waitingForSlot: boolean;
 	paused: boolean;
 	held: boolean;
 	planned: string | null;
@@ -109,6 +108,8 @@ interface Task {
 	spawn: { state: string; error: string | null };
 	intent: { op: "start" | "resume" | "stop" | "merge" | "remove" | "delete"; stage: string | null; at: string; attempt: number; lastError: string | null } | null;
 	agent: { state: string; step?: string | null } | null;
+	/** The other omp sessions running in its worktree. */
+	agents: RunningAgent[];
 	git: GitStats | null;
 	pr: PullRequest | null;
 	land: { mergeInto: string | null; pr: boolean };
@@ -129,23 +130,38 @@ interface Project {
 	name: string;
 	repo: string;
 	defaultBranch: string;
-	concurrencyLimit: number | null;
 	controlSets: ControlSetSummary[] | null;
 	tags: string[];
 	/** Branches whose card or worktree the page leaves out. */
 	hidden: string[];
 }
 
-/** A linked worktree of a project that no card owns. */
+/** An omp running in a checkout, with what it last reported; state "running" when it reports nothing. */
+interface RunningAgent {
+	id: string;
+	title: string | null;
+	state: string;
+	step: string | null;
+}
+
+/** A checkout of a project that no card owns: its main checkout, or a linked worktree on a branch or a detached HEAD. */
 interface Worktree {
 	path: string;
 	project: string;
-	branch: string;
+	branch: string | null;
+	/** The project's main checkout, which never becomes a card. */
+	main: boolean;
+	/** The commit of a detached HEAD; null on a branch. */
+	detached: string | null;
 	base: string;
 	git: GitStats | null;
 	pr: PullRequest | null;
 	column: string;
 	tags: string[];
+	/** The omp running there, else its latest session (asleep), else none. */
+	agent: { state: "running" | "asleep" | "none"; session: { id: string; file: string } | null; title: string | null; at: string | null; count: number };
+	/** Every omp running there. */
+	agents: RunningAgent[];
 }
 
 interface Board {
@@ -402,6 +418,58 @@ function stepText(event: { toolName: string; args: unknown; intent?: string }): 
 	return `${event.toolName} ${detail}`.trim();
 }
 
+/** `value[key]` when `value` is an object; undefined otherwise. */
+function field(value: unknown, key: string): unknown {
+	return typeof value === "object" && value !== null ? Reflect.get(value, key) : undefined;
+}
+
+/** Text on one line, at most `max` characters. */
+function oneLine(text: string, max = 300): string {
+	const flat = text.replace(/\s+/g, " ").trim();
+	return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/** The latest sentence of a block of reasoning or reply, in plain words; while it streams its unfinished end doesn't count. */
+function lastSentence(text: string, finished: boolean): string | null {
+	const parts = text
+		.slice(-1200)
+		.replace(/```[\s\S]*?(?:```|$)/g, "\n")
+		.split(/(?<=[.!?…])\s+|\n+/);
+	if (!finished) parts.pop();
+	for (let i = parts.length - 1; i >= 0; i--) {
+		const plain = parts[i]
+			.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+			.replace(/\*\*|__|[`*]/g, "")
+			.replace(/^\s*(?:#+|[-+>]|\d+\.)\s+/, "")
+			.trim();
+		if (plain.length > 2 && !plain.startsWith("|")) return oneLine(plain);
+	}
+	return null;
+}
+
+/** A todo tool result's progress (dropped tasks don't count) and its task in progress: null for an empty list, undefined without phases. */
+function todoProgress(result: unknown): { done: number; total: number; current: string | null } | null | undefined {
+	const phases = field(field(result, "details"), "phases");
+	if (!Array.isArray(phases)) return undefined;
+	const tasks = phases
+		.flatMap((phase) => {
+			const list = field(phase, "tasks");
+			return Array.isArray(list) ? list : [];
+		})
+		.map((t) => ({ content: field(t, "content"), status: field(t, "status") }))
+		.filter((t) => t.status !== "dropped" && t.status !== "abandoned");
+	if (!tasks.length) return null;
+	const current = tasks.find((t) => t.status === "in_progress")?.content;
+	return { done: tasks.filter((t) => t.status === "completed").length, total: tasks.length, current: typeof current === "string" ? oneLine(current, 200) : null };
+}
+
+/** The first question an ask tool call puts to the user. */
+function askQuestion(args: unknown): string | null {
+	const questions = field(args, "questions");
+	const first = Array.isArray(questions) ? field(questions[0], "question") : undefined;
+	return typeof first === "string" && first.trim() ? oneLine(first) : null;
+}
+
 /** Whether the session's latest mode change entered plan mode. */
 function inPlanMode(ctx: ExtensionContext): boolean {
 	const branch = ctx.sessionManager.getBranch();
@@ -475,7 +543,7 @@ function waitsUntil(t: { dependsOn: string[]; blockedBy: string[] }): string {
 
 /** The cards of `projects`, open ones first, then done ones, then the projects' untracked worktrees; `self` is marked as this task. */
 function listTasks(board: Board, projects: Project[], self: string | undefined): string {
-	const hidden = (x: { project: string; branch: string }) => projects.some((p) => p.id === x.project && p.hidden.includes(x.branch));
+	const hidden = (x: { project: string; branch: string | null }) => !!x.branch && projects.some((p) => p.id === x.project && p.hidden.includes(x.branch as string));
 	const ids = new Set(projects.map((p) => p.id));
 	const several = projects.length > 1;
 	const listed = board.tasks.filter((t) => ids.has(t.project));
@@ -494,8 +562,8 @@ function listTasks(board: Board, projects: Project[], self: string | undefined):
 		if (t.held) line += " · paused until moved to In Progress";
 		else if (t.paused) line += " · paused";
 		if (t.blockedBy.length) line += ` · waits until ${waitsUntil(t)}`;
-		else if (t.waitingForSlot) line += " · waiting for a task slot";
 		if (t.agent && t.agent.state !== "idle") line += ` · ${t.agent.state.replace("_", " ")}`;
+		if (t.agents.length) line += ` · also ${plural(t.agents.length, "other omp")} running in its worktree`;
 		if (t.worktree && (t.presentation || t.attachCommand)) line += ` · reach it ${presentationText(t)}`;
 		if (t.health?.worktreeMissing) line += " · worktree missing";
 		if (t.land.mergeInto) line += ` · merges into ${t.land.mergeInto}`;
@@ -514,11 +582,17 @@ function listTasks(board: Board, projects: Project[], self: string | undefined):
 	}
 	const others = board.worktrees.filter((w) => ids.has(w.project));
 	if (others.length) {
-		lines.push("", "Other worktrees (no card; mission_control_adopt tracks one):");
+		lines.push("", "Other checkouts (no card; mission_control_adopt tracks a linked worktree on a branch):");
 		for (const w of others) {
 			const work = w.git ? ` · ${plural(w.git.commits, "commit")}${w.git.dirty ? `, ${w.git.dirty} uncommitted` : ""}` : "";
 			const tags = w.tags.length ? ` · tags ${w.tags.join(", ")}` : "";
-			lines.push(`${w.branch} from ${w.base} · ${tilde(w.path)} · ${columnTitle(board, w.column)}${work}${w.pr ? ` · ${prText(w.pr)}` : ""}${tags}${hidden(w) ? " · hidden on the page" : ""}`);
+			const a = w.agent;
+			const title = a.title ? ` "${a.title}"` : "";
+			const running = w.agents.map((r) => `${r.state === "running" ? "omp" : r.state.replace("_", " ")}${r.title ? ` "${r.title}"` : ""}`);
+			const agent = running.length ? ` · running: ${running.join("; ")}` : a.state === "asleep" ? ` · omp asleep since ${a.at?.slice(0, 10)}, session ${a.session?.id}${title}` : " · no omp session";
+			const on = w.branch ? `${w.branch} from ${w.base}` : `detached at ${w.detached}`;
+			const name = w.main ? `main checkout on ${w.branch ?? `detached ${w.detached}`}` : on;
+			lines.push(`${name} · ${tilde(w.path)} · ${columnTitle(board, w.column)}${work}${w.pr ? ` · ${prText(w.pr)}` : ""}${agent}${tags}${hidden(w) ? " · hidden on the page" : ""}`);
 		}
 	}
 	return lines.join("\n");
@@ -583,11 +657,9 @@ function cardLine(board: Board, id: string): string {
 			? "paused"
 			: t.blockedBy.length
 				? `waits until ${waitsUntil(t)}`
-				: t.waitingForSlot
-					? "waiting for a task slot"
-					: t.agent && t.agent.state !== "idle"
-						? t.agent.state.replace("_", " ")
-						: "";
+				: t.agent && t.agent.state !== "idle"
+					? t.agent.state.replace("_", " ")
+					: "";
 	return `${t.id} · ${columnTitle(board, t.column)} · ${t.title}${state ? ` · ${state}` : ""}`;
 }
 
@@ -653,7 +725,7 @@ function cardLook(t: Task): [Tone, string] | null {
 	if (t.merged) return ["success", `merged into ${t.merged.into}`];
 	if (t.column === "review") return ["success", t.land.mergeInto ? `ready to merge into ${t.land.mergeInto}` : "ready for pull request"];
 	if (t.column === "pr" && t.pr) return [t.pr.checks === "failing" || t.pr.review === "changes_requested" || t.pr.conflicts ? "warning" : "success", prText(t.pr)];
-	if (t.column === "waiting") return ["warning", t.held || t.paused ? "paused" : t.waitingForSlot ? "waiting for a task slot" : "waiting"];
+	if (t.column === "waiting") return ["warning", t.held || t.paused ? "paused" : "waiting"];
 	return (t.agent && AGENT_LOOK[t.agent.state]) || null;
 }
 
@@ -716,6 +788,12 @@ export default function missionControl(pi: ExtensionAPI) {
 	let reviewOpen = false;
 	let currentStep: string | null = null;
 	let reportedStep: string | null = null;
+	let runStart = 0;
+	let todo: { done: number; total: number; current: string | null } | null = null;
+	let said: string | null = null;
+	let question: string | null = null;
+	let reportedDetail = "";
+	const detailKey = () => JSON.stringify([runStart, todo, said, question]);
 	let stepTimer: Timer | undefined;
 	let sentAt = 0;
 	let reports = Promise.resolve();
@@ -839,13 +917,14 @@ export default function missionControl(pi: ExtensionAPI) {
 		const step = currentStep;
 		reported = state;
 		reportedStep = step;
+		reportedDetail = detailKey();
 		sentAt = Date.now();
 		reports = reports.then(() =>
-			api("POST", "/api/agent", { path, task: task ?? process.env.MISSION_CONTROL_TASK ?? null, state, step, sessionId, sessionFile, message: lastMessage }, false).then(
+			api("POST", "/api/agent", { path, task: task ?? process.env.MISSION_CONTROL_TASK ?? null, state, step, sessionId, sessionFile, message: lastMessage, startedAt: runStart || null, todo, said, question }, false).then(
 				() => {},
 				(e) => {
 					reported = "";
-					if (e instanceof BoardError && e.status === 404) reportRetryAt = Date.now() + 3000;
+					if (e instanceof BoardError && e.status === 404) reportRetryAt = Date.now() + (process.env.MISSION_CONTROL_TASK ? 3000 : 30_000);
 				},
 			),
 		);
@@ -857,15 +936,15 @@ export default function missionControl(pi: ExtensionAPI) {
 		if (ctx.agent?.kind === "sub") return reports;
 		current = state;
 		currentStep = step;
-		if (state === reported && step === reportedStep) return reports;
-		reporting ??= Boolean(process.env.MISSION_CONTROL_TASK) || linkedWorktree(ctx.cwd);
+		if (state === reported && step === reportedStep && detailKey() === reportedDetail) return reports;
+		reporting ??= Boolean(process.env.MISSION_CONTROL_TASK) || mainCheckout(ctx.cwd) !== null;
 		if (!reporting || Date.now() < reportRetryAt) return reports;
 		const path = ctx.cwd;
 		const wait = sentAt + STEP_MS - Date.now();
 		if (state === reported && wait > 0) {
 			stepTimer ??= setTimeout(() => {
 				stepTimer = undefined;
-				if (current !== reported || currentStep !== reportedStep) void send(path);
+				if (current !== reported || currentStep !== reportedStep || detailKey() !== reportedDetail) void send(path);
 			}, wait);
 			return reports;
 		}
@@ -888,6 +967,8 @@ export default function missionControl(pi: ExtensionAPI) {
 	pi.on("before_agent_start", (event, ctx) => {
 		if (ctx.agent?.kind === "sub") return;
 		if ("prompt" in event && typeof event.prompt === "string") lastMessage = event.prompt.slice(0, 2000);
+		runStart ||= Math.floor(Date.now() / 1000);
+		said = null;
 	});
 	pi.on("turn_start", (_event, ctx) => {
 		if (ctx.agent?.kind === "sub") return;
@@ -896,18 +977,45 @@ export default function missionControl(pi: ExtensionAPI) {
 			return;
 		}
 		planning = inPlanMode(ctx);
+		runStart ||= Math.floor(Date.now() / 1000);
 		void report(ctx, planning ? "planning" : "thinking");
+	});
+	pi.on("message_update", (event, ctx) => {
+		if (ctx.agent?.kind === "sub" || !["planning", "thinking", "working"].includes(current)) return;
+		const update = event.assistantMessageEvent;
+		if (update.type !== "thinking_delta" && update.type !== "thinking_end" && update.type !== "text_delta" && update.type !== "text_end") return;
+		const content = field(event.message, "content");
+		const block = Array.isArray(content) ? content[update.contentIndex] : undefined;
+		const text = field(block, "thinking") ?? field(block, "text");
+		const sentence = typeof text === "string" ? lastSentence(text, update.type.endsWith("_end")) : null;
+		if (!sentence || sentence === said) return;
+		said = sentence;
+		void report(ctx, current, currentStep);
 	});
 	pi.on("tool_execution_start", (event, ctx) => {
 		if (ctx.agent?.kind === "sub") return;
 		if (event.toolName.startsWith("mission_control_")) engage(ctx);
+		if (event.toolName === "ask") question = askQuestion(event.args);
 		void report(ctx, event.toolName === "ask" ? "needs_input" : planning ? "planning" : "working", stepText(event));
 	});
 	pi.on("tool_execution_end", (event, ctx) => {
-		if (ctx.agent?.kind !== "sub" && event.toolName === "ask") void report(ctx, planning ? "planning" : "working");
+		if (ctx.agent?.kind === "sub") return;
+		if (event.toolName === "todo") {
+			const progress = todoProgress(event.result);
+			if (progress === undefined) return;
+			todo = progress;
+			if (current) void report(ctx, current, currentStep);
+		} else if (event.toolName === "ask") {
+			question = null;
+			// The clock starts over once the agent is back at work after the answer.
+			runStart = Math.floor(Date.now() / 1000);
+			void report(ctx, planning ? "planning" : "working");
+		}
 	});
 	pi.on("agent_end", (event, ctx) => {
 		if (ctx.agent?.kind === "sub" || ("willContinue" in event && event.willContinue === true)) return;
+		runStart = 0;
+		question = null;
 		void report(ctx, reviewOpen ? "plan_ready" : "idle");
 		if (task) void autoMerge(ctx);
 	});
@@ -1467,10 +1575,10 @@ export default function missionControl(pi: ExtensionAPI) {
 		if (!event.choice || event.choice === "save") void report(ctx, "idle");
 		if (!task || !event.choice || !PLAN_APPROVALS[event.choice]) return;
 		const id = task;
-		void api<{ hold: boolean; waitingFor?: string[] }>("POST", `/api/tasks/${id}/planned`, {}, false).then(
+		void api<{ hold: boolean; waitingFor: string[] }>("POST", `/api/tasks/${id}/planned`, {}, false).then(
 			(r) => {
 				if (!r.hold) return;
-				holding = r.waitingFor?.length ? `waiting for ${r.waitingFor.join(", ")}` : "waiting for a free task slot";
+				holding = `waiting for ${r.waitingFor.join(", ")}`;
 				// "Approve and execute" runs the plan in a new session: its first turn is stopped in turn_start unless it already runs.
 				const current = sessionCtx ?? ctx;
 				if (!current.isIdle()) stopHeld(current);
@@ -1529,8 +1637,8 @@ export default function missionControl(pi: ExtensionAPI) {
 		name: "mission_control_adopt",
 		label: "Mission Control adopt",
 		description:
-			"Track a linked git worktree (default: this checkout) as a Mission Control card, with an optional title and tags. Returns its card when it already has one. No agent starts until the card is moved to In Progress.",
-		parameters: z.object({ path: z.string().optional(), title: z.string().optional(), tags: z.array(z.string()).optional() }),
+			"Track a linked git worktree on a branch (default: this checkout) as a Mission Control card, with an optional title and tags. Returns its card when it already has one. An omp running there becomes its agent; otherwise none starts until the card is moved to In Progress, which reopens `session` (an asleep worktree's session from mission_control_tasks) when given, else omp's latest session there.",
+		parameters: z.object({ path: z.string().optional(), title: z.string().optional(), tags: z.array(z.string()).optional(), session: z.string().optional() }),
 		approval: "read",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			return answer(
@@ -1610,7 +1718,7 @@ export default function missionControl(pi: ExtensionAPI) {
 		name: "mission_control_move",
 		label: "Mission Control move",
 		description:
-			"Move a Mission Control card as dragging it on the board does. waiting pauses its agent (worktree and session stay, it frees its task slot) until it's moved to doing (In Progress), which resumes it now; doing is refused while it waits for open dependencies unless force; doing also starts again a card whose start failed. done records it as done without merging. Other columns are reached on their own. Use it when the user asks to pause, hold, resume or finish a card.",
+			"Move a Mission Control card as dragging it on the board does. waiting pauses its agent (worktree and session stay) until it's moved to doing (In Progress), which resumes it now; doing is refused while it waits for open dependencies unless force; doing also starts again a card whose start failed. done records it as done without merging. Other columns are reached on their own. Use it when the user asks to pause, hold, resume or finish a card.",
 		parameters: z.object({ id: z.string(), column: z.enum(["waiting", "doing", "done"]), force: z.boolean().optional() }),
 		approval: "read",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

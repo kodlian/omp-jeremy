@@ -22,7 +22,9 @@ type Task = {
 	spawn: { state: string; error: string | null };
 	presentation: { kind: string; cmux?: { workspace: string } } | null;
 	execution: { kind: string; state: string; exitCode: number | null } | null;
+	session: { id: string | null; file: string | null; connected: boolean } | null;
 	agent: { state: string } | null;
+	agents: RunningAgent[];
 	attachCommand: string | null;
 	intent: { op: string; stage: string | null; attempt: number; lastError: string | null } | null;
 	lastOperation: { op: string; ok: boolean; error: string | null; output: string } | null;
@@ -30,7 +32,12 @@ type Task = {
 	land: { mergeInto: string | null; pr: boolean };
 	tags: string[];
 };
-type Worktree = { path: string; project: string; branch: string; base: string; column: string; tags: string[] };
+type RunningAgent = { id: string; title: string | null; state: string; step: string | null; todo: { done: number; total: number; current: string | null } | null; said: string | null; startedAt: string | null };
+type Worktree = {
+	path: string; project: string; branch: string | null; main: boolean; detached: string | null; base: string; column: string; tags: string[];
+	agent: { state: string; session: { id: string; file: string } | null; title: string | null };
+	agents: RunningAgent[];
+};
 type Project = { id: string; tags: string[]; hidden: string[]; tagRules: { pattern: string; tags: string[] }[] };
 type State = { tasks: Task[]; projects: Project[]; worktrees: Worktree[] };
 type Context = { kind: "cmux"; cmux: { cli: string; socket: string; workspace: string; surface: string } };
@@ -398,7 +405,7 @@ describe.skipIf(!TMUX)("a task's lifecycle", () => {
 		run(["git", "-C", repo, "worktree", "remove", "--force", kept]);
 	}, 60_000);
 
-	test("A worktree no task owns is listed, adopted once, and an adopted task without an agent holds no slot", async () => {
+	test("A worktree no task owns is listed and adopted once; a task built on another waits for it, then resumes", async () => {
 		useHooks(false);
 		const other = join(dir, "other");
 		const side = join(dir, "side");
@@ -416,12 +423,92 @@ describe.skipIf(!TMUX)("a task's lifecycle", () => {
 		expect((await api<State>("GET", "/api/state")).worktrees.some((w) => w.branch === "side")).toBe(false);
 		expect((await api<Task>("POST", "/api/worktrees/adopt", { path: side })).id).toBe(adopted.id);
 
-		await api("PATCH", "/api/projects", { id: project.id, concurrencyLimit: 1 });
-		const first = await started((await api<Task>("POST", "/api/tasks", { prompt: "limit base", repo: other })).id);
-		const next = await api<Task>("POST", "/api/tasks", { prompt: "planned under limit", repo: other, after: first.id });
+		const first = await started((await api<Task>("POST", "/api/tasks", { prompt: "first", repo: other })).id);
+		const next = await api<Task>("POST", "/api/tasks", { prompt: "planned on first", repo: other, after: first.id });
 		await waitFor("the next task to wait", async () => (await card(next.id)).column === "waiting", 30_000);
 		await api("POST", `/api/tasks/${first.id}/move`, { column: "done", confirmWorking: true });
 		await waitFor("the next task to resume", async () => (await card(next.id)).column === "doing", 20_000);
+	}, 90_000);
+
+	test("Checkouts without a task list every omp running there, asleep ones resume their session, and detached ones and the main checkout are listed too", async () => {
+		useHooks(false);
+		const project = join(dir, "sleepers");
+		const [asleep, awake, loose] = ["asleep", "awake", "loose"].map((name) => join(dir, `sleepers-${name}`));
+		mkdirSync(project);
+		run(["git", "init", "-q", "-b", "main"], project);
+		run(["git", "commit", "-q", "--allow-empty", "-m", "init"], project);
+		run(["git", "-C", project, "worktree", "add", "-q", "-b", "asleep", asleep]);
+		run(["git", "-C", project, "worktree", "add", "-q", "-b", "awake", awake]);
+		run(["git", "-C", project, "worktree", "add", "-q", "--detach", loose]);
+		// omp's session files: one folder per directory, a 256-byte title slot, the header, then entries.
+		const session = (cwd: string, id: string, title: string): string => {
+			const bucket = join(dir, "home", ".omp", "agent", "sessions", `--${cwd.slice(1).replaceAll("/", "-")}--`);
+			mkdirSync(bucket, { recursive: true });
+			const file = join(bucket, `2026-11-20T10-00-00-000Z_${id}.jsonl`);
+			const slot = JSON.stringify({ type: "title", v: 1, title, source: "auto" }).padEnd(255);
+			writeFileSync(file, `${slot}\n${JSON.stringify({ type: "session", version: 3, id, cwd })}\n{"type":"message"}\n`);
+			return file;
+		};
+		const sleepy = session(asleep, "sleepy-1", "Plan the sleepy thing");
+		session(awake, "awake-1", "Working on it");
+		const second = session(awake, "awake-2", "Second look");
+		session(project, "main-1", "Main work");
+		// A live omp holds its session's lease.
+		const holder = Bun.spawn(["python3", "-c", `import fcntl, os, time
+for sid in ("awake-1", "awake-2", "main-1"):
+    fcntl.lockf(os.open(os.path.join(${JSON.stringify(join(dir, "leases"))}, sid + ".lock"), os.O_RDWR | os.O_CREAT), fcntl.LOCK_EX)
+print("held", flush=True)
+time.sleep(60)`], { stdout: "pipe" });
+		await holder.stdout.getReader().read();
+		try {
+			await api("POST", "/api/projects", { path: project });
+			await api("POST", "/api/refresh");
+			const [sleeping, running, detached, main] = await waitFor("the checkouts", async () => {
+				const listed = (await api<State>("GET", "/api/state")).worktrees;
+				const found = [asleep, awake, loose, project].map((path) => listed.find((w) => w.path === path));
+				return found.every(Boolean) ? (found as Worktree[]) : null;
+			}, 15_000);
+			expect(sleeping.agent).toMatchObject({ state: "asleep", session: { id: "sleepy-1", file: sleepy }, title: "Plan the sleepy thing" });
+			expect(sleeping.agents).toEqual([]);
+			expect(running.agent).toMatchObject({ state: "running", title: expect.any(String) });
+			expect(running.agents.map((a) => a.id).sort()).toEqual(["awake-1", "awake-2"]);
+			expect(detached).toMatchObject({ branch: null, main: false, detached: run(["git", "-C", loose, "rev-parse", "--short", "HEAD"]), agent: { state: "none" } });
+			expect(main).toMatchObject({ branch: "main", main: true, agent: { state: "running" } });
+			expect(main.agents).toMatchObject([{ id: "main-1", title: "Main work", state: "running" }]);
+			expect(await call("POST", "/api/worktrees/remove", { path: project })).toMatchObject({ status: 409 });
+
+			// Each omp reports for itself: what it does, its run clock, to-do progress and latest sentence.
+			const startedAt = Math.floor(Date.now() / 1000) - 60;
+			await api("POST", "/api/agent", { path: awake, sessionId: "awake-2", sessionFile: second, state: "working", step: "Reading the plan",
+				todo: { done: 1, total: 3, current: "Check the plan" }, said: "The plan looks right.", startedAt });
+			const reported = await waitFor("the second omp's report", async () =>
+				(await api<State>("GET", "/api/state")).worktrees.find((w) => w.path === awake)?.agents.find((a) => a.id === "awake-2" && a.state === "working"), 15_000);
+			expect(reported).toMatchObject({ title: "Second look", step: "Reading the plan", todo: { done: 1, total: 3, current: "Check the plan" },
+				said: "The plan looks right.", startedAt: new Date(startedAt * 1000).toISOString().replace(".000", "") });
+
+			// Resume makes the worktree a card whose omp reopens exactly that session.
+			const resumed = await api<Task>("POST", "/api/worktrees/adopt", { path: asleep, session: "sleepy-1" });
+			await api("POST", `/api/tasks/${resumed.id}/move`, { column: "doing" });
+			const argv = await waitFor("the resumed omp", async () => ompArgs(resumed.id).at(-1), 20_000);
+			expect(argv.slice(argv.indexOf("--resume"), argv.indexOf("--resume") + 2)).toEqual(["--resume", sleepy]);
+
+			// An omp already running there becomes the card's agent; the other one is listed beside it.
+			const tracked = await api<Task>("POST", "/api/worktrees/adopt", { path: awake });
+			await waitFor("the running omp", async () => (await card(tracked.id)).execution?.state === "running", 15_000);
+			const beside = await waitFor("the other omp on the card", async () => {
+				const c = await card(tracked.id);
+				return c.agents.length === 1 ? c : null;
+			}, 15_000);
+			expect(beside.agents[0].id).toBe(["awake-1", "awake-2"].find((id) => id !== beside.session?.id));
+
+			// A detached worktree opens and is removed without a card.
+			expect(await api("POST", "/api/worktrees/open", { path: loose })).toMatchObject({ opened: false, cd: `cd ${loose}` });
+			await api("POST", "/api/worktrees/remove", { path: loose });
+			expect(existsSync(loose)).toBe(false);
+			expect((await api<State>("GET", "/api/state")).worktrees.some((w) => w.path === loose)).toBe(false);
+		} finally {
+			holder.kill();
+		}
 	}, 90_000);
 
 	test("Stop closes the terminal a createWorktree hook opened", async () => {
@@ -431,6 +518,19 @@ describe.skipIf(!TMUX)("a task's lifecycle", () => {
 		expect(opened && cmux().workspaces[opened]?.cwd).toBe(t.worktree);
 		await api("POST", `/api/tasks/${t.id}/stop`);
 		expect(cmux().workspaces[opened!]).toBeUndefined();
+	}, 60_000);
+
+	test("Opening a task whose terminal was closed only says how to reach it: no terminal opens, attaches or closes", async () => {
+		useHooks(true);
+		const t = await startTask("closed terminal", { from: origin });
+		run([join(bin, "cmux"), "workspace", "close", "--force", "--workspace", t.presentation!.cmux!.workspace]);
+		const before = cmux();
+		const r = await api<{ opened: boolean; attachCommand: string | null; cd: string }>("POST", `/api/tasks/${t.id}/open`);
+		expect(r).toMatchObject({ opened: false, cd: `cd ${t.worktree}` });
+		expect(r.attachCommand).toContain("attach-session");
+		const after = cmux();
+		expect(Object.keys(after.workspaces).sort()).toEqual(Object.keys(before.workspaces).sort());
+		expect(after.log).toEqual(before.log);
 	}, 60_000);
 
 	test("An agent on cmux's local-tmux shows in the task's workspace left from before, not beside a terminal that only sits in its worktree", async () => {

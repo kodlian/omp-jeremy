@@ -8,7 +8,7 @@ import struct
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from runtime import run, which
 
@@ -52,3 +52,18 @@ def held(session_id: Optional[str]) -> bool:
             result = False
     _cache[session_id] = (time.time(), result)
     return result
+
+
+def held_any(session_ids: List[str]) -> Set[str]:
+    """The ids among `session_ids` whose lease a process holds now: one probe each on macOS, else one omp call for all."""
+    ids = [s for s in session_ids if s and (LEASE_DIR / f"{s}.lock").is_file()]
+    if sys.platform == "darwin" or not ids:
+        return {s for s in ids if held(s)}
+    omp = which("omp")
+    if not omp:
+        return set()
+    code, out, _ = run([omp, "session", "lease", "--json", "--", *ids], timeout=10)
+    try:
+        return set(json.loads(out).get("held") or []) & set(ids) if code == 0 else set()
+    except (ValueError, AttributeError):
+        return set()

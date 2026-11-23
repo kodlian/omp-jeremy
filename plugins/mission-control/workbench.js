@@ -1,68 +1,10 @@
 "use strict";
 // MARK: live workbench
-const WB_PREVIEWS = 4, WB_CONCURRENCY = 2, WB_INTERVAL = 3000, WB_LINES = 22, WB_TEXT = 600, WB_DONE = 6;
-const wb = { root: null, tiles: new Map(), order: new Map(), seq: 0, scope: null, previews: [], screens: new Map(), failed: new Map(), inflight: new Map(), queue: [], timer: null };
+const WB_TEXT = 600, WB_DONE = 6;
+const wb = { root: null, tiles: new Map(), treeTiles: new Map(), order: new Map(), seq: 0, scope: null };
 
 const wbClip = (text, max = WB_TEXT) => { const s = String(text ?? "").trim(); return s.length > max ? s.slice(0, max - 1).trimEnd() + "…" : s; };
-const wbLines = (text, n) => String(text ?? "").split("\n").slice(-n).map(l => l.length > 240 ? l.slice(0, 239) + "…" : l).join("\n");
-const WB_BYTE = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
-const WB_COLOR = new RegExp(`^(?:#[0-9a-f]{3}|#[0-9a-f]{6}|rgb\\(\\s*${WB_BYTE}\\s*,\\s*${WB_BYTE}\\s*,\\s*${WB_BYTE}\\s*\\))$`, "i");
-const WB_FLAGS = ["bold", "dim", "italic", "underline", "strike", "inverse"];
-function wbRun(r) {
-  const text = typeof r?.text === "string" ? r.text.replace(/[\x00-\x1f\x7f-\x9f]/g, "") : "";
-  if (!text) return null;
-  const run = { text };
-  for (const k of ["fg", "bg"]) if (typeof r[k] === "string" && WB_COLOR.test(r[k])) run[k] = r[k];
-  for (const k of WB_FLAGS) if (r[k] === true) run[k] = true;
-  return run;
-}
-function wbRows(rows, n) {
-  if (!Array.isArray(rows) || !rows.every(Array.isArray)) return null;
-  return rows.slice(-n).map(row => {
-    const runs = row.map(wbRun).filter(Boolean);
-    if (runs.reduce((len, r) => len + r.text.length, 0) <= 240) return runs;
-    const out = [];
-    let left = 239;
-    for (const r of runs) {
-      if (r.text.length >= left) { out.push({ ...r, text: r.text.slice(0, left) + "…" }); break; }
-      out.push(r);
-      left -= r.text.length;
-    }
-    return out;
-  });
-}
-function wbScreen(data, lines = WB_LINES) {
-  const rows = wbRows(data?.rows, lines);
-  if (rows) return { key: "r" + JSON.stringify(rows), rows };
-  const text = wbLines(data?.text ?? "", lines);
-  return { key: "t" + text, text };
-}
-function wbRunEl(r) {
-  if (Object.keys(r).length === 1) return document.createTextNode(r.text);
-  let fg = r.fg, bg = r.bg;
-  if (r.inverse) [fg, bg] = [bg ?? "var(--bg)", fg ?? "var(--fg)"];
-  const el = document.createElement("span"), s = el.style;
-  el.textContent = r.text;
-  if (fg) s.color = fg;
-  if (bg) s.backgroundColor = bg;
-  if (r.bold) s.fontWeight = "700";
-  if (r.dim) s.opacity = "0.6";
-  if (r.italic) s.fontStyle = "italic";
-  const deco = [r.underline && "underline", r.strike && "line-through"].filter(Boolean);
-  if (deco.length) s.textDecorationLine = deco.join(" ");
-  return el;
-}
-function wbPaint(term, view) {
-  if (!view.rows) { term.textContent = view.text; return; }
-  const nodes = [];
-  view.rows.forEach((row, i) => {
-    if (i) nodes.push(document.createTextNode("\n"));
-    for (const r of row) nodes.push(wbRunEl(r));
-  });
-  term.replaceChildren(...nodes);
-}
 const wbRunning = t => !t.health?.worktreeMissing && t.execution?.state === "running";
-const wbExecutionKey = t => JSON.stringify([t?.execution, t?.session?.id]);
 
 function wbKind(t) {
   if (t.health?.worktreeMissing) return "handoff";
@@ -94,18 +36,47 @@ function wbRank(t) {
 }
 
 // MARK: actions
-function wbWith(id, fn) { openPanel(id); fn(); }
-function wbActions(t, kind) {
-  const out = [], s = t.agent?.state, cur = () => findTask(t.id) || t, btn = actionButton;
-  if (t.health?.worktreeMissing) out.push(btn("Remove card", "trash", () => confirmRecover(cur()), true));
-  else if (t.spawn.state === "failed") out.push(btn("Retry start", "play", () => doMove(cur(), "doing"), true));
-  else if (s === "plan_ready" && t.worktree) out.push(btn("Review plan", "file", () => wbWith(t.id, openWorkspace), true, "Opens the agent's terminal, where its plan waits for review"));
-  else if (s === "needs_input" && t.worktree) out.push(btn("Answer in terminal", "terminal", () => wbWith(t.id, openWorkspace), true, "The board can't answer this prompt; it opens the agent's terminal"));
-  else if (s === "disconnected" && t.worktree) out.push(btn("Connect terminal", "terminal", () => wbWith(t.id, openWorkspace), true));
-  else if (kind === "handoff") out.push(...landActions(t));
-  if (!t.health?.worktreeMissing && t.worktree && kind === "active" && (sessionConnected(t) || wbRunning(t))) out.push(btn("Terminal", "terminal", () => wbWith(t.id, openWorkspace), false, "Connect to the agent terminal"));
-  if (!t.health?.worktreeMissing && t.worktree) out.push(btn("Open worktree", "openIn", () => wbWith(t.id, () => openWorktree())));
-  if (t.pr) out.push(prChip(t.pr));
+// A tile's only action reaches the agent's terminal; the task panel has the rest.
+function wbTerminalButton(t) {
+  if (t.health?.worktreeMissing || !t.worktree) return null;
+  const s = t.agent?.state, go = () => { openPanel(t.id); openWorkspace(); };
+  if (s === "plan_ready") return actionButton("Review plan", "file", go, true, "Opens the agent's terminal, where its plan waits for review");
+  if (s === "needs_input") return actionButton("Answer in terminal", "terminal", go, true, "The board can't answer this prompt; it opens the agent's terminal");
+  if (s === "disconnected") return actionButton("Connect terminal", "terminal", go, true);
+  return sessionConnected(t) || wbRunning(t) ? actionButton("Open terminal", "terminal", go, false, "Jump to the agent's terminal") : null;
+}
+
+// MARK: agent detail
+const wbTodo = todo => todo ? h("span", { class: "wb-todo", title: `${todo.done} of ${todo.total} to-dos done` }, `${todo.done}/${todo.total}`) : null;
+function wbLine(label, icon, text, tone) {
+  return h("div", { class: "wb-line" + (tone ? " " + tone : ""), title: text }, h("span", { class: "wb-k" }, I(icon, 11), label), h("span", { class: "wb-v" }, wbClip(text, 300)));
+}
+// What an agent is on: the question it asks, the to-do in progress, its latest sentence, then its step.
+function wbAgentLines(a) {
+  const lines = [];
+  if (a.question) lines.push(wbLine("Asks", "hand", a.question, "needs"));
+  if (a.todo?.current) lines.push(wbLine("To-do", "check", a.todo.current));
+  if (a.said) lines.push(wbLine("Says", "message", a.said));
+  if (a.step && !a.question) lines.push(wbLine("Step", "wrench", a.step));
+  return lines;
+}
+// One omp among those running in a checkout: its session title, what it does, then what it is on.
+function wbAgentBlock(a) {
+  const info = agentInfo(a);
+  return h("div", { class: "wb-agent" },
+    h("div", { class: "wb-agent-head" }, h("span", { class: "wb-agent-name", title: a.title || a.id }, a.title || "omp session"),
+      stateEl({ ...info, spin: false, dot: info.spin || info.dot }), wbTodo(a.todo)),
+    ...wbAgentLines(a));
+}
+function wbCommitLine(git) {
+  const last = git?.last;
+  return last ? wbLine("Commit", "branch", `${last.subject} · ${ago(last.at)}${git.commits > 1 ? ` · ${plural(git.commits, "commit")}` : ""}`) : null;
+}
+function wbGitBits(x) {
+  const out = [];
+  if (x.git && (x.git.added || x.git.removed)) out.push(diffstat(x.git));
+  if (x.git?.dirty > 0) out.push(h("span", { class: "udot", title: plural(x.git.dirty, "uncommitted file") }));
+  if (x.pr) out.push(prChip(x.pr));
   return out;
 }
 
@@ -113,65 +84,44 @@ function wbActions(t, kind) {
 function wbStateEl(t) {
   if (wbKind(t) === "handoff") {
     const handoff = wbHandoff(t);
-    return stateEl({ tone: handoff.tone, icon: handoff.icon, text: handoff.label, since: t.agent?.since });
+    return stateEl({ tone: handoff.tone, icon: handoff.icon, text: handoff.label, since: AGENT_LABEL[t.agent?.state] ? t.agent.startedAt || t.agent.since : t.agent?.since });
   }
   const info = statusOf(t);
   return info ? stateEl({ ...info, spin: false, dot: info.spin || info.dot }) : h("span", { class: "state faint" }, colTitle(t.column));
 }
-function wbBody(t, kind) {
-  const parts = [], s = t.agent?.state;
+function wbBody(t) {
+  const parts = [], a = t.agent || {};
   parts.push(h("header", { class: "wb-task-header" }, h("span", { class: "wb-task-id" }, taskNumber(t.id)),
     h("strong", { class: "wb-title", title: t.title || "" }, t.title || "Untitled")));
   const tags = tagRow(t);
   if (tags) parts.push(tags);
-  const head = h("div", { class: "wb-head" }, h("span", { class: "wb-col", "data-col": t.column }, colTitle(t.column)), wbStateEl(t), h("span", { class: "spacer" }));
-  if (t.git && (t.git.added || t.git.removed)) head.append(diffstat(t.git));
-  if (t.git?.dirty > 0) head.append(h("span", { class: "udot", title: plural(t.git.dirty, "uncommitted file") }));
-  parts.push(head);
-  const step = t.agent && (AGENT_LABEL[s] || s === "needs_input") ? t.agent.step : null;
-  if (step) parts.push(h("div", { class: "wb-step", title: step }, I(s === "needs_input" ? "hand" : "wrench", 12), h("span", {}, wbClip(step, 200))));
-  if (t.spawn.state === "failed") {
-    if (t.spawn.error) parts.push(h("div", { class: "wb-msg err" }, I("alert", 12), h("span", {}, wbClip(t.spawn.error))));
-    if (t.spawn.log) parts.push(h("pre", { class: "wb-log" }, wbLines(t.spawn.log, 8)));
-  } else if (t.spawn.state === "running") {
-    parts.push(h("div", { class: "wb-note" }, "Creating the worktree and starting omp"));
-    if (t.spawn.log) parts.push(h("pre", { class: "wb-log" }, wbLines(t.spawn.log, 6)));
-  }
-  if (t.agent?.message && t.agent.message.trim() !== String(step ?? "").trim()) parts.push(h("div", { class: "wb-msg" }, I("message", 12), h("span", {}, wbClip(t.agent.message))));
-  if (s === "needs_input") parts.push(h("div", { class: "wb-note" }, "Answer in the agent's terminal; the board can't reply to this prompt."));
+  parts.push(h("div", { class: "wb-head" }, h("span", { class: "wb-col", "data-col": t.column }, colTitle(t.column)), wbStateEl(t), wbTodo(a.todo),
+    h("span", { class: "spacer" }), t.ticket ? h("span", { class: "chip mono", title: "Ticket" }, t.ticket) : null, ...wbGitBits(t)));
+  parts.push(...wbAgentLines(a));
+  if (t.spawn.state === "failed" && t.spawn.error) parts.push(h("div", { class: "wb-msg err" }, I("alert", 12), h("span", {}, wbClip(t.spawn.error))));
+  else if (t.spawn.state === "running") parts.push(h("div", { class: "wb-note" }, "Creating the worktree and starting omp"));
+  if (a.message) parts.push(wbLine("You", "arrowRight", a.message));
+  const commit = wbCommitLine(t.git);
+  if (commit) parts.push(commit);
+  if (t.agents?.length) parts.push(h("div", { class: "wb-agents" }, h("div", { class: "wb-agents-h" }, `Also in this worktree · ${t.agents.length}`), ...t.agents.map(wbAgentBlock)));
   return parts;
 }
-function wbTerminalNote(t) {
-  if (!t.worktree || t.spawn.state !== "done" && t.spawn.state !== "none") return null;
-  const ex = t.execution;
-  if (!ex) return null;
-  if (ex.kind === "external") return "Runs outside the board's tmux; its screen shows only there.";
-  if (!wbRunning(t)) return typeof ex.exitCode === "number" ? `Agent exited (code ${ex.exitCode}). The screen no longer updates.` : "Agent stopped. The screen no longer updates.";
-  return null;
-}
 function wbTile(t) {
-  const term = h("pre", { class: "wb-term", "aria-label": "Agent terminal (read-only)" });
-  const termLabel = h("span", {});
-  const termWrap = h("div", { class: "wb-term-wrap", hidden: true }, h("div", { class: "wb-label" }, I("terminal", 11), termLabel), term);
   const top = h("div", { class: "wb-top" }), foot = h("div", { class: "wb-foot" });
   const tile = h("article", { class: "workbench-tile", "data-id": t.id, tabindex: "0",
     onclick: e => { if (!e.target.closest("button,a")) openPanel(t.id); },
-    onkeydown: e => { if (e.key === "Enter" && e.target === tile) openPanel(t.id); } }, top, termWrap, foot);
-  tile.wb = { top, foot, term, termWrap, termLabel };
+    onkeydown: e => { if (e.key === "Enter" && e.target === tile) openPanel(t.id); } }, top, foot);
+  tile.wb = { top, foot };
   return tile;
 }
-function wbUpdateTile(tile, t, kind, preview) {
+function wbUpdateTile(tile, t, kind) {
   const p = tile.wb;
   tile.dataset.kind = kind;
-  const key = JSON.stringify([kind, t.title, t.column, t.agent, t.spawn, t.git, t.pr, t.paused, t.held, t.blockedBy, t.waitingForSlot, t.land, t.base, t.tags, t.worktree, t.execution, t.session?.connected, t.merged, t.health]);
+  const key = JSON.stringify([kind, t.title, t.ticket, t.column, t.agent, t.agents, t.spawn, t.git, t.pr, t.paused, t.held, t.blockedBy, t.land, t.base, t.tags, t.worktree, t.execution, t.session?.connected, t.merged, t.health]);
   if (tile.dataset.content !== key) {
     tile.dataset.content = key;
-    p.top.replaceChildren(...wbBody(t, kind));
-  }
-  const actionsKey = JSON.stringify([kind, t.agent?.state, t.spawn.state, t.worktree, t.land, t.base, t.git?.commits, t.git?.dirty, t.pr, t.execution, t.session?.connected, t.health]);
-  if (tile.dataset.actions !== actionsKey) {
-    tile.dataset.actions = actionsKey;
-    p.foot.replaceChildren(...wbActions(t, kind));
+    p.top.replaceChildren(...wbBody(t));
+    p.foot.replaceChildren(...[wbTerminalButton(t)].filter(Boolean));
   }
   const s = t.agent?.state;
   tile.classList.toggle("needs", kind === "handoff" && (s === "needs_input" || s === "plan_ready" || s === "disconnected"));
@@ -179,20 +129,6 @@ function wbUpdateTile(tile, t, kind, preview) {
   tile.classList.toggle("busy", !t.paused && (t.spawn.state === "running" || !!AGENT_LABEL[s]));
   tile.classList.toggle("quiet", t.paused || s === "stopped");
   tile.classList.toggle("sel", t.id === openId);
-  const screen = wb.screens.get(t.id), note = wbTerminalNote(t), failure = wb.failed.get(t.id);
-  const live = preview && wbRunning(t);
-  let label = null, view = null;
-  if (live && failure) { label = "Terminal unavailable"; view = { key: "e" + failure.message, text: failure.message }; }
-  else if (live) { label = "Terminal · live, read-only"; view = screen ?? { key: "t", text: "" }; }
-  else if (screen != null && note) { label = "Last screen · " + note; view = screen; }
-  else if (note) { label = note; }
-  else if (wbRunning(t) && kind !== "done") { label = `Terminal preview shows ${WB_PREVIEWS} tiles at a time; click this task to see its terminal`; }
-  p.termWrap.hidden = label == null;
-  p.termWrap.classList.toggle("ended", !live);
-  p.termWrap.classList.toggle("loading", live && screen == null && !failure);
-  if (p.termLabel.textContent !== (label || "")) p.termLabel.textContent = label || "";
-  p.term.hidden = view == null;
-  if (view && p.termKey !== view.key) { p.termKey = view.key; wbPaint(p.term, view); p.term.scrollTop = p.term.scrollHeight; }
 }
 function wbRow(t) {
   const info = statusOf(t);
@@ -201,6 +137,52 @@ function wbRow(t) {
     info ? stateEl({ ...info, spin: false, dot: info.spin || info.dot }) : h("span", { class: "state faint" }, colTitle(t.column)));
   row.dataset.kind = t.column === "done" ? "done" : "queued";
   return row;
+}
+// A checkout no task owns where omp runs: every omp there, and a way to its terminal.
+function wbTreeBody(w) {
+  const parts = [h("header", { class: "wb-task-header" }, worktreeChip(w), h("strong", { class: "wb-title", title: w.path }, worktreeName(w)))];
+  const tags = tagRow(w);
+  if (tags) parts.push(tags);
+  // Several omp get a summary above their blocks; a single one says what it does in its own block.
+  const info = w.agents.length > 1 ? worktreeStatus(w) : null, bits = wbGitBits(w);
+  if (info || bits.length) parts.push(h("div", { class: "wb-head" }, info ? stateEl({ ...info, spin: false, dot: info.spin || info.dot }) : null, h("span", { class: "spacer" }), ...bits));
+  const commit = wbCommitLine(w.git);
+  if (commit) parts.push(commit);
+  parts.push(...w.agents.map(wbAgentBlock));
+  return parts;
+}
+function wbTreeTile(w) {
+  const top = h("div", { class: "wb-top" });
+  const open = actionButton("Open terminal", "terminal", () => { const cur = worktreeAt(w.path); if (cur) openListedWorktree(cur); }, false, "Jump to the terminal omp runs in");
+  const tile = h("article", { class: "workbench-tile wb-tree", "data-path": w.path, tabindex: "0" }, top, h("div", { class: "wb-foot" }, open));
+  tile.onclick = e => { if (e.target.closest("button,a")) return; const cur = worktreeAt(w.path); if (cur) openMenu(tile, worktreeMenu(cur, tile)); };
+  tile.onkeydown = e => { if (e.key === "Enter" && e.target === tile) tile.click(); };
+  tile.dataset.kind = "active";
+  tile.wb = { top };
+  return tile;
+}
+function wbUpdateTreeTile(tile, w) {
+  const key = JSON.stringify([w.branch, w.detached, w.main, w.agents, w.git, w.pr, w.tags]);
+  if (tile.dataset.content !== key) { tile.dataset.content = key; tile.wb.top.replaceChildren(...wbTreeBody(w)); }
+  tile.classList.toggle("needs", w.agents.some(a => a.state === "needs_input" || a.state === "plan_ready"));
+  tile.classList.toggle("busy", w.agents.some(a => AGENT_LABEL[a.state]));
+}
+// The most recently active sessions first, then checkouts without one.
+const wbTreeRank = w => (w.agent?.state === "asleep" ? 0 : 1);
+function wbTreeRow(w) {
+  const row = h("button", { class: "workbench-tile wb-row", "data-path": w.path, title: w.path },
+    w.detached || w.main ? worktreeChip(w) : null, h("span", { class: "wb-row-title" }, worktreeName(w)), stateEl(worktreeStatus(w)));
+  row.onclick = () => { const current = worktreeAt(w.path); if (current) openMenu(row, worktreeMenu(current, row)); };
+  row.dataset.kind = "queued";
+  return row;
+}
+function wbTrees(section, trees) {
+  section.hidden = !trees.length;
+  const key = JSON.stringify(trees.map(w => [w.path, w.branch, w.detached, w.main, w.agent]));
+  if (section.dataset.key === key) return;
+  section.dataset.key = key;
+  section.replaceChildren(h("div", { class: "wb-quiet-h" }, "Worktrees without a task", h("span", { class: "meta" }, String(trees.length))),
+    h("div", { class: "wb-rows" }, ...trees.map(wbTreeRow)));
 }
 
 // MARK: render
@@ -212,8 +194,9 @@ function wbInit() {
   wb.work.append(wb.workHead, wb.grid);
   wb.empty = h("div", { class: "wb-empty" });
   wb.queued = h("section", { class: "wb-quiet" });
+  wb.trees = h("section", { class: "wb-quiet" });
   wb.done = h("section", { class: "wb-quiet" });
-  wb.root = h("div", { class: "workbench", "aria-label": "Live agent workbench" }, wb.summary, wb.empty, wb.work, wb.queued, wb.done);
+  wb.root = h("div", { class: "workbench", "aria-label": "Live agent workbench" }, wb.summary, wb.empty, wb.work, wb.queued, wb.trees, wb.done);
 }
 function renderWorkbench() {
   if (!board || boardView !== "live") return;
@@ -228,54 +211,57 @@ function renderWorkbench() {
   const fresh = primary.filter(t => !wb.order.has(t.id)).sort((a, b) => wbRank(a) - wbRank(b) || a.order - b.order);
   for (const t of fresh) wb.order.set(t.id, wb.seq++);
   primary.sort((a, b) => wb.order.get(a.id) - wb.order.get(b.id));
+  const trees = projectWorktrees().filter(worktreeMatches);
+  const running = trees.filter(w => w.agents?.length).sort((a, b) => Number(b.main) - Number(a.main) || worktreeName(a).localeCompare(worktreeName(b)));
 
-  const eligible = primary.filter(t => wbRunning(t) && t.worktree);
-  wb.previews = [...eligible].sort((a, b) => wbRank(a) - wbRank(b) || wb.order.get(a.id) - wb.order.get(b.id)).slice(0, WB_PREVIEWS).map(t => t.id);
-  const previewSet = new Set(wb.previews);
-
-  const keep = new Set(primary.map(t => t.id));
+  const keep = new Set(primary.map(t => t.id)), keepTrees = new Set(running.map(w => w.path));
   for (const [id, tile] of wb.tiles) if (!keep.has(id)) { tile.remove(); wb.tiles.delete(id); }
-  for (const id of [...wb.screens.keys()]) if (!keep.has(id)) { wb.screens.delete(id); wb.failed.delete(id); }
-  for (const [id, c] of wb.inflight) if (!previewSet.has(id)) { c.abort(); wb.inflight.delete(id); }
-  for (const id of [...wb.failed.keys()]) { const t = findTask(id); if (!t || wb.failed.get(id).key !== wbExecutionKey(t)) wb.failed.delete(id); }
+  for (const [path, tile] of wb.treeTiles) if (!keepTrees.has(path)) { tile.remove(); wb.treeTiles.delete(path); }
   primary.forEach((t, i) => {
     let tile = wb.tiles.get(t.id);
     if (!tile) { tile = wbTile(t); wb.tiles.set(t.id, tile); }
     if (wb.grid.children[i] !== tile) wb.grid.insertBefore(tile, wb.grid.children[i] || null);
-    wbUpdateTile(tile, t, wbKind(t), previewSet.has(t.id));
+    wbUpdateTile(tile, t, wbKind(t));
+  });
+  running.forEach((w, j) => {
+    let tile = wb.treeTiles.get(w.path);
+    if (!tile) { tile = wbTreeTile(w); wb.treeTiles.set(w.path, tile); }
+    const i = primary.length + j;
+    if (wb.grid.children[i] !== tile) wb.grid.insertBefore(tile, wb.grid.children[i] || null);
+    wbUpdateTreeTile(tile, w);
   });
 
   const doneSorted = groups.done.sort((a, b) => (Date.parse(b.merged?.at || "") || 0) - (Date.parse(a.merged?.at || "") || 0) || b.order - a.order);
   wbQuiet(wb.queued, "Waiting", groups.queued.sort((a, b) => a.order - b.order), groups.queued.length);
   wbQuiet(wb.done, "Recently done", doneSorted.slice(0, WB_DONE), doneSorted.length);
+  wbTrees(wb.trees, trees.filter(w => !w.agents?.length)
+    .sort((a, b) => wbTreeRank(a) - wbTreeRank(b) || (Date.parse(b.agent?.at || "") || 0) - (Date.parse(a.agent?.at || "") || 0) || worktreeName(a).localeCompare(worktreeName(b))));
 
-  const working = groups.active.filter(t => !t.paused && (t.spawn.state === "running" || AGENT_LABEL[t.agent?.state])).length;
-  const summary = [h("span", { class: "wb-count needs" }, I("hand", 12), plural(groups.handoff.length, "handoff")),
+  const others = [...primary.flatMap(t => t.agents || []), ...running.flatMap(w => w.agents)];
+  const handoffs = groups.handoff.length + others.filter(a => a.state === "needs_input" || a.state === "plan_ready").length;
+  const working = groups.active.filter(t => !t.paused && (t.spawn.state === "running" || AGENT_LABEL[t.agent?.state])).length + others.filter(a => AGENT_LABEL[a.state]).length;
+  const summary = [h("span", { class: "wb-count needs" }, I("hand", 12), plural(handoffs, "handoff")),
     h("span", { class: "wb-count busy" }, I("activity", 12), `${working} working`),
     h("span", { class: "wb-count" }, `${groups.queued.length} waiting`), h("span", { class: "wb-count" }, `${groups.done.length} done`)];
-  summary.push(h("span", { class: "spacer" }), h("span", { class: "wb-hint" }, eligible.length
-    ? `Terminal previews are read-only and refresh while this tab is visible (${Math.min(eligible.length, WB_PREVIEWS)} of ${eligible.length})`
-    : "No agent terminals are running"));
-  const sumKey = JSON.stringify([groups.handoff.length, working, groups.queued.length, groups.done.length, eligible.length]);
+  const sumKey = JSON.stringify([handoffs, working, groups.queued.length, groups.done.length]);
   if (wb.summary.dataset.key !== sumKey) { wb.summary.dataset.key = sumKey; wb.summary.replaceChildren(...summary); }
 
+  const count = primary.length + running.length;
   let empty = null;
   if (!selectedProject()) empty = ["Project unavailable", "Run /mission in this project's checkout to see its agents here."];
-  else if (!scoped.length) empty = ["No tasks in this project yet", "Create a task; its agent's activity shows up here."];
-  else if (!shown.length) empty = ["No matching tasks", "Nothing in this project matches the filter. Clear it to see every agent."];
-  else if (!primary.length) empty = ["No agent is working or waiting for you", groups.queued.length
-    ? "Waiting tasks resume on their own once what they build on lands and a task slot frees up."
+  else if (!scoped.length && !running.length) empty = ["No tasks in this project yet", "Create a task; its agent's activity shows up here."];
+  else if (scoped.length && !shown.length && !running.length) empty = ["No matching tasks", "Nothing in this project matches the filter. Clear it to see every agent."];
+  else if (!count) empty = ["No agent is working or waiting for you", groups.queued.length
+    ? "Waiting tasks resume on their own once what they build on lands."
     : "Create a task (N) to see its agent here."];
   wb.empty.hidden = !empty;
   if (empty && wb.empty.dataset.key !== empty.join()) { wb.empty.dataset.key = empty.join(); wb.empty.replaceChildren(h("strong", {}, I("activity", 14), empty[0]), h("span", {}, empty[1])); }
-  const attention = groups.handoff.length;
-  const workHeadKey = JSON.stringify([primary.length, attention, working]);
+  const workHeadKey = JSON.stringify([count, handoffs, working]);
   if (wb.workHead.dataset.key !== workHeadKey) {
     wb.workHead.dataset.key = workHeadKey;
-    wb.workHead.replaceChildren("In progress", h("span", { class: "meta" }, attention ? `${primary.length} · ${attention} need${attention === 1 ? "s" : ""} you` : String(primary.length)));
+    wb.workHead.replaceChildren("In progress", h("span", { class: "meta" }, handoffs ? `${count} · ${handoffs} need${handoffs === 1 ? "s" : ""} you` : String(count)));
   }
-  wb.work.hidden = !primary.length;
-  wbKick();
+  wb.work.hidden = !count;
 }
 function wbQuiet(section, title, tasks, total) {
   section.hidden = !tasks.length;
@@ -285,68 +271,3 @@ function wbQuiet(section, title, tasks, total) {
   section.replaceChildren(h("div", { class: "wb-quiet-h" }, title, h("span", { class: "meta" }, total > tasks.length ? `${tasks.length} of ${total}` : String(total))),
     h("div", { class: "wb-rows" }, ...tasks.map(wbRow)));
 }
-
-// MARK: screen polling
-const wbActive = () => boardView === "live" && document.visibilityState === "visible" && !!wb.root?.isConnected;
-function wbKick() {
-  if (!wbActive()) { stopWorkbench(); return; }
-  const missing = wb.previews.filter(id => !wb.screens.has(id) && !wb.failed.has(id) && !wb.inflight.has(id));
-  if ((wb.stale || missing.length) && !wb.inflight.size) { wb.stale = false; clearTimeout(wb.timer); wb.timer = null; wbTick(); }
-  else if (missing.length) { wb.queue.push(...missing.filter(id => !wb.queue.includes(id))); clearTimeout(wb.timer); wb.timer = null; wbPump(); }
-  else wbSchedule();
-}
-function wbSchedule() {
-  if (wb.timer || wb.inflight.size || wb.queue.length || !wb.previews.some(id => !wb.failed.has(id)) || !wbActive()) return;
-  wb.timer = setTimeout(wbTick, WB_INTERVAL);
-}
-function wbTick() {
-  wb.timer = null;
-  if (!wbActive()) return;
-  wb.queue = wb.previews.filter(id => !wb.inflight.has(id) && !wb.failed.has(id));
-  wbPump();
-}
-function wbPump() {
-  if (!wbActive()) { wb.queue = []; return; }
-  while (wb.inflight.size < WB_CONCURRENCY && wb.queue.length) {
-    const id = wb.queue.shift();
-    if (wb.previews.includes(id) && !wb.inflight.has(id)) wbFetch(id);
-  }
-  wbSchedule();
-}
-async function wbFetch(id) {
-  const c = new AbortController();
-  wb.inflight.set(id, c);
-  try {
-    const res = await fetch(tpath(id, "/screen"), { signal: c.signal });
-    let data = null;
-    try { data = await res.json(); } catch {}
-    if (c.signal.aborted || !wb.previews.includes(id)) return;
-    if (res.ok) { wb.screens.set(id, wbScreen(data)); wb.failed.delete(id); }
-    else wb.failed.set(id, { key: wbExecutionKey(findTask(id)), message: data?.error || `${res.status} ${res.statusText}` });
-    const t = findTask(id), tile = wb.tiles.get(id);
-    if (t && tile && inProject(t)) wbUpdateTile(tile, t, wbKind(t), true);
-  } catch (error) {
-    if (!c.signal.aborted && wb.previews.includes(id)) {
-      const t = findTask(id), tile = wb.tiles.get(id);
-      wb.failed.set(id, { key: wbExecutionKey(t), message: error.message || String(error) });
-      if (t && tile && inProject(t)) wbUpdateTile(tile, t, wbKind(t), true);
-    }
-  }
-  finally {
-    if (wb.inflight.get(id) === c) wb.inflight.delete(id);
-    wbPump();
-  }
-}
-function stopWorkbench() {
-  clearTimeout(wb.timer);
-  wb.timer = null;
-  wb.queue = [];
-  for (const c of wb.inflight.values()) c.abort();
-  wb.inflight.clear();
-  wb.failed.clear();
-  wb.stale = true;
-}
-document.addEventListener("visibilitychange", () => {
-  if (boardView !== "live") return;
-  if (document.visibilityState === "visible") renderWorkbench(); else stopWorkbench();
-});

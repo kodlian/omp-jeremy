@@ -17,7 +17,7 @@ import threading
 import time
 import unicodedata
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, urlparse
 import detach
 import import_orchestrator
 import lease
+import sessions
 import screen
 from cmux import cmux_config, ghostty_cli, terminal_appearance
 from gitops import (base_ref, branch_base, checkout_info, default_branch, drop_missing_worktrees, find_worktree, git_toplevel,
@@ -371,6 +372,8 @@ class Store:
         self.projects: List[Dict[str, Any]] = []
         self.worktrees: List[Dict[str, Any]] = []
         self.activity: Dict[str, Dict[str, Any]] = {}
+        self.reports: Dict[str, Dict[str, Any]] = {}
+        self.others: Dict[str, List[Dict[str, Any]]] = {}
         self.facts: Dict[str, Dict[str, Any]] = {}
         self.themes: Dict[str, Dict[str, Any]] = {}
         self.theme_version = 0
@@ -383,7 +386,7 @@ class Store:
             saved = json.loads(BOARD_FILE.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             saved = {}
-        self.projects = [{"repo": p["repo"], "concurrencyLimit": valid_limit(p.get("concurrencyLimit")),
+        self.projects = [{"repo": p["repo"],
                           "controlSets": p.get("controlSets") if valid_set_summaries(p.get("controlSets")) else None,
                           "hidden": valid_hidden(p.get("hidden")), "tagRules": valid_tag_rules(p.get("tagRules"))}
                          for p in saved.get("projects") or [] if isinstance(p, dict) and isinstance(p.get("repo"), str)]
@@ -463,6 +466,7 @@ class Store:
         self.lock)."""
         self.tasks.pop(task_id, None)
         self.activity.pop(task_id, None)
+        self.others.pop(task_id, None)
         self.facts.pop(task_id, None)
         for other in self.tasks.values():
             if task_id in other["dependsOn"] or other.get("parent") == task_id:
@@ -498,7 +502,6 @@ class Store:
             "parent": t.get("parent"),
             "children": children(t["id"]),
             "blockedBy": blocked_by(t),
-            "waitingForSlot": waiting_for_slot(t),
             "paused": paused(t),
             "held": bool(t.get("held")),
             "planned": t.get("planned"),
@@ -521,6 +524,7 @@ class Store:
             "session": session_view(t, connected),
             "attachCommand": detach.attach_command(ex) if ex.get("kind") == "tmux" and running else None,
             "agent": t.get("agent"),
+            "agents": self.others.get(t["id"], []),
             "git": t.get("git"),
             "pr": t.get("pr"),
             "land": land(t),
@@ -549,7 +553,6 @@ class Store:
             trees = [w for w in self.worktrees if w["project"] == pid]
             entry = {"id": pid, "name": os.path.basename(repo), "repo": repo, "defaultBranch": repo_default_branch(repo),
                      "counts": {c: sum(1 for t in own if t["column"] == c) for c in COLUMN_IDS}, "live": live,
-                     "concurrencyLimit": (registered.get(pid) or {}).get("concurrencyLimit"),
                      "controlSets": (registered.get(pid) or {}).get("controlSets"),
                      "hidden": list((registered.get(pid) or {}).get("hidden") or []),
                      "tagRules": copy.deepcopy((registered.get(pid) or {}).get("tagRules") or []),
@@ -571,7 +574,7 @@ class Store:
                 "projects": self.project_list(),
                 "themeVersion": self.theme_version,
                 "tasks": [self.view(t) for t in tasks],
-                "worktrees": sorted(self.worktrees, key=lambda w: (w["project"], w["branch"])),
+                "worktrees": sorted(self.worktrees, key=lambda w: (w["project"], w["branch"] or "", w["path"])),
             }
 
     # access
@@ -628,7 +631,7 @@ def has_started(t: Dict[str, Any]) -> bool:
 
 
 def paused(t: Dict[str, Any]) -> bool:
-    """A started task in Waiting: its worktree and omp session stay, but its agent is stopped or idle and holds no slot."""
+    """A started task in Waiting: its worktree and omp session stay, but its agent is stopped or idle."""
     return spawned(t) and t["column"] in PAUSED_COLUMNS and not t.get("merged") \
         and (t.get("intent") or {}).get("op") != "start"
 
@@ -712,28 +715,6 @@ def registered_project(repo: str) -> Optional[Dict[str, Any]]:
     return next((p for p in store.projects if same_dir(p["repo"], repo)), None)
 
 
-def project_concurrency_limit(repo: str) -> Optional[int]:
-    return (registered_project(repo) or {}).get("concurrencyLimit")
-
-
-def active_task_count(repo: str) -> int:
-    """The project's agents holding a slot: In Progress ones that run and any being resumed; planning, waiting, review and
-    pull-request agents hold none (call under store.lock)."""
-    return sum(1 for t in store.tasks.values() if t["column"] == "doing" and same_dir(t["repo"], repo)
-               and ((store.facts.get(t["id"]) or {}).get("agent_running") or hub.task_live(t["id"])
-                    or (t.get("intent") or {}).get("op") == "resume"))
-
-
-def has_task_slot(t: Dict[str, Any]) -> bool:
-    limit = project_concurrency_limit(t["repo"])
-    return limit is None or active_task_count(t["repo"]) < limit
-
-
-def waiting_for_slot(t: Dict[str, Any]) -> bool:
-    return t["column"] == "waiting" and bool(t.get("planned")) and not t.get("held") and not t.get("intent") \
-        and not blocked_by(t) and not has_task_slot(t)
-
-
 def move_requires_confirmation(t: Dict[str, Any]) -> bool:
     state = (t.get("agent") or {}).get("state")
     return t["column"] == "doing" or state in MOVE_GUARDED_AGENT_STATES
@@ -747,10 +728,6 @@ def land(t: Dict[str, Any]) -> Dict[str, Any]:
         return {"mergeInto": None, "pr": False}
     return {"mergeInto": t["base"] if t["base"] != repo_default_branch(t["repo"]) else None,
             "pr": pr not in ("open", "draft")}
-
-
-def valid_limit(value: Any) -> Optional[int]:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
 TAG = re.compile(r"[a-z0-9][a-z0-9._-]{0,31}")
@@ -982,19 +959,11 @@ def validate_origin(value: Any) -> Dict[str, Any]:
     return {"session": value["session"], "terminal": terminal}
 
 
-def validate_concurrency_limit(value: Any) -> Optional[int]:
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise ApiError(400, "Concurrent tasks must be a positive integer or null for unlimited")
-    return value
-
-
 def remember_project(repo: str) -> Dict[str, Any]:
     """The registered project of the main checkout `repo`, registering it first (call under store.lock)."""
     found = registered_project(repo)
     if not found:
-        found = {"repo": repo, "concurrencyLimit": None, "controlSets": None, "hidden": [], "tagRules": []}
+        found = {"repo": repo, "controlSets": None, "hidden": [], "tagRules": []}
         store.projects.append(found)
         store.save_board()
     return found
@@ -1018,19 +987,6 @@ def register_project(body: Dict[str, Any]) -> Dict[str, Any]:
         remember_project(info["repo"])
         project = listed_project(project_id(info["repo"]))
     hub.changed()
-    return {"ok": True, "project": project}
-
-
-def set_project_concurrency(body: Dict[str, Any]) -> Dict[str, Any]:
-    if "concurrencyLimit" not in body:
-        raise ApiError(400, "concurrencyLimit is required")
-    limit = validate_concurrency_limit(body["concurrencyLimit"])
-    with store.lock:
-        remember_project(listed_project(body.get("id"))["repo"])["concurrencyLimit"] = limit
-        store.save_board()
-        project = listed_project(body.get("id"))
-    hub.changed()
-    poller.kick()
     return {"ok": True, "project": project}
 
 
@@ -1093,7 +1049,7 @@ def set_project_tag_rules(body: Dict[str, Any]) -> Dict[str, Any]:
                     t["tags"] = tags
                     store.save(t)
         for w in store.worktrees:
-            w["tags"] = rule_tags(w["repo"], w["branch"], w["path"])
+            w["tags"] = rule_tags(w["repo"], w["branch"] or "", w["path"])
         listed = listed_project(body.get("id"))
     hub.changed()
     return {"ok": True, "project": listed}
@@ -1232,8 +1188,6 @@ def move_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         start = column == "doing" and not spawned(t) and t["spawn"]["state"] in ("none", "failed")
         # A task paused while it planned plans on.
         target = "planning" if start or (column == "doing" and previous == "waiting" and not t.get("planned")) else column
-        if target == "doing" and previous != "doing" and spawned(t) and not has_task_slot(t):
-            raise ApiError(409, f"{project_id(t['repo'])} is at its concurrent-task limit")
         if start and not Path(t["repo"]).is_dir():
             raise ApiError(400, f"Repository {t['repo']} not found")
         running = bool(facts and facts["agent_running"])
@@ -1268,42 +1222,16 @@ def move_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     return view
 
 
-def reorder_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Places a waiting task just before or after another waiting card: the queue resumes them in that order."""
-    sides = [s for s in ("before", "after") if body.get(s)]
-    if len(sides) != 1:
-        raise ApiError(400, "Pass either before or after: the id of another waiting card")
-    side = sides[0]
-    with store.lock:
-        t = store.get(task_id)
-        anchor = store.get(str(body[side]))
-        if anchor is t:
-            raise ApiError(400, f"{task_id} can't be placed {side} itself")
-        if t["column"] != "waiting" or anchor["column"] != "waiting":
-            raise ApiError(409, "Only waiting cards change places: the queue resumes them in that order")
-        column = sorted((o for o in store.tasks.values() if o["column"] == "waiting" and o is not t),
-                        key=lambda o: (o["order"], o["createdAt"]))
-        i = column.index(anchor)
-        j = i - 1 if side == "before" else i + 1
-        if 0 <= j < len(column):
-            t["order"] = (anchor["order"] + column[j]["order"]) / 2
-        else:
-            t["order"] = anchor["order"] + (-1000.0 if side == "before" else 1000.0)
-        store.save(t)
-        hub.changed()
-        return store.view(t)
-
-
 def planned_task(task_id: str) -> Dict[str, Any]:
     """Records that a task's plan was approved in its omp. A planning task goes In Progress, unless what it depends on is
-    open or its project has no free slot: then it waits, and the reply tells its omp to hold until the board resumes it."""
+    open: then it waits, and the reply tells its omp to hold until the board resumes it."""
     with store.lock:
         t = store.get(task_id)
         t["planned"] = now_iso()
         hold: Optional[List[str]] = None
         if t["column"] in ("planning", "doing"):
             blockers = blocked_by(t)
-            if blockers or (t["column"] == "planning" and not has_task_slot(t)):
+            if blockers:
                 hold = blockers
                 t["column"], t["order"], t["held"] = "waiting", store.next_order("waiting"), False
             elif t["column"] == "planning":
@@ -1865,6 +1793,14 @@ def submitted_text(message: Optional[str]) -> Optional[str]:
     return text.strip() or None
 
 
+def agent_detail(report: Dict[str, Any], state: Optional[str]) -> Dict[str, Any]:
+    """The run clock, to-do progress, latest sentence and question of a report, while they mean something."""
+    active = state in STEP_STATES
+    return {"startedAt": report.get("startedAt") if active else None, "todo": report.get("todo") if active else None,
+            "said": report.get("said") if active else None,
+            "question": report.get("question") if state == "needs_input" else None}
+
+
 def agent_state(t: Dict[str, Any], connected: bool, running: bool) -> Dict[str, Any]:
     """What a started task's agent does: its omp's own report while its session is connected; disconnected while its
     process runs unconnected; else stopped."""
@@ -1873,22 +1809,62 @@ def agent_state(t: Dict[str, Any], connected: bool, running: bool) -> Dict[str, 
     if connected:
         state = activity.get("state") or "idle"
         return {"state": state, "message": message, "step": activity.get("step") if state in STEP_STATES else None,
-                "since": activity.get("since")}
-    return {"state": "disconnected" if running else "stopped", "message": message, "step": None, "since": None}
+                "since": activity.get("since"), **agent_detail(activity, state)}
+    return {"state": "disconnected" if running else "stopped", "message": message, "step": None, "since": None,
+            **agent_detail({}, None)}
+
+
+def reported_detail(body: Dict[str, Any]) -> Dict[str, Any]:
+    """The run clock (Unix seconds), to-do progress, latest sentence and question an omp reports, validated."""
+    started = body.get("startedAt")
+    valid_start = isinstance(started, int) and not isinstance(started, bool) and 0 < started <= time.time() + 60
+    todo = body.get("todo")
+    counts = [todo.get(k) for k in ("done", "total")] if isinstance(todo, dict) else []
+    valid_todo = len(counts) == 2 and all(isinstance(n, int) and not isinstance(n, bool) for n in counts) \
+        and 0 <= counts[0] <= counts[1] and counts[1] > 0
+    line = lambda value, limit: plain(str(value or "").strip())[:limit] or None
+    return {"startedAt": datetime.fromtimestamp(started, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+            if valid_start else None,
+            "todo": {"done": counts[0], "total": counts[1], "current": line(todo.get("current"), 200)} if valid_todo else None,
+            "said": line(body.get("said"), 300), "question": line(body.get("question"), 300)}
+
+
+def own_session(t: Dict[str, Any], session_id: str) -> bool:
+    """Whether `session_id` is the task's own omp: its recorded session, or any while that one doesn't run (call under
+    store.lock)."""
+    recorded = ((t.get("execution") or {}).get("session") or {}).get("id")
+    return not recorded or recorded == session_id or not lease.held(recorded)
+
+
+def reporting_checkout(path: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    """The task whose worktree holds `path` with that worktree, else the listed worktree or registered main checkout that
+    holds it; 404 outside them (call under store.lock)."""
+    owners = [t for t in store.tasks.values() if t.get("worktree") and within(path, t["worktree"])]
+    if owners:
+        t = max(owners, key=lambda t: len(os.path.realpath(t["worktree"])))
+        return t, t["worktree"]
+    roots = [r for r in [*(w["path"] for w in store.worktrees), *(p["repo"] for p in store.projects)] if within(path, r)]
+    if not roots:
+        raise ApiError(404, f"No task or listed worktree at {path}")
+    return None, max(roots, key=lambda r: len(os.path.realpath(r)))
 
 
 def report_agent(body: Dict[str, Any]) -> Dict[str, Any]:
-    """Records the state, step and latest prompt an omp reports for its task (in memory) and its session (in the task's
-    execution record); `exited` marks a clean exit, which a later resume continues with --resume. A named task still
-    starting is accepted before its worktree is recorded."""
+    """Records what an omp reports, by its session: its state, step, run clock, to-do progress, latest sentence, question
+    and latest prompt. A task's own omp (the one the board started, else its recorded session while that runs) also
+    drives the task's agent and goes in its execution record; `exited` marks a clean exit, which a later resume continues
+    with --resume. Any other omp in a task's worktree, a listed worktree or a main checkout is listed beside it. A named
+    task still starting is accepted before its worktree is recorded."""
     state = body.get("state")
     if state not in AGENT_STATES and state != "exited":
         raise ApiError(400, "State must be planning, thinking, working, plan_ready, needs_input, idle or exited")
     step = (plain(str(body.get("step") or "").strip())[:200] or None) if state in STEP_STATES else None
     message = submitted_text(body["message"][:MESSAGE_LIMIT]) if isinstance(body.get("message"), str) else None
+    detail = reported_detail(body)
     session_id = text_field(body.get("sessionId"), 200)
     session_file = text_field(body.get("sessionFile"), 4096)
     session_file = session_file if session_file and os.path.isabs(session_file) else None
+    title = (sessions.head(Path(session_file)) or {}).get("title") if session_file else None
     path = str(body.get("path") or "")
     named = text_field(body.get("task"), 100)
     with store.lock:
@@ -1896,12 +1872,21 @@ def report_agent(body: Dict[str, Any]) -> Dict[str, Any]:
             t = store.tasks.get(named)
             if not t or not (within(path, t["worktree"]) if t.get("worktree") else t["spawn"]["state"] == "running"):
                 raise ApiError(404, f"{named} has no agent at {path}")
+            checkout = t.get("worktree") or path
         else:
-            matches = [t for t in store.tasks.values() if t.get("worktree") and within(path, t["worktree"])]
-            if not matches:
-                raise ApiError(404, f"No task has a worktree at {path}")
-            t = max(matches, key=lambda t: len(os.path.realpath(t["worktree"])))
-        task_id = t["id"]
+            t, checkout = reporting_checkout(path)
+        task_id = t["id"] if t else None
+        report = store.reports.get(session_id or "") or {}
+        if session_id and state == "exited":
+            store.reports.pop(session_id, None)
+        elif session_id:
+            store.reports[session_id] = {"checkout": checkout, "task": task_id, "title": title, "state": state, "step": step,
+                                         "since": now_iso() if report.get("state") != state else report.get("since"),
+                                         "message": message if message is not None else report.get("message"), **detail}
+        if not t or not (named or not session_id or own_session(t, session_id)):
+            if report.get("state") != state:
+                poller.kick()
+            return {"ok": True, "id": task_id}
         previous = store.activity.get(task_id) or {}
         if state == "exited":
             if t.get("execution"):
@@ -1910,23 +1895,44 @@ def report_agent(body: Dict[str, Any]) -> Dict[str, Any]:
             t["agent"] = agent_state(t, False, False)
             store.save(t)
             changed = prompted = True
-            stepped = False
+            stepped = detailed = False
         else:
             changed = previous.get("state") != state
             prompted = message is not None and message != previous.get("message")
+            detailed = any(previous.get(k) != v for k, v in detail.items())
             store.activity[task_id] = {"state": state, "step": step,
                                        "since": now_iso() if changed else previous.get("since"),
-                                       "message": message if message is not None else previous.get("message")}
+                                       "message": message if message is not None else previous.get("message"), **detail}
             agent = t.get("agent")
             stepped = not changed and previous.get("step") != step and bool(agent) and agent.get("state") == state
             if stepped:
                 agent["step"] = step
     note_session(task_id, session_id, session_file)
-    if changed or prompted:
+    if changed or prompted or detailed:
         poller.kick()
     elif stepped:
         hub.publish("step", {"taskId": task_id, "step": step})
     return {"ok": True, "id": task_id}
+
+
+def checkout_agents(path: str, running: List[Dict[str, Any]], exclude: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Every omp running in the checkout at `path` but session `exclude`: the sessions of its folder whose lease is held,
+    newest first, then any other running session that reports from inside it, each with what it last reported (call
+    without store.lock)."""
+    with store.lock:
+        reported = {sid: dict(r) for sid, r in store.reports.items() if same_dir(r["checkout"], path)}
+    listed = {s["session"]["id"]: s for s in running}
+    held = lease.held_any([sid for sid in reported if sid not in listed])
+    out = []
+    for sid in [*listed, *(sid for sid in reported if sid in held)]:
+        if sid == exclude:
+            continue
+        r = reported.get(sid) or {}
+        state = r.get("state") or "running"
+        out.append({"id": sid, "title": listed[sid]["title"] if sid in listed else r.get("title"), "state": state,
+                    "step": r.get("step") if state in STEP_STATES else None, "since": r.get("since"),
+                    "message": r.get("message"), **agent_detail(r, state)})
+    return out
 
 
 def text_field(value: Any, limit: int) -> Optional[str]:
@@ -2042,7 +2048,7 @@ def show_agent(t: Dict[str, Any], context: Dict[str, Any], ex: Dict[str, Any], c
     request); else, for a session on cmux's local-tmux server, the task's cmux workspace with the session attached in
     it; else the terminal the createWorktree hook opens again for the existing worktree, where the user's own setup places
     it; else a new terminal attached to it. A terminal that merely sits in the worktree never counts as showing the agent,
-    and a board terminal that no longer shows it is replaced. Returns the presentation and a note."""
+    and no terminal is ever closed. Returns the presentation and a note."""
     cwd = t["worktree"]
     shown = current if current and terminals.alive(current) else terminals.find_terminal(context, cwd)
     if shown and detach.status(ex)["attached"] > 0:
@@ -2052,8 +2058,6 @@ def show_agent(t: Dict[str, Any], context: Dict[str, Any], ex: Dict[str, Any], c
         return presentation, None
     if shown and shown.get("kind") == "cmux" and detach.attach_in_cmux(ex, shown["cmux"], focus):
         return {**shown, "alive": True}, None
-    if current and current.get("capabilities", {}).get("close") and terminals.alive(current):
-        terminals.close(current)
     note = None
     try:
         command = hook("createWorktree")
@@ -2115,42 +2119,35 @@ def ensure_agent(t: Dict[str, Any]) -> None:
 
 
 def open_task(task_id: str) -> Dict[str, Any]:
-    """Shows a started task's agent in a terminal; presentation only: a stopped agent resumes from In Progress."""
+    """Brings forward the terminal showing a started task's agent, else one already in its worktree; never opens,
+    attaches, closes, resumes or starts anything. Without one, the reply has the command attaching to its running agent
+    and the path to cd to."""
     with store.lock:
         t = copy.deepcopy(store.get(task_id))
-        require_spawned(t)
+        path = require_spawned(t)
+        context = presentation_context(t)
     ex, presentation = t.get("execution") or {}, t.get("presentation")
-    if ex.get("kind") == "tmux":
-        result = present(task_id, focus=True)
-        poller.kick()
-        return {"ok": True, **result}
-    if ex.get("kind") == "external" and presentation and terminals.alive(presentation):
-        terminals.focus(presentation)
-        return {"ok": True, "presentation": {**presentation, "alive": True}, "attachCommand": None}
-    if ex.get("kind") == "external" and observe(t)["agent_running"]:
-        raise ApiError(409, f"{label(task_id)}'s agent runs in a terminal the board doesn't manage, and that terminal is closed")
-    raise ApiError(409, f"{label(task_id)}'s agent is stopped: move it to In Progress to resume it")
+    found = presentation if presentation and terminals.alive(presentation) else terminals.find_terminal(context, path)
+    if found:
+        terminals.focus(found)
+        return {"ok": True, "opened": True, "presentation": {**found, "alive": True}, "attachCommand": None}
+    attach = detach.attach_command(ex) if ex.get("kind") == "tmux" and observe(t)["agent_running"] else None
+    return {"ok": True, "opened": False, "presentation": None, "attachCommand": attach, "cd": f"cd {shlex.quote(path)}"}
 
 
 def open_worktree(task_id: str) -> Dict[str, Any]:
-    """Shows a started task's worktree in a terminal: one already there (its agent's, or any surface in it), else a new
-    shell; never starts, resumes or closes anything. Plain opens nothing and returns the path to cd to."""
+    """Brings forward a terminal already in a started task's worktree (its agent's, or any surface in it); never opens,
+    starts, resumes or closes anything. Without one, the reply has the path to cd to."""
     with store.lock:
         t = store.get(task_id)
         path = require_spawned(t)
-        context, name, presentation = presentation_context(t), t["branch"], t.get("presentation")
+        context, presentation = presentation_context(t), t.get("presentation")
     if not Path(path).is_dir():
         raise ApiError(409, f"The worktree {path} no longer exists")
-    cd = f"cd {shlex.quote(path)}"
-    try:
-        found = presentation if presentation and terminals.alive(presentation) else terminals.find_terminal(context, path)
-        terminal = found or terminals.open_terminal(context, name, path, 'exec "${SHELL:-/bin/sh}" -l')
-        if terminal["kind"] != "plain":
-            terminals.focus(terminal)
-    except (RuntimeError, OSError, KeyError, ValueError) as e:
-        raise ApiError(500, f"Couldn't open {path} in a terminal ({e}); run: {cd}")
-    return {"ok": True, "worktree": path, "cd": cd, "kind": terminal["kind"], "reused": bool(found),
-            "opened": terminal["kind"] != "plain"}
+    found = presentation if presentation and terminals.alive(presentation) else terminals.find_terminal(context, path)
+    if found:
+        terminals.focus(found)
+    return {"ok": True, "worktree": path, "cd": f"cd {shlex.quote(path)}", "opened": bool(found)}
 
 
 def require_agent(t: Dict[str, Any]) -> None:
@@ -2897,7 +2894,7 @@ def pr_record(found: Dict[str, Any], detailed: bool) -> Dict[str, Any]:
     if state == "open" and found.get("isDraft"):
         state = "draft"
     record = {"number": found["number"], "state": state, "url": found["url"], "title": found["title"],
-              "base": found.get("baseRefName"), "review": None, "checks": None, "conflicts": False}
+              "base": found.get("baseRefName"), "review": None, "checks": None, "conflicts": False, "unresolved": 0}
     if detailed:
         record.update(review=str(found.get("reviewDecision") or "").lower() or None,
                       checks=checks_state(found.get("statusCheckRollup")), conflicts=found.get("mergeable") == "CONFLICTING")
@@ -2924,7 +2921,30 @@ def fetch_prs(repo: str) -> Optional[Dict[str, Dict[str, Any]]]:
                 prs.setdefault(pr["headRefName"], pr_record(pr, detailed))
             except (KeyError, TypeError):
                 continue
+    for branch, count in unresolved_threads(repo).items():
+        if (prs.get(branch) or {}).get("state") in ("open", "draft"):
+            prs[branch]["unresolved"] = count
     return prs
+
+
+REVIEW_THREADS_QUERY = """query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(states: OPEN, first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      nodes { headRefName reviewThreads(first: 100) { nodes { isResolved } } }
+    }
+  }
+}"""
+
+
+def unresolved_threads(repo: str) -> Dict[str, int]:
+    """The unresolved review threads on `repo`'s open pull requests, by head branch; empty when gh can't tell."""
+    code, out, _ = run(["gh", "api", "graphql", "-F", "owner={owner}", "-F", "name={repo}",
+                        "-f", "query=" + REVIEW_THREADS_QUERY], cwd=repo, timeout=45)
+    try:
+        nodes = json.loads(out)["data"]["repository"]["pullRequests"]["nodes"] if code == 0 else []
+        return {n["headRefName"]: sum(1 for x in n["reviewThreads"]["nodes"] if not x.get("isResolved")) for n in nodes}
+    except (ValueError, KeyError, TypeError):
+        return {}
 
 
 def pr_column(column: str, pr: Optional[Dict[str, Any]]) -> str:
@@ -2948,7 +2968,8 @@ def worktree_column(pr: Optional[Dict[str, Any]]) -> str:
 
 def adopt_worktree(body: Dict[str, Any]) -> Dict[str, Any]:
     """Tracks a linked worktree as a task: the task that owns it, else a new card for it, planned already. An omp running
-    there attaches to the card on its own; without one, moving the card In Progress starts omp --continue there."""
+    there becomes its agent; else `session` names one of its omp sessions that moving the card In Progress reopens, and
+    without one that starts omp --continue there."""
     path = str(body.get("path") or "")
     top = git_toplevel(str(Path(path).expanduser())) if path else None
     info = checkout_info(top) if top else None
@@ -2961,6 +2982,16 @@ def adopt_worktree(body: Dict[str, Any]) -> Dict[str, Any]:
     repo = info["repo"]
     base = branch_base(repo, branch, repo_default_branch(repo))
     pr = (poller.prs.get(repo) or {}).get(branch)
+    agent = sessions.agent(top)
+    execution = None
+    if agent["state"] == "running":
+        execution = external_execution(agent["session"])
+    elif body.get("session"):
+        chosen = sessions.find(top, str(body["session"]))
+        if not chosen:
+            raise ApiError(400, f"{top} has no omp session {body['session']}")
+        # Reopened as it was left, never continuing an interrupted turn on its own.
+        execution = {**external_execution({"id": sessions.session_id(chosen), "file": str(chosen)}), "cleanExit": True}
     with store.lock:
         owner = next((t for t in store.tasks.values() if same_dir(t.get("worktree"), top)), None)
         if owner:
@@ -2972,7 +3003,7 @@ def adopt_worktree(body: Dict[str, Any]) -> Dict[str, Any]:
             "held": False, "ticket": None, "tags": with_rule_tags(tags, repo, branch, top), "notes": "", "repo": repo,
             "base": base, "branch": branch,
             "controlSet": None, "createdAt": stamp, "updatedAt": stamp, "spawn": {"state": "done", "error": None, "log": ""},
-            "worktree": top, "presentation": None, "execution": None, "agent": None, "git": None, "pr": pr,
+            "worktree": top, "presentation": None, "execution": execution, "agent": None, "git": None, "pr": pr,
             "merged": None, "origin": None, "planned": stamp, "dependsOn": [], "parent": None, "number": next_number(repo),
         }
         store.create(t)
@@ -2981,6 +3012,81 @@ def adopt_worktree(body: Dict[str, Any]) -> Dict[str, Any]:
     hub.changed()
     poller.kick(full=True)
     return view
+
+
+def listed_worktree(path: str) -> Dict[str, Any]:
+    """A copy of the worktree no task owns that the board lists at `path` (call under store.lock); 404 without one."""
+    found = next((w for w in store.worktrees if path and same_dir(w["path"], path)), None)
+    if not found:
+        raise ApiError(404, f"{path} isn't a worktree the board lists without a task")
+    return copy.deepcopy(found)
+
+
+def open_listed_worktree(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Brings forward a terminal already in a checkout no task owns (the one its omp runs in, or any surface in it),
+    without making it a card; never opens, starts or stops anything. Without one, the reply has the path to cd to."""
+    with store.lock:
+        w = listed_worktree(str(body.get("path") or ""))
+        context = hub.project_terminal(w["project"]) or {"kind": "plain"}
+    path = w["path"]
+    found = terminals.find_terminal(context, path)
+    if found:
+        terminals.focus(found)
+    return {"ok": True, "worktree": path, "cd": f"cd {shlex.quote(path)}", "opened": bool(found)}
+
+
+def resume_listed_worktree(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Reopens one of a listed checkout's omp sessions in a new terminal there, without a card (the main checkout and a
+    worktree on a detached HEAD can't be one). Plain opens nothing and returns the command to run."""
+    with store.lock:
+        w = listed_worktree(str(body.get("path") or ""))
+        context = hub.project_terminal(w["project"]) or {"kind": "plain"}
+    path = w["path"]
+    if sessions.agent(path)["state"] == "running":
+        raise ApiError(409, f"omp already runs in {path}")
+    chosen = sessions.find(path, str(body.get("session") or ""))
+    if not chosen:
+        raise ApiError(400, f"{path} has no omp session {body.get('session') or ''}".rstrip())
+    omp = which("omp")
+    if not omp:
+        raise ApiError(500, "omp isn't on the board's PATH")
+    command = shlex.join([omp, "--resume", str(chosen)])
+    run_here = f"cd {shlex.quote(path)} && {command}"
+    try:
+        terminal = terminals.open_terminal(context, w["branch"] or os.path.basename(path), path, command)
+        if terminal["kind"] != "plain":
+            terminals.focus(terminal)
+    except (RuntimeError, OSError, KeyError, ValueError) as e:
+        raise ApiError(500, f"Couldn't open a terminal in {path} ({e}); run: {run_here}")
+    poller.kick()
+    return {"ok": True, "command": run_here, "kind": terminal["kind"], "opened": terminal["kind"] != "plain"}
+
+
+def remove_listed_worktree(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Removes a worktree on a detached HEAD that no task owns, and closes the terminals in it; refused while omp runs
+    there or it has uncommitted changes. A worktree on a branch is removed through its card, with its branch."""
+    with store.lock:
+        w = listed_worktree(str(body.get("path") or ""))
+        contexts = [c for c in (hub.project_terminal(w["project"]),) if c]
+    path = w["path"]
+    if w.get("main"):
+        raise ApiError(409, f"{path} is the project's main checkout")
+    if w["branch"]:
+        raise ApiError(409, f"{path} is on {w['branch']}: track it as a task to remove it with its branch")
+    if sessions.agent(path)["state"] == "running":
+        raise ApiError(409, f"omp runs in {path}: end it first")
+    _, status, _ = run(["git", "-C", path, "status", "--porcelain"], timeout=30)
+    if status.strip():
+        raise ApiError(409, f"{path} has uncommitted changes")
+    code, out, err = run(["git", "-C", w["repo"], "worktree", "remove", path], timeout=120)
+    if code != 0:
+        raise ApiError(500, (err or out).strip() or f"git worktree remove exited with code {code}")
+    terminals.close_terminals(path, contexts)
+    with store.lock:
+        store.worktrees = [x for x in store.worktrees if not same_dir(x["path"], path)]
+    hub.changed()
+    poller.kick(full=True)
+    return {"ok": True}
 
 
 STEPS: Dict[str, Callable[[Dict[str, Any], Dict[str, Any]], Outcome]] = {
@@ -2995,9 +3101,9 @@ def recently_failed_removal(t: Dict[str, Any]) -> bool:
     return last.get("op") == "remove" and not last.get("ok") and time.time() - epoch(last["at"]) < 3600
 
 
-def git_stats(path: str, base: str) -> Optional[Dict[str, int]]:
-    """A worktree's work since it left `base`: lines added and removed, files, commits and uncommitted files; None once
-    the worktree is gone."""
+def git_stats(path: str, base: str) -> Optional[Dict[str, Any]]:
+    """A worktree's work since it left `base`: lines added and removed, files, commits, uncommitted files and its newest
+    own commit (subject and time); None once the worktree is gone."""
     if not Path(path).is_dir():
         return None
     _, mb = merge_base(path, base)
@@ -3010,9 +3116,12 @@ def git_stats(path: str, base: str) -> Optional[Dict[str, int]]:
         removed += int(r) if r.isdigit() else 0
     _, commits, _ = run(["git", "-C", path, "rev-list", "--count", f"{mb}..HEAD"], timeout=15)
     _, status, _ = run(["git", "-C", path, "status", "--porcelain"], timeout=30)
+    code, newest, _ = run(["git", "-C", path, "log", "-1", "--format=%s%x00%cI", f"{mb}..HEAD"], timeout=15)
+    subject, _, at = newest.strip().partition("\0")
     return {"added": added, "removed": removed, "files": files,
             "commits": int(commits.strip()) if commits.strip().isdigit() else 0,
-            "dirty": len([l for l in status.splitlines() if l.strip()])}
+            "dirty": len([l for l in status.splitlines() if l.strip()]),
+            "last": {"subject": subject, "at": at} if code == 0 and subject and at else None}
 
 
 class Poller:
@@ -3049,6 +3158,7 @@ class Poller:
         changed = False
         with store.lock:
             tracked = [dict(t) for t in store.tasks.values() if spawned(t)]
+        self.prune_reports()
         now = time.time()
         if tracked:
             changed |= self.check_agents(tracked)
@@ -3062,7 +3172,9 @@ class Poller:
         if forced or now - self.last_worktrees >= WORKTREES_INTERVAL:
             self.last_worktrees = now
             changed |= self.check_worktrees()
-        changed |= self.check_queue()
+        else:
+            changed |= self.check_worktree_agents()
+        changed |= self.check_waiting()
         sweep = forced or now - self.last_sweep >= SWEEP_INTERVAL
         if sweep:
             self.last_sweep = now
@@ -3095,27 +3207,24 @@ class Poller:
                 if current and not current.get("intent"):
                     set_intent(current, "remove", {})
 
-    def check_queue(self) -> bool:
-        """Resumes the waiting tasks whose plan is approved, that no person holds and whose dependencies are done, in queue
-        order, while their project has a free slot."""
+    def check_waiting(self) -> bool:
+        """Resumes the waiting tasks whose plan is approved, that no person holds and whose dependencies are done."""
         with store.lock:
-            queued = sorted((t for t in store.tasks.values() if t["column"] == "waiting" and not t.get("intent")
-                             and not t.get("held") and t.get("planned") and spawned(t) and not blocked_by(t)),
-                            key=lambda t: (t["order"], t["createdAt"]))
-            moved = False
-            for t in queued:
-                if not has_task_slot(t):
-                    continue
+            ready = [t for t in store.tasks.values() if t["column"] == "waiting" and not t.get("intent")
+                     and not t.get("held") and t.get("planned") and spawned(t) and not blocked_by(t)]
+            for t in ready:
                 t["column"], t["order"] = "doing", store.next_order("doing")
                 set_intent(t, "resume", {"landed": True})
-                moved = True
-        return moved
+        return bool(ready)
 
     def check_agents(self, tracked: List[Dict[str, Any]]) -> bool:
         """Agent state from what runs (observe: the omp session lease, the tmux pane) and from each task's own omp session
         (its stream and reports); terminals are only asked now and then whether they are still open, which never decides
         the agent's state. An agent that exited leaves its last screen, then its tmux session ends."""
         facts = {s["id"]: observe(s) for s in tracked}
+        others = {s["id"]: checkout_agents(s["worktree"], sessions.agent(s["worktree"])["running"],
+                                           ((s.get("execution") or {}).get("session") or {}).get("id"))
+                  for s in tracked if s.get("worktree") and Path(s["worktree"]).is_dir()}
         opened: Dict[str, bool] = {}
         now = time.time()
         if now - self.last_presentation >= PRESENTATION_INTERVAL:
@@ -3158,6 +3267,9 @@ class Poller:
                 agent = agent_state(t, connected, f["agent_running"])
                 if agent != t.get("agent"):
                     t["agent"] = agent
+                    changed = True
+                if others.get(task_id, []) != store.others.get(task_id, []):
+                    store.others[task_id] = others.get(task_id, [])
                     changed = True
                 presentation = t.get("presentation")
                 if task_id in opened and presentation and presentation.get("alive") != opened[task_id]:
@@ -3249,26 +3361,63 @@ class Poller:
         return changed
 
     def check_worktrees(self) -> bool:
-        """The linked worktrees on a branch that no task owns, of every project, with their work and pull request."""
+        """The checkouts that no task owns, of every project: its main checkout and its linked worktrees, on a branch or
+        a detached HEAD, with their work, pull request and every omp running there."""
         with store.lock:
             repos = [p["repo"] for p in store.project_list()]
             owned = [t["worktree"] for t in store.tasks.values() if t.get("worktree")]
         found = []
         for repo in repos:
             default = repo_default_branch(repo)
-            for path, branch in registered_worktrees(repo)[1:]:
-                if not branch or not os.path.isdir(path) or any(same_dir(path, o) for o in owned):
+            for i, (path, branch) in enumerate(registered_worktrees(repo)):
+                if not os.path.isdir(path) or any(same_dir(path, o) for o in owned):
                     continue
-                base = branch_base(repo, branch, default)
-                pr = (self.prs.get(repo) or {}).get(branch)
-                found.append({"path": path, "project": project_id(repo), "repo": repo, "branch": branch, "base": base,
-                              "git": git_stats(path, base), "pr": pr, "column": worktree_column(pr)})
+                detached = None
+                if not branch:
+                    code, head, _ = run(["git", "-C", path, "rev-parse", "--short", "HEAD"], timeout=10)
+                    if code != 0 or not head.strip():
+                        continue
+                    detached = head.strip()
+                base = branch_base(repo, branch, default) if branch and i else default
+                pr = (self.prs.get(repo) or {}).get(branch) if branch and i else None
+                agent = sessions.agent(path)
+                found.append({"path": path, "project": project_id(repo), "repo": repo, "branch": branch, "main": i == 0,
+                              "detached": detached, "base": base, "git": git_stats(path, base), "pr": pr,
+                              "column": worktree_column(pr), "agent": {k: v for k, v in agent.items() if k != "running"},
+                              "agents": checkout_agents(path, agent["running"])})
         with store.lock:
             for w in found:
-                w["tags"] = rule_tags(w["repo"], w["branch"], w["path"])
+                w["tags"] = rule_tags(w["repo"], w["branch"] or "", w["path"])
             changed = found != store.worktrees
             store.worktrees = found
         return changed
+
+    def check_worktree_agents(self) -> bool:
+        """Each listed checkout's omp, between full scans: those running there now, else its latest session."""
+        with store.lock:
+            paths = [w["path"] for w in store.worktrees]
+        agents = {path: sessions.agent(path) for path in paths}
+        views = {path: checkout_agents(path, a["running"]) for path, a in agents.items()}
+        changed = False
+        with store.lock:
+            for w in store.worktrees:
+                if w["path"] not in agents:
+                    continue
+                agent = {k: v for k, v in agents[w["path"]].items() if k != "running"}
+                if agent != w.get("agent") or views[w["path"]] != w.get("agents"):
+                    w["agent"], w["agents"] = agent, views[w["path"]]
+                    changed = True
+        return changed
+
+    def prune_reports(self) -> None:
+        """Forgets the reports of omp sessions that no longer run."""
+        with store.lock:
+            ids = list(store.reports)
+        held = lease.held_any(ids)
+        with store.lock:
+            for sid in ids:
+                if sid not in held:
+                    store.reports.pop(sid, None)
 
 
 poller = Poller()
@@ -3341,7 +3490,6 @@ ROUTES = [
     ("PATCH", r"/api/tasks/([\w.-]+)", lambda m, b: update_task(m[1], b)),
     ("DELETE", r"/api/tasks/([\w.-]+)", lambda m, b: delete_task(m[1], b)),
     ("POST", r"/api/tasks/([\w.-]+)/move", lambda m, b: move_task(m[1], b)),
-    ("POST", r"/api/tasks/([\w.-]+)/reorder", lambda m, b: reorder_task(m[1], b)),
     ("POST", r"/api/tasks/([\w.-]+)/planned", lambda m, b: planned_task(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/open", lambda m, b: open_task(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/worktree/open", lambda m, b: open_worktree(m[1])),
@@ -3359,9 +3507,11 @@ ROUTES = [
     ("POST", r"/api/tasks/([\w.-]+)/recover", lambda m, b: recover_task(m[1])),
     ("POST", r"/api/refresh", lambda m, b: refresh()),
     ("POST", r"/api/worktrees/adopt", lambda m, b: adopt_worktree(b)),
+    ("POST", r"/api/worktrees/open", lambda m, b: open_listed_worktree(b)),
+    ("POST", r"/api/worktrees/resume", lambda m, b: resume_listed_worktree(b)),
+    ("POST", r"/api/worktrees/remove", lambda m, b: remove_listed_worktree(b)),
     ("POST", r"/api/restart", lambda m, b: restart()),
     ("POST", r"/api/projects", lambda m, b: register_project(b)),
-    ("PATCH", r"/api/projects", lambda m, b: set_project_concurrency(b)),
     ("PATCH", r"/api/projects/scripts", lambda m, b: set_project_scripts(b)),
     ("PATCH", r"/api/projects/hidden", lambda m, b: set_project_hidden(b)),
     ("PATCH", r"/api/projects/tag-rules", lambda m, b: set_project_tag_rules(b)),

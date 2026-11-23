@@ -207,12 +207,13 @@ function pipelineInit() {
     const g = pipeline.gesture; if (!g) return;
     pipeline.gesture = null; pipeline.preview?.remove(); pipelineGhost(null, null);
     if (root.hasPointerCapture(e.pointerId)) root.releasePointerCapture(e.pointerId);
-    if (!cancel && g.kind === "node" && !g.moved) openPanel(g.id);
+    if (!cancel && g.kind === "node" && !g.moved) pipelineOpen(g.id);
     if (!cancel && g.kind === "pan" && !g.moved) { pipeline.selected = null; closePanel(); }
     if (!cancel && g.kind === "connect") {
       const hit = document.elementFromPoint(e.clientX, e.clientY);
       const target = hit?.closest(".pipeline-node");
-      if (target) pipelineChange(g.port === "in" ? target.dataset.id : g.from, g.port === "in" ? (g.to || g.from) : target.dataset.id, g.previous);
+      if (target?.classList.contains("untracked")) toast("Track the worktree as a task to connect it", true);
+      else if (target) pipelineChange(g.port === "in" ? target.dataset.id : g.from, g.port === "in" ? (g.to || g.from) : target.dataset.id, g.previous);
       else if (g.port === "out" && !g.previous && Math.hypot(e.clientX - g.cx, e.clientY - g.cy) > PIPELINE_SPAWN_MIN && pipelineEmptyAt(e)) {
         const point = pipelinePoint(e);
         openComposer({ after: g.from, onCreated: t => pipelineDrop(t, { x: point.x - 15, y: point.y - 65 }) });
@@ -222,6 +223,45 @@ function pipelineInit() {
   };
   root.addEventListener("pointerup", e => finish(e)); root.addEventListener("pointercancel", e => finish(e, true));
   return root;
+}
+// A worktree no task owns is a node without ports: it has no dependencies, and clicking it opens its menu.
+const pipelineTreeId = w => "wt:" + w.path;
+const PIPELINE_TREE_COLS = 4;
+// Worktree nodes have no connections to lay out by: they fill a grid under the task graph, each keeping its place.
+function pipelinePlaceTrees(trees, tasks) {
+  const missing = trees.filter(w => !pipeline.positions.has(pipelineTreeId(w)));
+  if (!missing.length) return;
+  const taskPs = tasks.map(t => pipeline.positions.get(t.id)).filter(Boolean);
+  const x0 = taskPs.length ? Math.min(...taskPs.map(p => p.x)) : 0;
+  const y0 = taskPs.length ? Math.max(...taskPs.map(p => p.y)) + PIPELINE_ROW : 0;
+  let slot = trees.length - missing.length;
+  for (const w of missing) {
+    pipeline.positions.set(pipelineTreeId(w), { x: x0 + (slot % PIPELINE_TREE_COLS) * 300, y: y0 + Math.floor(slot / PIPELINE_TREE_COLS) * 170 });
+    slot++;
+  }
+}
+function pipelineOpen(id) {
+  const w = id.startsWith("wt:") ? worktreeAt(id.slice(3)) : null;
+  if (w) openMenu(pipeline.nodes.get(id), worktreeMenu(w, pipeline.nodes.get(id)));
+  else openPanel(id);
+}
+function pipelineTreeNode(w) {
+  const id = pipelineTreeId(w);
+  let node = pipeline.nodes.get(id);
+  if (!node) {
+    node = h("article", { class: "pipeline-node untracked", "data-id": id, tabindex: "0", title: w.path, onkeydown: e => { if (e.key === "Enter") pipelineOpen(id); } });
+    pipeline.nodes.set(id, node); pipeline.world.append(node);
+  }
+  const content = JSON.stringify([w.branch, w.detached, w.main, w.column, w.agent, w.agents, w.pr, w.tags]);
+  if (node.dataset.content !== content) {
+    node.dataset.content = content;
+    node.replaceChildren(h("div", { class: "pipeline-node-head" }, worktreeChip(w), tagRow(w), h("span", {}, colTitle(w.column))),
+      h("strong", { class: "pipeline-title" }, worktreeName(w)), stateEl(worktreeStatus(w)),
+      h("div", { class: "pipeline-step", title: w.agent?.title || "" }, w.agent?.title || ""));
+  }
+  node.dataset.column = w.column;
+  node.classList.toggle("running", w.agent?.state === "running");
+  const p = pipeline.positions.get(id); node.style.transform = `translate(${p.x}px,${p.y}px)`;
 }
 function renderPipeline() {
   if (!board || boardView !== "pipeline") return;
@@ -233,9 +273,11 @@ function renderPipeline() {
   if (pipeline.scope !== scope) { pipeline.positions.clear(); pipeline.scope = scope; pipeline.fit = true; }
   const all = board.tasks.filter(inProject);
   const tasks = all.filter(t => matches(t) && (!pipeline.hideDone.checked || t.column !== "done"));
+  const trees = projectWorktrees().filter(w => worktreeMatches(w) && (!pipeline.hideDone.checked || w.column !== "done"));
   pipelineLayout(tasks);
-  const ids = new Set(tasks.map(t => t.id));
-  pipeline.empty.hidden = tasks.length > 0;
+  pipelinePlaceTrees(trees, tasks);
+  const ids = new Set([...tasks.map(t => t.id), ...trees.map(pipelineTreeId)]);
+  pipeline.empty.hidden = ids.size > 0;
   for (const [id, node] of pipeline.nodes) if (!ids.has(id)) { node.remove(); pipeline.nodes.delete(id); }
   const prerequisites = new Set(all.flatMap(t => t.dependsOn));
   for (const t of tasks) {
@@ -244,7 +286,7 @@ function renderPipeline() {
       node = h("article", { class: "pipeline-node", "data-id": t.id, tabindex: "0", onkeydown: e => { if (e.key === "Enter") openPanel(t.id); } });
       pipeline.nodes.set(t.id, node); pipeline.world.append(node);
     }
-    const content = JSON.stringify([t.title, t.column, t.agent, t.spawn, t.blockedBy, t.waitingForSlot, t.paused, t.held, t.pr, t.land, t.tags, t.merged, t.base]);
+    const content = JSON.stringify([t.title, t.column, t.agent, t.spawn, t.blockedBy, t.paused, t.held, t.pr, t.land, t.tags, t.merged, t.base]);
     if (node.dataset.content !== content) {
       node.dataset.content = content;
       const line = cardLine(t);
@@ -263,6 +305,7 @@ function renderPipeline() {
     node.classList.toggle("dep-highlight", t.id === highlightedDependency);
     const p = pipeline.positions.get(t.id); node.style.transform = `translate(${p.x}px,${p.y}px)`;
   }
+  for (const w of trees) pipelineTreeNode(w);
   const keys = new Set();
   const activeTargets = new Set(tasks.filter(t => t.column === "doing" && !t.paused && sessionConnected(t) &&
     !needsAttention(t) && t.dependsOn.every(id => findTask(id)?.column === "done")).map(t => t.id));
