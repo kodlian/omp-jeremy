@@ -26,9 +26,9 @@
     },
     {
       "name": "plan-review",
-      "description": "Browser plan review: comment on the plan's lines, then refine or approve it",
+      "description": "Click or drag to select lines of omp's own plan review and comment on them",
       "source": "./plugins/plan-review",
-      "version": "0.3.1"
+      "version": "0.4.0"
     }
   ]
 }

@@ -31,7 +31,7 @@ export class HttpError extends Error {
 }
 
 export interface PageOptions {
-	/** Prefixes the error when no port binds: "control", "git-diff-review", "plan-review". */
+	/** Prefixes the error when no port binds, such as "git-diff-review". */
 	name: string;
 	/** The plugin's web folder: index.html, its bundle and stylesheets. */
 	webDir: string;

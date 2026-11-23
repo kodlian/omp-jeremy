@@ -1,6 +1,6 @@
 # omp-jeremy
 
-Four plugins for [omp](https://github.com/can1357/oh-my-pi): run coding tasks in their own worktrees from Mission Control, review their plans and changes in the browser, and audit changes with reviewer subagents and shell checks.
+Four plugins for [omp](https://github.com/can1357/oh-my-pi): run coding tasks in their own worktrees from Mission Control, comment on their plans right in omp's plan review, review their changes in the browser, and audit changes with reviewer subagents and shell checks.
 
 ## Mission Control
 
@@ -16,7 +16,7 @@ Pick checks and reviewers with `/control` and run them on the session's change, 
 
 ## Plan Review
 
-When omp asks you to review a plan, the plan opens in the browser (a cmux split when in cmux): comment on its lines as in a code review, then refine or approve it from the page. A revised plan highlights what changed since the previous one, and a sidebar jumps between its sections. See [plugins/plan-review](plugins/plan-review/README.md).
+When omp shows a plan for review, click or drag over any of its lines to select them, then press `c` or Enter to comment. The comment becomes one of omp's own plan comments: omp shows it under the line and sends it when you pick Refine. See [plugins/plan-review](plugins/plan-review/README.md).
 
 ## Install from the marketplace
 
