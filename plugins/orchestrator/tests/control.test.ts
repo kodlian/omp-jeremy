@@ -10,8 +10,8 @@ const BD = Bun.which("bd", { PATH: EXTRA_PATH });
 const TMUX = Bun.which("tmux", { PATH: EXTRA_PATH });
 const CALLER = /^(CMUX_|TMUX|OMP_TERMINAL|ORCHESTRATOR_|WT_|OMP_CONTROL_)/;
 
-type Task = { id: string; loop: string | null; control: unknown; worktree: string | null; spawn: { state: string; error: string | null }; flow: string };
-type Flow = { id: string; controlLoops: { id: string }[] | null };
+type Task = { id: string; controlSet: string | null; worktree: string | null; spawn: { state: string; error: string | null }; flow: string };
+type Flow = { id: string; controlSets: { id: string }[] | null };
 
 let dir = "";
 let label = "";
@@ -54,7 +54,7 @@ async function start(id: string): Promise<Task & { worktree: string }> {
 	throw new Error(`${id} didn't start in time`);
 }
 
-describe.skipIf(!BD || !TMUX)("a card's control loop", () => {
+describe.skipIf(!BD || !TMUX)("a card's control set", () => {
 	let started: Task & { worktree: string };
 
 	beforeAll(async () => {
@@ -81,8 +81,8 @@ describe.skipIf(!BD || !TMUX)("a card's control loop", () => {
 		for (const deadline = Date.now() + 20_000; Date.now() < deadline; await Bun.sleep(100)) {
 			if (await api("GET", "/api/state").then(() => true, () => false)) break;
 		}
-		const created = await api<Task>("POST", "/api/tasks", { title: "Looped work", merge: "local", loop: "review" });
-		expect(created.loop).toBe("review");
+		const created = await api<Task>("POST", "/api/tasks", { title: "Controlled work", merge: "local", controlSet: "review" });
+		expect(created.controlSet).toBe("review");
 		started = await start(created.id);
 	}, 90_000);
 
@@ -92,57 +92,25 @@ describe.skipIf(!BD || !TMUX)("a card's control loop", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	test("a card keeps a valid loop id, refuses an invalid one, and fixes it once started", async () => {
-		expect((await call("POST", "/api/tasks", { title: "Bad loop", loop: "Not An Id" })).status).toBe(400);
-		const other = await api<Task>("POST", "/api/tasks", { title: "Later loop" });
-		expect((await api<Task>("PATCH", `/api/tasks/${other.id}`, { loop: "quality" })).loop).toBe("quality");
-		expect((await api<Task>("PATCH", `/api/tasks/${other.id}`, { loop: "" })).loop).toBeNull();
-		const patched = await call("PATCH", `/api/tasks/${started.id}`, { loop: "quality" });
-		expect(patched).toMatchObject({ status: 409, data: { error: "Control loop is fixed once the task starts" } });
+	test("a card keeps a valid control set, refuses an invalid one, and fixes it once started", async () => {
+		expect((await call("POST", "/api/tasks", { title: "Bad set", controlSet: "Not An Id" })).status).toBe(400);
+		const other = await api<Task>("POST", "/api/tasks", { title: "Later set" });
+		expect((await api<Task>("PATCH", `/api/tasks/${other.id}`, { controlSet: "quality" })).controlSet).toBe("quality");
+		expect((await api<Task>("PATCH", `/api/tasks/${other.id}`, { controlSet: "" })).controlSet).toBeNull();
+		const patched = await call("PATCH", `/api/tasks/${started.id}`, { controlSet: "quality" });
+		expect(patched).toMatchObject({ status: 409, data: { error: "The control set is fixed once the task starts" } });
 	});
 
-	test("the task session starts with the card's loop and base", () => {
+	test("the task session starts with the card's control set and base", () => {
 		const script = readFileSync(join(dir, "board", "tasks", started.id, "launch.sh"), "utf8");
-		expect(script).toContain("OMP_CONTROL_LOOP=review");
+		expect(script).toContain("OMP_CONTROL_SET=review");
 		expect(script).toContain("OMP_CONTROL_BASE=main");
 	});
 
-	test("a session inside the worktree reports the live view; one elsewhere can't", async () => {
-		const view = { version: 1, status: "checking", loop: { id: "review", name: "Review", description: "", maxPasses: 4, stages: [] } };
-		await api("POST", `/api/tasks/${started.id}/control`, { path: join(started.worktree, "src"), view });
-		expect((await state()).tasks.find((t) => t.id === started.id)?.control).toEqual(view);
-		expect((await call("POST", `/api/tasks/${started.id}/control`, { path: join(dir, "repo"), view })).status).toBe(404);
-		expect((await call("POST", `/api/tasks/${started.id}/control`, { path: started.worktree, view: { version: 2 } })).status).toBe(400);
-	});
-
-	test("a flow records the loops its omp offers", async () => {
-		const loops = [{ id: "review", name: "Review", description: "", maxPasses: 4, source: "built-in", stages: [{ nodes: [{ id: "quality-reviewer", name: "Quality reviewer", kind: "review" }] }] }];
-		await api("PATCH", "/api/flows/control-loops", { id: started.flow, loops });
-		expect((await state()).flows.find((f) => f.id === started.flow)?.controlLoops).toEqual(loops);
-		expect((await call("PATCH", "/api/flows/control-loops", { id: started.flow, loops: [{ id: "Bad" }] })).status).toBe(400);
-	});
-
-	test("the board's decisions reach the task session and come back with its answer", async () => {
-		const ctl = new AbortController();
-		const res = await fetch(`http://127.0.0.1:${port}/api/events?session=s&task=${started.id}`, { signal: ctl.signal });
-		const reader = res.body!.getReader();
-		const decoder = new TextDecoder();
-		let text = "";
-		const nextControl = async (): Promise<{ id: string; action: string; decisions: unknown; pause: boolean }> => {
-			for (;;) {
-				const match = /event: control\ndata: (.*)\n/.exec(text);
-				if (match) return JSON.parse(match[1]);
-				text += decoder.decode((await reader.read()).value);
-			}
-		};
-		// The board registers the session's stream before its first event; decisions are refused until then.
-		while (!text) text += decoder.decode((await reader.read()).value);
-		const decided = call("POST", `/api/tasks/${started.id}/control/decide`, { decisions: { "1.1": { decision: "fix", note: "small" } }, pause: false });
-		const command = await nextControl();
-		expect(command).toMatchObject({ action: "control_decide", decisions: { "1.1": { decision: "fix", note: "small" } }, pause: false });
-		await api("POST", `/api/control/${command.id}`, { ok: true, message: "Recorded" });
-		expect(await decided).toEqual({ status: 200, data: { ok: true, message: "Recorded" } });
-		expect((await call("POST", `/api/tasks/${started.id}/control/decide`, { decisions: {} })).status).toBe(400);
-		ctl.abort();
+	test("a flow records the control sets its omp offers", async () => {
+		const sets = [{ id: "review", name: "Review", description: "", controls: ["Quality"], approval: "apply" }];
+		await api("PATCH", "/api/flows/control-sets", { id: started.flow, sets });
+		expect((await state()).flows.find((f) => f.id === started.flow)?.controlSets).toEqual(sets);
+		expect((await call("PATCH", "/api/flows/control-sets", { id: started.flow, sets: [{ id: "Bad" }] })).status).toBe(400);
 	});
 });

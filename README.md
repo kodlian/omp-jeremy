@@ -1,6 +1,6 @@
 # omp-jeremy
 
-Four plugins for [omp](https://github.com/can1357/oh-my-pi): orchestrate coding tasks across worktrees, review their plans and changes in the browser, and check every change with control loops before the agent finishes.
+Four plugins for [omp](https://github.com/can1357/oh-my-pi): orchestrate coding tasks across worktrees, review their plans and changes in the browser, and audit changes with reviewer subagents and shell checks.
 
 ## Orchestrator
 
@@ -12,7 +12,7 @@ Open a browser-based diff viewer from omp with `/review`. Browse changed files, 
 
 ## Control
 
-Attach a control loop to a session with `/control use <loop>`: when the agent says it's done, checks (shell commands that must exit 0) and focused reviewer agents measure its change. Certain findings go back to the agent to fix, doubtful ones to you, until the change is clean or the pass limit hands it to you. Loops and nodes live in `.omp/control` (project) and `~/.omp/control` (user); `/control` opens a page with the live loop, a visual loop editor and the library. With the Orchestrator also installed, cards pick a loop and their panel shows it live. See [plugins/control](plugins/control/README.md).
+Pick checks and reviewers with `/control` and run them on the session's change, once or after every change: the agent runs the shell checks, spawns read-only reviewer subagents, fixes what they find (or asks you first), then runs a second pass to confirm. Controls and the sets that group them live in `.omp/control` (project) and `~/.omp/control` (user). With the Orchestrator also installed, a card picks a set that its task session runs after every change. See [plugins/control](plugins/control/README.md).
 
 ## Plan Review
 

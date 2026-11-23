@@ -2,11 +2,6 @@
 name: Quality
 kind: review
 description: Bugs, edge cases and regressions in the change
-ask: doubts
-tools:
-  - read
-  - grep
-  - glob
 resources:
   - AGENTS.md
 ---
@@ -22,4 +17,4 @@ Review the change as a careful senior engineer would before approving it, and re
 
 Only report problems you can trace to the changed lines or to their direct callers; leave pre-existing issues elsewhere alone. Read the surrounding code before judging a line.
 
-Mark a finding certain only when the code is demonstrably wrong: you can name the input or sequence that breaks it. Risky designs, missing tests and anything that depends on intent you can't see are judgment calls: report them with certain false.
+Mark a finding certain only when the code is demonstrably wrong: you can name the input or sequence that breaks it. Report risky designs, missing tests and anything that depends on intent you can't see as judgment calls.

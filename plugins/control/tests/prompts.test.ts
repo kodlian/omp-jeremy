@@ -1,76 +1,44 @@
 import { expect, test } from "bun:test";
-import type { FindingView } from "omp-control-view/protocol";
-import { checkFinding, finalText, fixMessage, parseFindings } from "../src/prompts";
-import type { NodeDefinition } from "../src/library";
+import type { ControlDefinition } from "../src/library";
+import { RUN_HEAD, runPrompt } from "../src/prompts";
 
-const fence = "```";
+const base = "0123456789abcdef0123456789abcdef01234567";
+const tests: ControlDefinition = { id: "tests", name: "Tests", kind: "check", description: "", command: "bun test", timeout: 120, path: "/repo/.omp/control/nodes/tests.md", source: "repo" };
+const lint: ControlDefinition = { ...tests, id: "lint", name: "Lint", command: "bun run lint", timeout: 60, path: "/repo/.omp/control/nodes/lint.md" };
+const quality: ControlDefinition = { id: "quality-reviewer", name: "Quality", kind: "review", description: "", command: null, timeout: null, path: "/library/nodes/quality-reviewer.md", source: "built-in" };
+const rules: ControlDefinition = { ...quality, id: "rules-reviewer", name: "Project rules", path: "/library/nodes/rules-reviewer.md" };
 
-test("the last json block wins and defaults apply", () => {
-	const text = [
-		"Looked around.",
-		`${fence}json\n{"findings":[{"rule":"old","observed":"x","expected":"y"}]}\n${fence}`,
-		"Final:",
-		`${fence}json\n{"findings":[{"file":"src/a.ts","line":3,"rule":" No any ","observed":"uses any","expected":"a type","alternatives":["unknown"]},{"rule":"r","observed":"o","expected":"e","severity":"minor","certain":true}]}\n${fence}`,
-	].join("\n");
-	expect(parseFindings(text)).toEqual([
-		{ file: "src/a.ts", line: 3, rule: "No any", observed: "uses any", expected: "a type", alternatives: ["unknown"], severity: "major", certain: false },
-		{ file: null, line: null, rule: "r", observed: "o", expected: "e", alternatives: [], severity: "minor", certain: true },
-	]);
-	expect(parseFindings(`${fence}json\n{"findings":[]}\n${fence}`)).toEqual([]);
+test("a run lists its shell checks, then its reviewers, and ends with control_report", () => {
+	const text = runPrompt({ base, approval: "apply", controls: [tests, lint, quality, rules] });
+	expect(text).toStartWith(`${RUN_HEAD} check this repository's change since 0123456789ab`);
+	expect(text).toContain(`CONTROL_BASE=${base}`);
+	expect(text).toContain("1. Tests (stop it after 120 s)\n```sh\nbun test\n```");
+	expect(text).toContain("2. Lint (stop it after 60 s)\n```sh\nbun run lint\n```");
+	expect(text).toContain(`- Quality: ${quality.path}\n- Project rules: ${rules.path}`);
+	expect(text).toContain("leave the task's agent unset");
+	expect(text.indexOf("## Shell checks")).toBeLessThan(text.indexOf("## Reviewers"));
+	expect(text).toContain("\n5. Call control_report with passed true when the last pass was clean (judgment calls you skipped don't count), else false.");
 });
 
-test("a missing block or a finding without a rule is an error", () => {
-	expect(() => parseFindings("All good!")).toThrow("Reviewer output had no valid findings JSON");
-	expect(() => parseFindings(`${fence}json\n{"findings":[{"observed":"o","expected":"e"}]}\n${fence}`)).toThrow("finding 1 has no rule");
-	expect(() => parseFindings(`${fence}json\n{"findings":[{"rule":"r","observed":"o","expected":"e","line":0}]}\n${fence}`)).toThrow("invalid line");
+test("a run with only checks has no reviewers section and no spawn step", () => {
+	const text = runPrompt({ base, approval: "apply", controls: [tests] });
+	expect(text).not.toContain("## Reviewers");
+	expect(text).not.toContain("Spawn");
+	expect(text).toContain("\n1. Run the shell checks. Fix what fails and run them again until they pass.\n");
+	expect(text).toContain("\n3. Call control_report with passed true when the last pass was clean, else false.");
 });
 
-test("finalText takes the text of the last assistant message_end", () => {
-	const lines = [
-		JSON.stringify({ type: "session" }),
-		"not json",
-		JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "prompt" }] } }),
-		JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "first" }] } }),
-		JSON.stringify({ type: "message_end", message: { role: "toolResult", content: [{ type: "text", text: "tool" }] } }),
-		JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", name: "read" }, { type: "text", text: "final " }, { type: "text", text: "answer" }] } }),
-		JSON.stringify({ type: "agent_end" }),
-	];
-	expect(finalText(lines)).toBe("final answer");
+test("a run with only reviewers has no shell checks section", () => {
+	const text = runPrompt({ base, approval: "apply", controls: [quality] });
+	expect(text).not.toContain("## Shell checks");
+	expect(text).toContain("\n1. Spawn the reviewers and wait for all of them.\n");
 });
 
-const finding = (over: Partial<FindingView>): FindingView => ({
-	id: "1.1",
-	node: "quality",
-	nodeName: "Quality",
-	file: "src/a.ts",
-	line: 12,
-	rule: "Empty list",
-	observed: "crashes on []",
-	expected: "returns 0",
-	alternatives: ["guard the length", "use reduce with 0"],
-	severity: "major",
-	certain: true,
-	recurring: false,
-	route: "fix",
-	decision: null,
-	...over,
-});
-
-test("fixMessage gives every item its location, observed, expected and acceptable fixes", () => {
-	const text = fixMessage("Review", 1, 4, [finding({}), finding({ id: "1.2", file: null, line: null, rule: "Build", alternatives: [], decision: { decision: "fix", note: "keep it small" } })], [finding({ id: "1.3", rule: "Naming" })], 2);
-	expect(text).toStartWith("Control loop «Review» — pass 1 of 4: fix these 2 findings, then call control_check again before your final answer.");
-	expect(text).toContain("1. [Quality] src/a.ts:12 — Empty list\n   Observed: crashes on []\n   Expected: returns 0\n   Acceptable fixes: guard the length; use reduce with 0");
-	expect(text).toContain("2. [Quality] Build\n   Observed: crashes on []\n   Expected: returns 0\n   User note: keep it small");
-	expect(text).toContain("Judgment calls — apply only if you agree, and say which you skipped:\n3. [Quality] src/a.ts:12 — Naming");
-	expect(text).toEndWith("The user dismissed 2 findings; don't act on them.");
-	expect(fixMessage("Review", 2, 4, [finding({})], [], 0)).toStartWith("Control loop «Review» — pass 2 of 4: fix this finding,");
-});
-
-test("a failed check reports the tail of its output", () => {
-	const node = { command: "make test" } as NodeDefinition;
-	const output = Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\n");
-	const f = checkFinding(node, 2, output);
-	expect(f).toMatchObject({ rule: "command failed (exit 2)", expected: "`make test` exits 0 from the repository root", severity: "blocker", certain: true });
-	expect(f.observed.split("\n")).toHaveLength(60);
-	expect(f.observed).toEndWith("line 99");
+test("ask has the user approve each finding with the agent's recommendation; apply never asks", () => {
+	const ask = runPrompt({ base, approval: "ask", controls: [quality] });
+	expect(ask).toContain("set recommended");
+	expect(ask).toContain("findings the user skipped don't count");
+	const apply = runPrompt({ base, approval: "apply", controls: [quality] });
+	expect(apply).not.toMatch(/\bask tool\b/);
+	expect(apply).toContain("Fix every certain finding.");
 });

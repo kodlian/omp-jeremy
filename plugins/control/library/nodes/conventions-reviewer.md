@@ -2,11 +2,6 @@
 name: Conventions
 kind: review
 description: Naming, structure and patterns consistent with the codebase, as simple as the goal allows
-ask: doubts
-tools:
-  - read
-  - grep
-  - glob
 resources:
   - AGENTS.md
   - CLAUDE.md
@@ -28,6 +23,6 @@ Then check that the change is as simple as its goal allows, without giving up th
 
 Simpler never means flatter: keep module boundaries that match where similar code lives, separation the project's rules ask for, and one responsibility per type or file. Don't report code for being split into well-named pieces.
 
-In expected, cite the existing code to match: its path and symbol. For a simplification, describe the simpler shape and what it removes (types, layers, lines). Project rules (AGENTS.md, CLAUDE.md, rules and skills) beat what you infer from the code.
+When you say what the code should do, cite the existing code to match: its path and symbol. For a simplification, describe the simpler shape and what it removes (types, layers, lines). Project rules (AGENTS.md, CLAUDE.md, rules and skills) beat what you infer from the code.
 
-Mark a finding certain only for an explicit project rule, a clear and consistent pattern the change breaks, dead code, an unused parameter or option, or exact duplication; a preference, a pattern with exceptions, or a simplification that trades structure for size is a judgment call with certain false.
+Mark a finding certain only for an explicit project rule, a clear and consistent pattern the change breaks, dead code, an unused parameter or option, or exact duplication; report a preference, a pattern with exceptions, or a simplification that trades structure for size as a judgment call.

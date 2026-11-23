@@ -1,7 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import * as omp from "@oh-my-pi/pi-coding-agent";
 import { appearanceSync, recordedPort } from "omp-integrations/page";
-import { isReviewRequest, REVIEW_EVENT } from "omp-integrations/review";
 import { openBoard } from "omp-integrations/terminal";
 import { errorText } from "omp-integrations/text";
 import { type Compare, isRepo, repoRoot } from "./git";
@@ -79,16 +78,6 @@ export default function gitDiffReview(pi: ExtensionAPI) {
 			}
 			commandCtx.ui.notify(`review open at ${await open(commandCtx, compare)}`, "info");
 		},
-	});
-
-	pi.events.on(REVIEW_EVENT, (data: unknown) => {
-		if (!isReviewRequest(data)) return;
-		if (data.type === "probe") return data.reply({ ok: true, message: "" });
-		if (!ctx) return data.reply({ ok: false, message: "git-diff-review has no omp session yet" });
-		open(ctx, { kind: "branch", base: data.base }).then(
-			(url) => data.reply({ ok: true, message: url }),
-			(e) => data.reply({ ok: false, message: errorText(e) }),
-		);
 	});
 
 	pi.on("session_start", async (_event, sessionCtx) => {

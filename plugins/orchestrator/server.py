@@ -74,9 +74,8 @@ BEADS_BACKOFF = (5.0, 15.0, 60.0)
 VERB = {"start": "starting", "resume": "resuming", "stop": "stopping", "merge": "merging",
         "remove": "removing its worktree", "delete": "being deleted"}
 PLANNING_MODES = {"auto", "plan", "fast"}
-LOOP_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
-CONTROL_VIEW_LIMIT = 262_144
-CONTROL_LOOPS_LIMIT = 200_000
+CONTROL_SET_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
+CONTROL_SETS_LIMIT = 200_000
 SPAWN_LOG_LIMIT = 6000
 PRESENTATION_INTERVAL = 30.0
 SWEEP_INTERVAL = 60.0
@@ -498,7 +497,7 @@ class Store:
         t["merge"] = t["merge"] if t["merge"] in ("pr", "local") else "pr"
         t["branchEdited"] = bool(t["branchEdited"])
         t["planningMode"] = t["planningMode"] if t["planningMode"] in PLANNING_MODES else "plan"
-        t["loop"] = t["loop"] if isinstance(t.get("loop"), str) and LOOP_ID.fullmatch(t["loop"]) else None
+        t["controlSet"] = t["controlSet"] if isinstance(t.get("controlSet"), str) and CONTROL_SET_ID.fullmatch(t["controlSet"]) else None
         outcome = t.get("planningOutcome") if t.get("planningOutcome") in ("plan", "fast") else None
         if outcome is None and t["planningMode"] in ("plan", "fast") and t.get("worktree"):
             outcome = t["planningMode"]
@@ -755,8 +754,7 @@ class Store:
             "base": t["base"],
             "merge": t["merge"],
             "planningMode": t["planningMode"],
-            "loop": t.get("loop"),
-            "control": t.get("control"),
+            "controlSet": t.get("controlSet"),
             "planningOutcome": t.get("planningOutcome"),
             "dependsOn": list(t["dependsOn"]),
             "parent": t.get("parent"),
@@ -799,12 +797,12 @@ class Store:
         flows: Dict[str, Dict[str, Any]] = {}
 
         def entry(repo: str, base: str, checkout: Optional[str], concurrency_limit: Optional[int] = None,
-                  control_loops: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+                  control_sets: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
             fid = flow_id(repo, base)
             if fid not in flows:
                 flows[fid] = {"id": fid, "name": os.path.basename(repo), "repo": repo, "base": base, "checkout": checkout,
                               "counts": {c: 0 for c in COLUMN_IDS}, "live": hub.flow_live(fid),
-                              "concurrencyLimit": concurrency_limit, "controlLoops": control_loops}
+                              "concurrencyLimit": concurrency_limit, "controlSets": control_sets}
             return flows[fid]
 
         checked: Dict[Tuple[str, Optional[str]], bool] = {}
@@ -817,7 +815,7 @@ class Store:
 
         for f in self.flows:
             if active(f["repo"], f["base"], f["checkout"]):
-                entry(f["repo"], f["base"], f["checkout"], f.get("concurrencyLimit"), f.get("controlLoops"))
+                entry(f["repo"], f["base"], f["checkout"], f.get("concurrencyLimit"), f.get("controlSets"))
         shown = {flow_id(t["repo"], t["base"]) for t in self.tasks.values()
                  if active(t["repo"], t["base"], t.get("checkout"))}
         for t in self.tasks.values():
@@ -1046,11 +1044,11 @@ def validate_planning_mode(value: Any) -> str:
     return value
 
 
-def validate_loop(value: Any) -> Optional[str]:
+def validate_control_set(value: Any) -> Optional[str]:
     if value is None or value == "":
         return None
-    if not isinstance(value, str) or not LOOP_ID.fullmatch(value):
-        raise ApiError(400, "Loop must be a control loop id: lowercase letters, digits and dashes")
+    if not isinstance(value, str) or not CONTROL_SET_ID.fullmatch(value):
+        raise ApiError(400, "Controls must be a control set id: lowercase letters, digits and dashes")
     return value
 
 
@@ -1164,7 +1162,7 @@ def create_task(body: Dict[str, Any]) -> Dict[str, Any]:
     plan = str(body.get("plan") or "")
     origin = validate_origin(body["origin"]) if body.get("origin") is not None else None
     planning_mode = validate_planning_mode(body.get("planningMode", "auto"))
-    loop = validate_loop(body.get("loop"))
+    control_set = validate_control_set(body.get("controlSet"))
     info = None
     if body.get("repo"):
         info = checkout_info(str(Path(str(body["repo"])).expanduser()))
@@ -1180,7 +1178,7 @@ def create_task(body: Dict[str, Any]) -> Dict[str, Any]:
             "createdAt": stamp, "updatedAt": stamp, "plan": "", "planUpdatedAt": None,
             "spawn": {"state": "none", "error": None, "log": ""},
             "worktree": None, "presentation": None, "execution": None, "agent": None, "git": None, "pr": None,
-            "merge": None, "planningMode": planning_mode, "planningOutcome": None, "loop": loop,
+            "merge": None, "planningMode": planning_mode, "planningOutcome": None, "controlSet": control_set,
             "dependsOn": [], "parent": None, "merged": None, "origin": origin,
         }
         if info:
@@ -1234,7 +1232,7 @@ def register_flow(body: Dict[str, Any]) -> Dict[str, Any]:
         previous = next((f for f in store.flows
                          if same_dir(f["repo"], info["repo"]) and f["base"] == info["base"]), None)
         registered = {**info, "concurrencyLimit": (previous or {}).get("concurrencyLimit"),
-                      "controlLoops": (previous or {}).get("controlLoops")}
+                      "controlSets": (previous or {}).get("controlSets")}
         store.flows = [f for f in store.flows if Path(f["checkout"]).is_dir()
                        and not (same_dir(f["repo"], info["repo"]) and f["base"] == info["base"])] + [registered]
         store.save_board()
@@ -1256,7 +1254,7 @@ def set_flow_concurrency(body: Dict[str, Any]) -> Dict[str, Any]:
         if not flow.get("checkout") or not Path(flow["checkout"]).is_dir():
             raise ApiError(409, f"{flow_id_value} has no registered checkout")
         registered = {"repo": flow["repo"], "base": flow["base"], "checkout": flow["checkout"],
-                      "concurrencyLimit": limit, "controlLoops": flow.get("controlLoops")}
+                      "concurrencyLimit": limit, "controlSets": flow.get("controlSets")}
         store.flows = [f for f in store.flows
                        if not (same_dir(f["repo"], flow["repo"]) and f["base"] == flow["base"])] + [registered]
         store.save_board()
@@ -1507,10 +1505,10 @@ def update_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
                     raise ApiError(409, "Planning mode is fixed once the task starts")
                 t["planningMode"] = validate_planning_mode(body["planningMode"])
                 t["planningOutcome"] = None
-            if "loop" in body:
+            if "controlSet" in body:
                 if has_started(t):
-                    raise ApiError(409, "Control loop is fixed once the task starts")
-                t["loop"] = validate_loop(body["loop"])
+                    raise ApiError(409, "The control set is fixed once the task starts")
+                t["controlSet"] = validate_control_set(body["controlSet"])
             wanted = body["dependsOn"] if "dependsOn" in body else t["dependsOn"]
             parent = validate_parent(task_id, body["parent"], t["repo"], t["base"],
                                      wanted if isinstance(wanted, list) else []) if "parent" in body else t.get("parent")
@@ -2023,8 +2021,8 @@ def agent_script(t: Dict[str, Any], name: str, args: List[str], resume: bool = F
         env.append(("ORCHESTRATOR_LEASE_DIR", os.environ["ORCHESTRATOR_LEASE_DIR"]))
     if resume:
         env.append(("ORCHESTRATOR_RESUME_FILE", str(task_dir / "resume.json")))
-    if t.get("loop"):
-        env += [("OMP_CONTROL_LOOP", t["loop"]), ("OMP_CONTROL_BASE", t["base"])]
+    if t.get("controlSet"):
+        env += [("OMP_CONTROL_SET", t["controlSet"]), ("OMP_CONTROL_BASE", t["base"])]
     exports = " ".join(f"{k}={shlex.quote(v)}" for k, v in env)
     path = task_dir / name
     write_atomic(path, f"#!/bin/sh\nexport {exports}\nexec {shlex.join([omp, *args])}\n")
@@ -2623,74 +2621,21 @@ def review_plan(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": True, "message": answer}
 
 
-def report_control(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Records the live control loop view a task session's Control plugin reports, or clears it with null."""
-    view = body.get("view")
-    path = str(body.get("path") or "")
-    if view is not None and not (isinstance(view, dict) and view.get("version") == 1
-                                 and len(json.dumps(view)) <= CONTROL_VIEW_LIMIT):
-        raise ApiError(400, "view must be a control run view (version 1, at most 256 KB) or null")
-    with store.lock:
-        t = store.get(task_id)
-        if not t.get("worktree") or not within(path, t["worktree"]):
-            raise ApiError(404, f"{task_id} has no agent at {path}")
-        t["control"] = view
-        store.write_record(t)
-    hub.changed()
-    return {"ok": True}
+def valid_set_summaries(sets: Any) -> bool:
+    return isinstance(sets, list) and len(sets) <= 100 and len(json.dumps(sets)) <= CONTROL_SETS_LIMIT and all(
+        isinstance(s, dict) and isinstance(s.get("id"), str) and CONTROL_SET_ID.fullmatch(s["id"]) is not None
+        and isinstance(s.get("name"), str) and isinstance(s.get("description"), str)
+        and isinstance(s.get("controls"), list) and all(isinstance(c, str) for c in s["controls"])
+        and s.get("approval") in ("apply", "ask")
+        for s in sets)
 
 
-def require_live_session(task_id: str) -> None:
-    with store.lock:
-        require_spawned(store.get(task_id))
-    if not hub.task_live(task_id):
-        raise ApiError(409, f"{task_id}'s omp session isn't connected to the board")
-
-
-def decide_control(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Hands the user's decisions on a task's control loop findings (or a pause) to its session."""
-    raw = body.get("decisions") or {}
-    if not isinstance(raw, dict) or len(raw) > 200:
-        raise ApiError(400, "decisions must map at most 200 finding ids to decisions")
-    decisions: Dict[str, Dict[str, str]] = {}
-    for fid, d in raw.items():
-        note = d.get("note") if isinstance(d, dict) else None
-        if not isinstance(d, dict) or d.get("decision") not in ("fix", "dismiss") or \
-                (note is not None and (not isinstance(note, str) or len(note) > 2000)):
-            raise ApiError(400, f"Decision {fid} must be fix or dismiss, with an optional note of at most 2000 characters")
-        decisions[str(fid)] = {"decision": d["decision"], **({"note": note} if note else {})}
-    pause = body.get("pause") is True
-    if not decisions and not pause:
-        raise ApiError(400, "Decide at least one finding, or pause the loop")
-    require_live_session(task_id)
-    return {"ok": True, "message": hub.control(task_id, "control_decide", {"decisions": decisions, "pause": pause})}
-
-
-def open_control(task_id: str) -> Dict[str, Any]:
-    require_live_session(task_id)
-    return {"ok": True, "message": hub.control(task_id, "control_open")}
-
-
-def valid_loop_summaries(loops: Any) -> bool:
-    def node(n: Any) -> bool:
-        return isinstance(n, dict) and isinstance(n.get("id"), str) and isinstance(n.get("name"), str) \
-            and n.get("kind") in ("check", "review")
-
-    def stage(s: Any) -> bool:
-        return isinstance(s, dict) and isinstance(s.get("nodes"), list) and all(node(n) for n in s["nodes"])
-
-    return isinstance(loops, list) and len(loops) <= 100 and len(json.dumps(loops)) <= CONTROL_LOOPS_LIMIT and all(
-        isinstance(l, dict) and isinstance(l.get("id"), str) and LOOP_ID.fullmatch(l["id"]) is not None
-        and isinstance(l.get("name"), str) and isinstance(l.get("stages"), list) and all(stage(s) for s in l["stages"])
-        for l in loops)
-
-
-def set_flow_control_loops(body: Dict[str, Any]) -> Dict[str, Any]:
-    """Records the Control loops a flow's omp offers, so cards in that flow can pick one; null clears them."""
+def set_flow_control_sets(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Records the Control sets a flow's omp offers, so cards in that flow can pick one; null clears them."""
     flow_id_value = str(body.get("id") or "")
-    loops = body.get("loops")
-    if loops is not None and not valid_loop_summaries(loops):
-        raise ApiError(400, "loops must be null or at most 100 control loop summaries (id, name, stages of nodes)")
+    sets = body.get("sets")
+    if sets is not None and not valid_set_summaries(sets):
+        raise ApiError(400, "sets must be null or at most 100 control set summaries (id, name, description, controls, approval)")
     with store.lock:
         flow = next((f for f in store.flow_list() if f["id"] == flow_id_value), None)
         if not flow:
@@ -2698,10 +2643,10 @@ def set_flow_control_loops(body: Dict[str, Any]) -> Dict[str, Any]:
         registered = next((f for f in store.flows
                            if same_dir(f["repo"], flow["repo"]) and f["base"] == flow["base"]), None)
         if registered:
-            registered["controlLoops"] = loops
+            registered["controlSets"] = sets
         else:
             store.flows.append({"repo": flow["repo"], "base": flow["base"], "checkout": flow["checkout"],
-                                "concurrencyLimit": None, "controlLoops": loops})
+                                "concurrencyLimit": None, "controlSets": sets})
         store.save_board()
     hub.changed()
     return {"ok": True}
@@ -3129,7 +3074,6 @@ def removing(t: Dict[str, Any], intent: Dict[str, Any], delete: bool) -> Outcome
     if not delete:
         def forgotten(current: Dict[str, Any]) -> None:
             forget_worktree(current, park=("todo", "doing"))
-            current["control"] = None
         return finish_closing(task_id, intent, path, requester, forgotten)
     with store.lock:
         current = store.tasks.get(task_id)
@@ -4004,9 +3948,6 @@ ROUTES = [
     ("POST", r"/api/tasks/([\w.-]+)/worktree/open", lambda m, b: open_worktree(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/message", lambda m, b: message_agent(m[1], b)),
     ("POST", r"/api/tasks/([\w.-]+)/review", lambda m, b: review_plan(m[1], b)),
-    ("POST", r"/api/tasks/([\w.-]+)/control", lambda m, b: report_control(m[1], b)),
-    ("POST", r"/api/tasks/([\w.-]+)/control/decide", lambda m, b: decide_control(m[1], b)),
-    ("POST", r"/api/tasks/([\w.-]+)/control/open", lambda m, b: open_control(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/stop", lambda m, b: stop_task(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/amend", lambda m, b: amend_task(m[1], b)),
     ("POST", r"/api/tasks/([\w.-]+)/update", lambda m, b: send_update(m[1], b)),
@@ -4031,7 +3972,7 @@ ROUTES = [
     ("POST", r"/api/exports", lambda m, b: save_export(b)),
     ("PATCH", r"/api/flows", lambda m, b: set_flow_concurrency(b)),
     ("PATCH", r"/api/flows/scripts", lambda m, b: set_flow_scripts(b)),
-    ("PATCH", r"/api/flows/control-loops", lambda m, b: set_flow_control_loops(b)),
+    ("PATCH", r"/api/flows/control-sets", lambda m, b: set_flow_control_sets(b)),
     ("POST", r"/api/agent", lambda m, b: report_agent(b)),
     ("POST", r"/api/control/([\w-]+)", lambda m, b: answer_control(m[1], b)),
     ("POST", r"/api/appearance", lambda m, b: set_theme(b)),
@@ -4094,7 +4035,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not page.exists():
                     raise ApiError(404, "index.html is missing")
                 return self.serve_bytes(page.read_bytes(), "text/html; charset=utf-8")
-            if self.command == "GET" and path in ("/design-system.css", "/markdown.js", "/graph-layout.js", "/pipeline.js", "/pipeline.css", "/workbench.js", "/workbench.css", "/native.js", "/native.css", "/control-view.js", "/control-view.css", "/flow-export.js", "/flow-export.css"):
+            if self.command == "GET" and path in ("/design-system.css", "/markdown.js", "/graph-layout.js", "/pipeline.js", "/pipeline.css", "/workbench.js", "/workbench.css", "/native.js", "/native.css", "/flow-export.js", "/flow-export.css"):
                 asset = ROOT / path.lstrip("/")
                 content_type = "text/javascript" if path.endswith(".js") else "text/css"
                 return self.serve_bytes(asset.read_bytes(), content_type + "; charset=utf-8")

@@ -90,10 +90,9 @@ function resolveTheme(theme, terminal) {
 }
 var GHOSTTY_FONT_SIZE = process.platform === "darwin" ? 13 : 12;
 
-// packages/control-view/src/protocol.ts
-var RUN_EVENT = "control:run";
-var LIBRARY_EVENT = "control:library";
-var COMMAND_EVENT = "control:command";
+// packages/integrations/src/control.ts
+var CONTROL_ASK_EVENT = "control:ask";
+var CONTROL_SETS_EVENT = "control:sets";
 
 // plugins/orchestrator/omp/orchestrator.ts
 var BASE = `http://127.0.0.1:${process.env.ORCHESTRATOR_PORT || "4747"}`;
@@ -128,7 +127,7 @@ var ORCHESTRATOR_CONTEXT = `Orchestrator mode is on in this checkout: this sessi
 - Otherwise create cards right away with orchestrator_create. The card's omp owns implementation decisions when it starts. Read only what the user points you to when the description needs it (a ticket, a design). The description says what to build and why, what the user decided in this conversation, the acceptance and the links (ticket, design, files the user named), not how.
 - After creating cards, or amending a Backlog card, call orchestrator_start for those card IDs when the user's wording commits to doing the work now. Bug reports, missing behavior and assertive requests to check, fix, add, change or implement something all count. Keep cards in Backlog for ideas, "maybe" or "later" requests, and while the user is still discussing or deciding. Started cards still wait for dependsOn and flow capacity.
 - Leave planningMode as auto unless the user explicitly wants mandatory plan review or a fast direct implementation.
-- A card's loop is the Control loop its task session runs after implementing; set it with orchestrator_create/orchestrator_edit only when the user names one.
+- A card's control set is the Control set its task session runs on its own after each change; set it with orchestrator_create/orchestrator_edit only when the user names one.
 - Keep related asks from one request in one card. Split into several cards only when the parts are large and touch independent areas, when one must land before another, or when the user asks to split; each split card's description starts with the line "Part of: <the overall need in one line>". Set dependsOn for earlier new cards that must land first, as well as the open and done cards the preflight found it builds on.
 - In the reply, say where each ask went: the card it was added to and whether its agent received it, the cards you created, and which cards you started or left in Backlog.
 - For existing cards, an explicit "start", "do" or "run" #n is one trigger for orchestrator_start (it runs in its own worktree), not a request to implement it in this session unless the user says to do it here. Explicit wording is not required for new or amended cards that meet the intent rule above. "Merge #n" means orchestrator_done; "drop" or "delete #n" means orchestrator_delete; changing a card's title or description means orchestrator_edit. To replace or remove dependencies, pass the complete desired dependsOn list to orchestrator_edit; [] clears it.
@@ -144,7 +143,6 @@ var HISTORY_FIELD_LIMIT = 800;
 var MEMORY_EXCERPT = 300;
 var MEMORY_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 var CONTROL_ASK_MS = 2000;
-var CONTROL_POST_MS = 500;
 function isControl(data) {
   return typeof data === "object" && data !== null && "id" in data && typeof data.id === "string" && "task" in data && typeof data.task === "string" && "action" in data && typeof data.action === "string";
 }
@@ -422,8 +420,8 @@ function listTasks(board, flows, all, self) {
       line += ` \xB7 reach it ${presentationText(t)}`;
     const route = t.planningOutcome ?? t.planningMode;
     line += ` \xB7 ${route === "fast" ? "fast path" : route === "plan" ? "plan review" : "auto triage"}`;
-    if (t.loop)
-      line += ` \xB7 loop ${t.loop}`;
+    if (t.controlSet)
+      line += ` \xB7 controls ${t.controlSet}`;
     if (t.plan.trim())
       line += " \xB7 has a plan";
     if (t.ticket)
@@ -751,8 +749,6 @@ function orchestrator(pi) {
   let current = "";
   let planning = false;
   let reviewOpen = false;
-  let planForYou = false;
-  let lastControl = null;
   let currentStep = null;
   let reportedStep = null;
   let stepTimer;
@@ -767,10 +763,6 @@ function orchestrator(pi) {
   let repaint = null;
   let themeEpoch = null;
   let themeTimer;
-  let controlCtx = null;
-  let controlPending = null;
-  let controlPosting = false;
-  let controlSentAt = 0;
   let autoMerging = false;
   const showWidget = (ctx) => {
     if (!on && !task)
@@ -910,88 +902,36 @@ function orchestrator(pi) {
   pi.on("agent_end", (event, ctx) => {
     if (ctx.agent?.kind === "sub" || "willContinue" in event && event.willContinue === true)
       return;
-    report(ctx, reviewOpen && planForYou ? "plan_ready" : reviewOpen ? "planning" : "idle");
+    report(ctx, reviewOpen ? "plan_ready" : "idle");
     if (task)
       autoMerge(ctx);
   });
-  const controlAsk = (command) => busAsk(pi.events, COMMAND_EVENT, command, CONTROL_ASK_MS, "The Control plugin isn't loaded in this omp");
-  const postControl = (view) => {
-    if (!task || !controlCtx)
+  const controlAsk = (command) => busAsk(pi.events, CONTROL_ASK_EVENT, command, CONTROL_ASK_MS, "The Control plugin isn't loaded in this omp");
+  pi.events.on(CONTROL_SETS_EVENT, (data) => {
+    if (!on || !flowId || !Array.isArray(data))
       return;
-    controlPending = { view };
-    if (controlPosting)
-      return;
-    controlPosting = true;
-    const id = task;
-    const path = controlCtx.cwd;
-    (async () => {
-      while (controlPending) {
-        const wait = controlSentAt + CONTROL_POST_MS - Date.now();
-        if (wait > 0)
-          await Bun.sleep(wait);
-        const next = controlPending;
-        controlPending = null;
-        controlSentAt = Date.now();
-        await api("POST", `/api/tasks/${id}/control`, { path, view: next.view }, false).catch(() => {});
-      }
-      controlPosting = false;
-    })();
-  };
-  pi.events.on(RUN_EVENT, (data) => {
-    const view = data ?? null;
-    lastControl = view;
-    if (task)
-      postControl(view);
-    if (!controlCtx || !view)
-      return;
-    if (reviewOpen) {
-      if (view.plan === "review" && !planForYou) {
-        planForYou = true;
-        report(controlCtx, "plan_ready");
-      } else if (view.plan === "checking") {
-        planForYou = false;
-        report(controlCtx, "planning", `Control \xB7 ${view.loop.planReviewer?.name ?? "plan reviewer"} reads the plan`);
-      }
-    }
-    if (view.gate.open) {
-      const undecided = view.findings.filter((f) => f.route === "ask" && !f.decision).length;
-      report(controlCtx, "needs_input", `Control: ${undecided} findings need your decision`);
-    } else if (view.status === "checking") {
-      const names = view.loop.stages.flatMap((s) => s.nodes).filter((n) => view.nodes[n.id]?.state === "running").map((n) => n.name);
-      report(controlCtx, "working", `Control \xB7 ${names.join(", ") || "checking"}`);
-    }
-  });
-  pi.events.on(LIBRARY_EVENT, (data) => {
-    if (!on || !flowId || !data || typeof data !== "object" || !("loops" in data))
-      return;
-    const summary = data;
-    api("PATCH", "/api/flows/control-loops", { id: flowId, loops: summary.loops }, false).catch(() => {});
+    api("PATCH", "/api/flows/control-sets", { id: flowId, sets: data }, false).catch(() => {});
   });
   const syncControl = async () => {
-    if (on && flowId) {
-      const id = flowId;
-      const r = await controlAsk({ type: "library" });
-      await api("PATCH", "/api/flows/control-loops", { id, loops: r.ok ? r.library?.loops ?? null : null }, false).catch(() => {});
-    }
-    if (task) {
-      const r = await controlAsk({ type: "run" });
-      postControl(r.ok ? r.run ?? null : null);
-    }
+    if (!on || !flowId)
+      return;
+    const id = flowId;
+    const r = await controlAsk({ type: "sets" });
+    await api("PATCH", "/api/flows/control-sets", { id, sets: r.ok ? r.sets ?? null : null }, false).catch(() => {});
   };
   const autoMerge = async (ctx) => {
     if (!task || autoMerging)
       return;
     const id = task;
-    const r = await controlAsk({ type: "run" });
-    const run = r.ok ? r.run : null;
-    if (run?.status !== "passed" || run.loop.finish !== "auto")
+    const r = await controlAsk({ type: "status" });
+    if (!r.ok || !r.passed || !r.autonomous)
       return;
     autoMerging = true;
     try {
       const t = findTask(await api("GET", "/api/state"), id);
       if (t.merge !== "local" || t.merged || !t.worktree)
         return;
-      ctx.ui.notify(`Control flow \xAB${run.loop.name}\xBB passed: merging ${taskNumber(id)} into ${t.base}`, "info");
+      ctx.ui.notify(`Controls passed: merging ${taskNumber(id)} into ${t.base}`, "info");
       await api("POST", `/api/tasks/${id}/merge`, { cleanup: true, commit: true, terminal: await requestTerminal() });
     } catch (e) {
       const message = errorText(e);
@@ -1072,14 +1012,6 @@ Merged ${t.branch} \u2192 ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info
           ok = choice !== undefined && ctx.resolvePlanReview(review.reviewId, choice.id);
           message = ok && choice ? `Approved its plan (${choice.label})` : "Its plan review took no approval";
         }
-      } else if (c.action === "control_decide") {
-        const r = await controlAsk({ type: "decide", decisions: c.decisions ?? {}, pause: c.pause === true });
-        ok = r.ok;
-        message = r.message;
-      } else if (c.action === "control_open") {
-        const r = await controlAsk({ type: "open" });
-        ok = r.ok;
-        message = r.message;
       } else if (c.action === "stop") {
         if (!ctx.isIdle())
           ctx.abort();
@@ -1263,7 +1195,6 @@ Merged ${t.branch} \u2192 ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info
     if (ctx.agent?.kind === "sub")
       return;
     serverCwd = ctx.cwd;
-    controlCtx = ctx;
     sessionId = ctx.sessionManager.getSessionId();
     sessionFile = ctx.sessionManager.getSessionFile() ?? null;
     const file = modeFile(ctx.cwd);
@@ -1587,18 +1518,16 @@ Every task in ${tilde(current2.scope)} loses this memory.`);
     if (ctx.agent?.kind === "sub")
       return;
     reviewOpen = true;
-    planForYou = !(lastControl?.loop.plan === "ai" && lastControl.status !== "paused");
     if (!task)
       return;
     const id = task;
-    report(ctx, planForYou ? "plan_ready" : "planning", planForYou ? undefined : "Control reviews the plan");
+    report(ctx, "plan_ready");
     api("PATCH", `/api/tasks/${id}`, { plan: event.planContent }, false).catch((e) => ctx.ui.notify(`${taskNumber(id)}: the plan didn't reach the board: ${errorText(e)}`, "warning"));
   });
   pi.on("plan_review_resolved", (event, ctx) => {
     if (ctx.agent?.kind === "sub")
       return;
     reviewOpen = false;
-    planForYou = false;
     if (!event.choice || event.choice === "save")
       report(ctx, "idle");
   });
@@ -1700,7 +1629,7 @@ ${plan}`;
   pi.registerTool({
     name: "orchestrator_create",
     label: "Orchestrator create",
-    description: "Create an Orchestrator backlog card after the required bounded preflight, only when no open card covers the same subject (add to that card with orchestrator_amend instead): a title and a description of what to build and why (what the user decided, the acceptance, links), not a plan. Set dependsOn for every card it builds on: open cards that must land first, and done cards still on the board whose change it extends or fixes (a done dependency doesn't block; its recorded outcome goes into the card's brief). parent (a card of the same flow) groups it under that card; use dependsOn for ordering, though a child also inherits its parent's blockers. planningMode defaults to auto; plan requires review and fast implements directly. loop names a Control loop from the library that the task session runs (only when the user asks); fixed once the card starts. Once started, it runs in its own git worktree branched from this checkout's branch. Created from a task's own worktree, the card joins that task's flow and, unless dependsOn is given, depends on that task as its follow-up; pass dependsOn [] when it should run alongside.",
+    description: "Create an Orchestrator backlog card after the required bounded preflight, only when no open card covers the same subject (add to that card with orchestrator_amend instead): a title and a description of what to build and why (what the user decided, the acceptance, links), not a plan. Set dependsOn for every card it builds on: open cards that must land first, and done cards still on the board whose change it extends or fixes (a done dependency doesn't block; its recorded outcome goes into the card's brief). parent (a card of the same flow) groups it under that card; use dependsOn for ordering, though a child also inherits its parent's blockers. planningMode defaults to auto; plan requires review and fast implements directly. controlSet names a Control set from the library that the task session runs on its own after each change (only when the user asks). Once started, it runs in its own git worktree branched from this checkout's branch. Created from a task's own worktree, the card joins that task's flow and, unless dependsOn is given, depends on that task as its follow-up; pass dependsOn [] when it should run alongside.",
     parameters: z.object({
       title: z.string(),
       description: z.string(),
@@ -1709,7 +1638,7 @@ ${plan}`;
       parent: z.string().optional(),
       merge: z.enum(["local", "pr"]).optional(),
       planningMode: z.enum(["auto", "plan", "fast"]).optional(),
-      loop: z.string().optional()
+      controlSet: z.string().optional()
     }),
     approval: "read",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1730,14 +1659,14 @@ ${plan}`;
   pi.registerTool({
     name: "orchestrator_edit",
     label: "Orchestrator edit",
-    description: `Change an Orchestrator card's title, description, ticket or plan text, its planning mode, merge mode, base or branch (fixed once it starts), its parent (a card of the same flow, or "none" to clear it; it groups cards, use dependsOn for ordering, though a child also inherits its parent's blockers), or replace its dependencies (use [] to clear). loop names a Control loop from the library that the task session runs (only when the user asks; "none" clears it); fixed once the card starts. A started card's running agent also receives a new title or description; when it can't yet (waiting for plan review or an answer, paused, omp disconnected, still starting), the board keeps the edit marked as not sent. Title and description are fixed once done. before or after (a card id in the same column) moves the card next to that card without starting it; Todo cards start from the top, so this sets which starts next.`,
+    description: `Change an Orchestrator card's title, description, ticket or plan text, its planning mode, merge mode, base or branch (fixed once it starts), its parent (a card of the same flow, or "none" to clear it; it groups cards, use dependsOn for ordering, though a child also inherits its parent's blockers), or replace its dependencies (use [] to clear). controlSet names a Control set from the library that the task session runs on its own after each change (only when the user asks; "none" clears it); fixed once the card starts. A started card's running agent also receives a new title or description; when it can't yet (waiting for plan review or an answer, paused, omp disconnected, still starting), the board keeps the edit marked as not sent. Title and description are fixed once done. before or after (a card id in the same column) moves the card next to that card without starting it; Todo cards start from the top, so this sets which starts next.`,
     parameters: z.object({
       id: z.string(),
       title: z.string().optional(),
       description: z.string().optional(),
       ticket: z.string().optional(),
       planningMode: z.enum(["auto", "plan", "fast"]).optional(),
-      loop: z.string().optional(),
+      controlSet: z.string().optional(),
       merge: z.enum(["local", "pr"]).optional(),
       base: z.string().optional(),
       branch: z.string().optional(),
@@ -1749,12 +1678,12 @@ ${plan}`;
     }),
     approval: "read",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const fields = ["title", "description", "ticket", "plan", "planningMode", "loop", "merge", "base", "branch", "dependsOn", "parent"].filter((k) => params[k] !== undefined);
+      const fields = ["title", "description", "ticket", "plan", "planningMode", "controlSet", "merge", "base", "branch", "dependsOn", "parent"].filter((k) => params[k] !== undefined);
       const side = params.before !== undefined ? "before" : params.after !== undefined ? "after" : undefined;
       if (params.before !== undefined && params.after !== undefined)
         return toolReply("Pass before or after, not both", true);
       if (!fields.length && !side) {
-        return toolReply("Nothing to change: pass title, description, ticket, plan, planningMode, loop, merge, base, branch, dependsOn, parent, before or after", true);
+        return toolReply("Nothing to change: pass title, description, ticket, plan, planningMode, controlSet, merge, base, branch, dependsOn, parent, before or after", true);
       }
       return answer((async () => {
         const id = await cardId(params.id, ctx);
@@ -1762,7 +1691,7 @@ ${plan}`;
         const dependsOn = params.dependsOn && await cardIds(params.dependsOn, ctx);
         const changes = Object.fromEntries(fields.map((k) => [
           k,
-          k === "dependsOn" ? dependsOn : k === "parent" ? parent : k === "loop" ? /^(none)?$/i.test(params.loop?.trim() ?? "") ? null : params.loop?.trim() : params[k]
+          k === "dependsOn" ? dependsOn : k === "parent" ? parent : k === "controlSet" ? /^(none)?$/i.test(params.controlSet?.trim() ?? "") ? null : params.controlSet?.trim() : params[k]
         ]));
         const edit = async () => {
           const t = await api("PATCH", `/api/tasks/${id}`, changes);

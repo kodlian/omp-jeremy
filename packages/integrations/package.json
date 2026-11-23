@@ -9,7 +9,7 @@
     "./theme": "./src/theme.ts",
     "./appearance": "./src/appearance.ts",
     "./fonts": "./src/fonts.ts",
-    "./review": "./src/review.ts",
+    "./control": "./src/control.ts",
     "./server": "./src/server.ts",
     "./page": "./src/page.ts",
     "./bus": "./src/bus.ts",
