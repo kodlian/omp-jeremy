@@ -468,15 +468,17 @@ def _origin(url: str) -> str:
     return f"{split.scheme}://{split.netloc}/"
 
 
-def _workspace_panes(part: Dict[str, str]) -> List[Dict[str, Any]]:
-    """The panes of the context's workspace with their surfaces (read-only); [] when cmux doesn't answer."""
+def _workspace(part: Dict[str, str]) -> Tuple[List[Dict[str, Any]], bool]:
+    """The context's workspace from cmux's tree (read-only): its panes with their surfaces, and whether it's in front,
+    selected in the key window; ([], False) when cmux doesn't answer."""
     code, out, _ = _cmux(part, ["--json", "--id-format", "uuids", "tree", "--workspace", part["workspace"]])
     try:
         tree = json.loads(out) if code == 0 else {}
     except ValueError:
-        return []
-    return [pane for window in tree.get("windows") or [] for workspace in window.get("workspaces") or []
-            for pane in workspace.get("panes") or []]
+        return [], False
+    found = [(window, workspace) for window in tree.get("windows") or [] for workspace in window.get("workspaces") or []]
+    return ([pane for _, workspace in found for pane in workspace.get("panes") or []],
+            any(window.get("key") is True and workspace.get("selected") is True for window, workspace in found))
 
 
 def _page_surface(pane: Dict[str, Any], url: str) -> Optional[str]:
@@ -491,7 +493,7 @@ def open_board(context: Dict[str, Any], url: str, focus: bool = False) -> bool:
     part = context.get("cmux")
     if not part or _cmux_panels(part) is None:
         return False
-    surface = next((s for s in (_page_surface(p, url) for p in _workspace_panes(part)) if s), None)
+    surface = next((s for s in (_page_surface(p, url) for p in _workspace(part)[0]) if s), None)
     if surface:
         if _cmux(part, ["browser", "--surface", surface, "navigate", url])[0] != 0:
             return False
@@ -502,22 +504,25 @@ def open_board(context: Dict[str, Any], url: str, focus: bool = False) -> bool:
 
 
 def open_tab(context: Dict[str, Any], url: str) -> Optional[Dict[str, str]]:
-    """Shows `url` in a focused browser tab in the pane of the context's terminal (reusing one there on its origin), else
-    in the workspace's focused pane; returns the tab for close_tab, None without cmux."""
+    """Shows `url` in a browser tab in the pane of the context's terminal (reusing one there on its origin), else in the
+    workspace's focused pane; returns the tab for close_tab, None without cmux. The tab takes the focus only while its
+    workspace is in front, so opening it never switches the user's workspace or brings cmux forward."""
     part = context.get("cmux")
     if not part or _cmux_panels(part) is None:
         return None
+    panes, in_front = _workspace(part)
     terminal = str(part.get("surface") or "").upper()
-    pane = next((p for p in _workspace_panes(part)
+    pane = next((p for p in panes
                  if terminal and terminal in (str(s).upper() for s in p.get("surface_ids") or [])), None)
     tab = _page_surface(pane, url) if pane else None
     if tab:
         if _cmux(part, ["browser", "--surface", tab, "navigate", url])[0] != 0:
             return None
-        _cmux(part, ["focus-panel", "--panel", tab, "--workspace", part["workspace"]])
+        if in_front:
+            _cmux(part, ["focus-panel", "--panel", tab, "--workspace", part["workspace"]])
     else:
         args = ["--json", "--id-format", "uuids", "new-surface", "--type", "browser", "--workspace", part["workspace"],
-                "--url", url, "--focus", "true"] + (["--pane", pane["id"]] if pane else [])
+                "--url", url, "--focus", str(in_front).lower()] + (["--pane", pane["id"]] if pane else [])
         code, out, _ = _cmux(part, args)
         tab = _created(out, "surface") if code == 0 else None
         if not tab:
@@ -681,8 +686,9 @@ def main(argv: List[str]) -> int:
     board.add_argument("url")
     board.add_argument("--focus", action=argparse.BooleanOptionalAction, default=True)
     board.add_argument("--context", help="a context JSON from detect, instead of detecting this terminal")
-    tab = sub.add_parser("tab", help="open a URL in a focused browser tab beside this terminal, else the default browser; "
-                                      "prints the tab as JSON for close-tab (null for the default browser)")
+    tab = sub.add_parser("tab", help="open a URL in a browser tab beside this terminal, focused while its workspace is in "
+                                      "front, else the default browser; prints the tab as JSON for close-tab (null for "
+                                      "the default browser)")
     tab.add_argument("url")
     tab.add_argument("--context", help="a context JSON from detect, instead of detecting this terminal")
     close = sub.add_parser("close-tab", help="close a tab that tab opened")

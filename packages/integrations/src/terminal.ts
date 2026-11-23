@@ -88,7 +88,7 @@ export interface PageTab {
 	surface: string;
 }
 
-/** Opens `url` in a focused browser tab beside the calling terminal, in its cmux pane; else the default browser, which leaves no tab to close (null). Rejects when nothing opens it. */
+/** Opens `url` in a browser tab beside the calling terminal, in its cmux pane, focused only while its workspace is in front (selected in the key window); else the default browser, which leaves no tab to close (null). Rejects when nothing opens it. */
 export async function openTab(url: string, options: Omit<OpenBoardOptions, "focus"> = {}): Promise<PageTab | null> {
 	const args = ["tab", url];
 	if (options.context) args.push("--context", JSON.stringify(options.context));

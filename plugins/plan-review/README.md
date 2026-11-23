@@ -27,7 +27,7 @@ omp plugin link plugins/plan-review
 
 ## Usage
 
-In cmux the page opens as a tab beside the session's terminal, in the same pane, and takes the focus; elsewhere it opens in the default browser. The tab closes once the review ends: you refine or approve from the page or the terminal, the review is dismissed, or plan mode ends. Each new review opens it again. Orchestrator task sessions don't open it on their own, since the board already shows their plans; `/plan-review` still does.
+In cmux the page opens as a tab beside the session's terminal, in the same pane; elsewhere it opens in the default browser. The tab takes the focus only while that workspace is in front (selected in cmux's key window); otherwise it waits in its pane, so a plan coming in never switches your workspace or brings cmux forward. The tab closes once the review ends: you refine or approve from the page or the terminal, the review is dismissed, or plan mode ends. Each new review opens it again. Orchestrator task sessions don't open it on their own, since the board already shows their plans; `/plan-review` still does.
 
 - Hover a block (heading, paragraph, list item, code, table) and click **+** to comment on it; shift-click another block's **+** to stretch the open comment over the range. Selecting text and pressing **Comment** (or `c`) quotes just the selection.
 - **Refine plan** sends every comment, each quoting its plan lines, plus the overall feedback field. The revised plan replaces the page, its added and rewritten blocks marked in the gutter, with the previous text under **Previous version**.

@@ -45,14 +45,14 @@ export default function planReview(pi: ExtensionAPI) {
 		if (current) await closeTab(current).catch(() => {});
 	};
 
-	/** Opens the page in a tab beside the session's terminal and jumps to it. */
+	/** Opens the page in a tab beside the session's terminal. */
 	const openPage = async (sessionCtx: ExtensionContext) => {
 		const next = await openTab((await ensureServer(sessionCtx)).url());
 		if (tab && tab.surface !== next?.surface) await closePage();
 		tab = next;
 	};
 
-	/** Brings the page forward for a review, once. */
+	/** Opens the page for a review, once. */
 	const show = async (reviewId: string) => {
 		// Orchestrator task sessions already show their plan on the board.
 		if (opened === reviewId || pending !== reviewId || !ctx || process.env.ORCHESTRATOR_TASK) return;
