@@ -322,15 +322,6 @@ function appearanceSync(omp, page) {
   };
 }
 
-// packages/integrations/src/review.ts
-var REVIEW_EVENT = "git-diff-review:open";
-function isReviewRequest(data) {
-  if (!data || typeof data !== "object")
-    return false;
-  const r = data;
-  return typeof r.reply === "function" && (r.type === "probe" || r.type === "open" && typeof r.base === "string");
-}
-
 // packages/integrations/src/text.ts
 var errorText = (e) => e instanceof Error ? e.message : String(e);
 
@@ -1022,15 +1013,6 @@ function gitDiffReview(pi) {
       }
       commandCtx.ui.notify(`review open at ${await open(commandCtx, compare)}`, "info");
     }
-  });
-  pi.events.on(REVIEW_EVENT, (data) => {
-    if (!isReviewRequest(data))
-      return;
-    if (data.type === "probe")
-      return data.reply({ ok: true, message: "" });
-    if (!ctx)
-      return data.reply({ ok: false, message: "git-diff-review has no omp session yet" });
-    open(ctx, { kind: "branch", base: data.base }).then((url) => data.reply({ ok: true, message: url }), (e) => data.reply({ ok: false, message: errorText(e) }));
   });
   pi.on("session_start", async (_event, sessionCtx) => {
     if (sessionCtx.agent?.kind === "sub")

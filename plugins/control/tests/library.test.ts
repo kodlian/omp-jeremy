@@ -1,10 +1,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { withPlanMode } from "omp-control-view/protocol";
-import { parseNodeFile, serializeNode } from "../src/frontmatter";
-import { copyItem, deleteItem, loadLibrary, type LoopSnapshot, type NodeDefinition, nodeFrom, resolveLoop, saveLoop, saveNode, savedSnapshot, validateSnapshot } from "../src/library";
+import { dirname, join } from "node:path";
+import { loadLibrary, summarize } from "../src/library";
 
 let home: string;
 let repo: string;
@@ -21,132 +19,60 @@ afterEach(async () => {
 	await rm(repo, { recursive: true, force: true });
 });
 
-const reviewer: NodeDefinition = {
-	id: "docs-reviewer",
-	name: "Docs reviewer",
-	kind: "review",
-	description: "Docs match: the code's behavior",
-	command: null,
-	timeout: null,
-	ask: "all",
-	model: "anthropic/claude-sonnet-4-5",
-	thinking: "low",
-	tools: ["read", "grep"],
-	resources: ["docs/style guide.md", "it's ok", "skill://writing"],
-	instructions: "Check the README.\n\n- Every flag is documented.",
-};
+async function put(path: string, text: string) {
+	await mkdir(dirname(path), { recursive: true });
+	await writeFile(path, text);
+}
 
-test("a node survives a write and a read: lists, quoted text and '' escapes", () => {
-	const text = serializeNode(reviewer);
-	const { fields, body } = parseNodeFile(text, "x.md");
-	expect(nodeFrom(reviewer.id, fields, body, "x.md")).toEqual(reviewer);
+const reviewer = (name: string) => `---\nname: ${name}\nkind: review\n---\n\nReview the change.\n`;
 
-	const check: NodeDefinition = { ...reviewer, id: "tests", name: "Tests", kind: "check", command: `bun test --grep "a: b" && echo 'done'`, timeout: 120, ask: "doubts", tools: [], model: null, thinking: null, resources: [], instructions: "" };
-	const parsed = parseNodeFile(serializeNode(check), "c.md");
-	expect(nodeFrom("tests", parsed.fields, parsed.body, "c.md")).toEqual(check);
-
-	// A reviewer has no time limit; one an older file gives it is ignored.
-	const old = parseNodeFile(serializeNode(reviewer).replace("kind: review\n", "kind: review\ntimeout: 600\n"), "o.md");
-	expect(nodeFrom(reviewer.id, old.fields, old.body, "o.md")).toEqual(reviewer);
-
-	const hand = parseNodeFile("---\nname: 'It''s a check'\n# comment\n\nkind: check\ncommand: \"make \\\"all\\\"\"\ntimeout: 30\n---\n", "h.md");
-	expect(hand.fields).toEqual({ name: "It's a check", kind: "check", command: 'make "all"', timeout: 30 });
-});
-
-test("bad node files are rejected with the path and field", () => {
-	expect(() => parseNodeFile("---\nname: A\ncolor: red\n---\n", "n.md")).toThrow('n.md: unknown key "color"');
-	const noCommand = parseNodeFile("---\nname: Build\nkind: check\n---\n", "b.md");
-	expect(() => nodeFrom("build", noCommand.fields, noCommand.body, "b.md")).toThrow("b.md: a check needs a command");
-	const editor = parseNodeFile("---\nname: Fixer\nkind: review\ntools:\n  - read\n  - edit\n---\nFix things", "f.md");
-	expect(() => nodeFrom("fixer", editor.fields, editor.body, "f.md")).toThrow(/f\.md: tools can only be .*not edit/);
-	const noBody = parseNodeFile("---\nname: Empty\nkind: review\n---\n", "e.md");
-	expect(() => nodeFrom("empty", noBody.fields, noBody.body, "e.md")).toThrow("e.md: a reviewer needs instructions");
-});
-
-test("repo overrides global, which overrides built-in; bad files are listed, not fatal", async () => {
-	const globalNode = { ...reviewer, id: "quality-reviewer", name: "Global quality" };
-	await saveNode(repo, "global", globalNode);
+test("a repo control overrides a global one, which overrides a built-in", async () => {
+	await put(join(home, "nodes/quality-reviewer.md"), reviewer("Global quality"));
 	let library = await loadLibrary(repo);
-	expect(library.nodes.get("quality-reviewer")).toMatchObject({ source: "global", overrides: ["built-in"], node: { name: "Global quality" } });
-	expect(library.nodes.get("conventions-reviewer")).toMatchObject({ source: "built-in", overrides: [] });
+	expect(library.controls.get("quality-reviewer")).toMatchObject({ name: "Global quality", source: "global" });
+	expect(library.controls.get("conventions-reviewer")?.source).toBe("built-in");
 
-	await saveNode(repo, "repo", { ...globalNode, name: "Repo quality" });
-	await mkdir(join(repo, ".omp/control/loops"), { recursive: true });
-	await writeFile(join(repo, ".omp/control/loops/broken.json"), "{ nope");
+	const path = join(repo, ".omp/control/nodes/quality-reviewer.md");
+	await put(path, reviewer("Repo quality"));
 	library = await loadLibrary(repo);
-	expect(library.nodes.get("quality-reviewer")).toMatchObject({ source: "repo", overrides: ["global", "built-in"], node: { name: "Repo quality" } });
-	expect(library.loops.get("review")?.source).toBe("built-in");
-	expect(library.errors.map((e) => e.path)).toEqual([join(repo, ".omp/control/loops/broken.json")]);
-
-	await deleteItem(repo, "repo", "node", "quality-reviewer");
-	expect((await loadLibrary(repo)).nodes.get("quality-reviewer")?.source).toBe("global");
-	await expect(deleteItem(repo, "repo", "loop", "review")).rejects.toThrow("built-in loops can't be deleted");
+	expect(library.controls.get("quality-reviewer")).toMatchObject({ name: "Repo quality", source: "repo", path });
 });
 
-test("items copy or move between levels", async () => {
-	await saveNode(repo, "global", reviewer);
-	const moved = await copyItem(repo, await loadLibrary(repo), "node", "docs-reviewer", "repo", true);
-	expect(moved).toBe(join(repo, ".omp/control/nodes/docs-reviewer.md"));
-	expect((await loadLibrary(repo)).nodes.get("docs-reviewer")).toMatchObject({ source: "repo", overrides: [] });
-	await copyItem(repo, await loadLibrary(repo), "node", "quality-reviewer", "global", false);
-	expect((await loadLibrary(repo)).nodes.get("quality-reviewer")).toMatchObject({ source: "global", overrides: ["built-in"] });
-	await expect(copyItem(repo, await loadLibrary(repo), "loop", "review", "repo", true)).rejects.toThrow("Built-in loops can't move");
-});
-
-test("saveLoop writes the repo loop file and refuses unknown nodes; resolveLoop names missing nodes", async () => {
-	await saveNode(repo, "repo", reviewer);
-	let library = await loadLibrary(repo);
-	const loop = { id: "docs", name: "Docs", description: "", maxPasses: 2, stages: [{ nodes: ["docs-reviewer"] }, { nodes: ["quality-reviewer"] }] };
-	const path = await saveLoop(repo, "repo", loop, library);
-	expect(path).toBe(join(repo, ".omp/control/loops/docs.json"));
-	expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ name: "Docs", description: "", maxPasses: 2, plan: "none", stages: loop.stages, finish: "review" });
-	await expect(saveLoop(repo, "repo", { ...loop, stages: [{ nodes: ["ghost", "phantom"] }] }, library)).rejects.toThrow("Loop docs needs missing nodes: ghost, phantom");
-
-	library = await loadLibrary(repo);
-	expect(resolveLoop(library, "docs").stages[0].nodes[0]).toEqual(reviewer);
-	await rm(join(repo, ".omp/control/nodes/docs-reviewer.md"));
-	const reloaded = await loadLibrary(repo);
-	expect(() => resolveLoop(reloaded, "docs")).toThrow("Loop docs needs missing nodes: docs-reviewer");
-});
-
-test("loop and session snapshot limits", () => {
-	expect(() => validateSnapshot({ name: "X", stages: Array.from({ length: 9 }, () => ({ nodes: [] })) })).toThrow("stages must list 0–8 stages");
-	expect(() => validateSnapshot({ name: "X", stages: [], finish: "later" })).toThrow("finish must be review or auto");
-	expect(validateSnapshot({ name: "X", stages: [] })).toMatchObject({ stages: [], finish: "review" });
-	expect(() => validateSnapshot({ name: "X", stages: [{ nodes: [reviewer, reviewer] }] })).toThrow("node docs-reviewer appears twice");
-	expect(() => validateSnapshot({ name: "X", maxPasses: 11, stages: [{ nodes: [reviewer] }] })).toThrow("maxPasses must be 1–10");
-	expect(validateSnapshot({ id: null, name: "X", stages: [{ nodes: [reviewer] }] })).toMatchObject({ id: null, maxPasses: 4, stages: [{ nodes: [reviewer] }] });
-	expect(() => validateSnapshot({ name: "X", plan: true, stages: [] })).toThrow("plan must be none, you or ai");
-	expect(() => validateSnapshot({ name: "X", plan: "ai", stages: [] })).toThrow("planReviewer names the plan's reviewer when plan is ai, and only then");
-	expect(() => validateSnapshot({ name: "X", plan: "you", planReviewer: reviewer, stages: [] })).toThrow("planReviewer names the plan's reviewer");
-	expect(() => validateSnapshot({ name: "X", plan: "ai", planReviewer: reviewer, stages: [{ nodes: [reviewer] }] })).toThrow("node docs-reviewer appears twice");
-	expect(validateSnapshot({ name: "X", plan: "ai", planReviewer: reviewer, stages: [] })).toMatchObject({ plan: "ai", planReviewer: reviewer });
-});
-
-test("a session loop saved before plan modes comes back with you approving the plan", () => {
-	const old = { id: "ship", name: "Ship", description: "", maxPasses: 4, plan: true, planStages: [{ nodes: [reviewer] }], stages: [], finish: "review" } as unknown as LoopSnapshot;
-	expect(savedSnapshot(old)).toEqual({ id: "ship", name: "Ship", description: "", maxPasses: 4, plan: "you", planReviewer: null, stages: [], finish: "review" });
-});
-
-test("a command check can't be the plan reviewer", () => {
-	expect(() => validateSnapshot({ name: "X", plan: "ai", planReviewer: { ...reviewer, kind: "check", command: "true" }, stages: [] })).toThrow("planReviewer must be an AI reviewer");
-});
-
-test("a loop file in the old format reports why it doesn't load, instead of falling back to the built-in of the same id", async () => {
-	await mkdir(join(repo, ".omp/control/loops"), { recursive: true });
-	await writeFile(join(repo, ".omp/control/loops/review.json"), '{"name":"Old","plan":true,"planStages":[],"stages":[]}');
+test("a reviewer file with keys Control no longer reads loads; a check without a command is an error", async () => {
+	await put(join(home, "nodes/docs-reviewer.md"), "---\nname: Docs\nkind: review\nask: doubts\ntools:\n  - read\n  - grep\nmodel: anthropic/claude-sonnet-4-5\ntimeout: 600\nresources:\n  - docs/STYLE.md\n---\n\nCheck the docs.\n");
+	await put(join(home, "nodes/tests.md"), "---\nname: Tests\nkind: check\ncommand: bun test\n---\n");
+	const broken = join(home, "nodes/build.md");
+	await put(broken, "---\nname: Build\nkind: check\n---\n");
 	const library = await loadLibrary(repo);
-	expect(library.loops.has("review")).toBe(false);
-	expect(() => resolveLoop(library, "review")).toThrow("plan must be none, you or ai");
+	expect(library.controls.get("docs-reviewer")).toMatchObject({ kind: "review", name: "Docs", command: null, timeout: null });
+	expect(library.controls.get("tests")).toMatchObject({ kind: "check", command: "bun test", timeout: 900 });
+	expect(library.controls.has("build")).toBe(false);
+	expect(library.errors).toEqual([{ path: broken, message: `${broken}: a check needs a command` }]);
 });
 
-test("every built-in loop round-trips through the session snapshot check", async () => {
+test("a set naming a missing control is dropped and listed", async () => {
+	const path = join(repo, ".omp/control/sets/docs.json");
+	await put(path, JSON.stringify({ name: "Docs", controls: ["quality-reviewer", "ghost"] }));
 	const library = await loadLibrary(repo);
-	expect(library.loops.size).toBeGreaterThan(0);
-	for (const id of library.loops.keys()) expect(validateSnapshot(resolveLoop(library, id))).toEqual(resolveLoop(library, id));
+	expect(library.sets.has("docs")).toBe(false);
+	expect(library.errors).toEqual([{ path, message: `${path}: set docs names missing controls: ghost` }]);
 });
 
-test("a loop stored before plan modes reads as you approving the plan", () => {
-	const old = { id: "a", name: "A", description: "", maxPasses: 4, plan: true, planStages: [], stages: [], finish: "review" } as never;
-	expect(withPlanMode(old)).toEqual({ id: "a", name: "A", description: "", maxPasses: 4, plan: "you", planReviewer: null, stages: [], finish: "review" });
+test("a set's approval defaults to apply; any other value is an error", async () => {
+	await put(join(home, "sets/quick.json"), JSON.stringify({ name: "Quick", controls: ["quality-reviewer"] }));
+	const odd = join(home, "sets/odd.json");
+	await put(odd, JSON.stringify({ name: "Odd", controls: ["quality-reviewer"], approval: "maybe" }));
+	const library = await loadLibrary(repo);
+	expect(library.sets.get("quick")).toMatchObject({ approval: "apply", description: "", controls: ["quality-reviewer"], source: "global" });
+	expect(library.sets.has("odd")).toBe(false);
+	expect(library.errors).toEqual([{ path: odd, message: `${odd}: approval must be apply or ask` }]);
+});
+
+test("the built-in library loads cleanly with the review and quality sets", async () => {
+	const library = await loadLibrary(null);
+	expect(library.errors).toEqual([]);
+	expect(summarize(library).map((s) => [s.id, s.controls, s.approval])).toEqual([
+		["quality", ["Quality"], "apply"],
+		["review", ["Quality", "Conventions", "Project rules"], "apply"],
+	]);
 });

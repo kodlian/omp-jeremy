@@ -1,7 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import * as omp from "@oh-my-pi/pi-coding-agent";
-import { COMMAND_EVENT, type ControlReply, RUN_EVENT, type RunView } from "omp-control-view/protocol";
-import { busAsk } from "omp-integrations/bus";
 import { appearanceSync, recordedPort } from "omp-integrations/page";
 import { closeTab, openTab, type PageTab } from "omp-integrations/terminal";
 import { errorText } from "omp-integrations/text";
@@ -9,8 +7,6 @@ import { DEFAULT_PORTS, type PlanReviewServer, startPlanReviewServer } from "./s
 
 // Session entry recording the port a session's page uses, so a restored session brings it back and an open tab reconnects.
 const SERVER_ENTRY = "plan-review.server";
-/** How long Control gets to say whether its AI reviewer answers the plan; it answers at once when loaded. */
-const CONTROL_ASK_MS = 150;
 
 export default function planReview(pi: ExtensionAPI) {
 	let server: PlanReviewServer | null = null;
@@ -77,16 +73,8 @@ export default function planReview(pi: ExtensionAPI) {
 		// The review's handlers must return quickly; the page opens after.
 		void (async () => {
 			(await ensureServer(eventCtx)).present(event);
-			// Control's AI reviewer answers first; the page comes forward if it leaves the plan to you.
-			const run = (await busAsk<ControlReply>(pi.events, COMMAND_EVENT, { type: "run" }, CONTROL_ASK_MS, "")).run;
-			if (run?.loop.plan === "ai" && run.status !== "paused" && run.plan !== "review") return;
 			await show(event.reviewId);
 		})().catch(showFailed);
-	});
-
-	pi.events.on(RUN_EVENT, (data) => {
-		const view = (data ?? null) as RunView | null; // Control's RUN_EVENT payload
-		if (view?.plan === "review" && pending) void show(pending).catch(showFailed);
 	});
 
 	// However the review ends (answered on the page or in the terminal, dismissed, replaced, plan mode left), its tab closes.
@@ -110,8 +98,6 @@ export default function planReview(pi: ExtensionAPI) {
 		ctx = sessionCtx;
 		const port = resumePort ?? recordedPort(sessionCtx, SERVER_ENTRY);
 		resumePort = null;
-		// Control's reviewer sessions never plan.
-		if (process.env.OMP_CONTROL_REVIEWER === "1") return;
 		await ensureServer(sessionCtx, port).catch((e) => sessionCtx.ui.notify(`Plan review: the page didn't start: ${errorText(e)}`, "warning"));
 	});
 

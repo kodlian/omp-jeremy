@@ -2,24 +2,6 @@
 // plugins/plan-review/src/extension.ts
 import * as omp from "@oh-my-pi/pi-coding-agent";
 
-// packages/control-view/src/protocol.ts
-var RUN_EVENT = "control:run";
-var COMMAND_EVENT = "control:command";
-
-// packages/integrations/src/bus.ts
-function busAsk(events, event, request, timeoutMs, unavailable) {
-  const { promise, resolve } = Promise.withResolvers();
-  const timer = setTimeout(() => resolve({ ok: false, message: unavailable }), timeoutMs);
-  events.emit(event, {
-    ...request,
-    reply: (r) => {
-      clearTimeout(timer);
-      resolve(r);
-    }
-  });
-  return promise;
-}
-
 // packages/integrations/src/theme.ts
 import { existsSync } from "fs";
 import { homedir } from "os";
@@ -556,7 +538,6 @@ function startPlanReviewServer(hooks, { ports = DEFAULT_PORTS, stateDir = DEFAUL
 
 // plugins/plan-review/src/extension.ts
 var SERVER_ENTRY = "plan-review.server";
-var CONTROL_ASK_MS = 150;
 function planReview(pi) {
   let server = null;
   let ctx = null;
@@ -612,16 +593,8 @@ function planReview(pi) {
     pending = event.reviewId;
     (async () => {
       (await ensureServer(eventCtx)).present(event);
-      const run = (await busAsk(pi.events, COMMAND_EVENT, { type: "run" }, CONTROL_ASK_MS, "")).run;
-      if (run?.loop.plan === "ai" && run.status !== "paused" && run.plan !== "review")
-        return;
       await show(event.reviewId);
     })().catch(showFailed);
-  });
-  pi.events.on(RUN_EVENT, (data) => {
-    const view = data ?? null;
-    if (view?.plan === "review" && pending)
-      show(pending).catch(showFailed);
   });
   pi.on("plan_review_resolved", (event, eventCtx) => {
     if (eventCtx.agent?.kind === "sub")
@@ -645,8 +618,6 @@ function planReview(pi) {
     ctx = sessionCtx;
     const port = resumePort ?? recordedPort(sessionCtx, SERVER_ENTRY);
     resumePort = null;
-    if (process.env.OMP_CONTROL_REVIEWER === "1")
-      return;
     await ensureServer(sessionCtx, port).catch((e) => sessionCtx.ui.notify(`Plan review: the page didn't start: ${errorText(e)}`, "warning"));
   });
   pi.on("session_switch", async (_event, sessionCtx) => {

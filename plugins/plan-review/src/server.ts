@@ -31,7 +31,7 @@ export interface PlanReviewRequest {
 	tiers?: PlanTier[];
 }
 
-/** Who answered a review: this page, another extension (Control's plan checks) or the terminal. */
+/** Who answered a review: this page, another extension or the terminal. */
 export type ResolvedBy = "page" | "extension" | "local";
 
 export interface PlanReviewView extends PlanReviewRequest {

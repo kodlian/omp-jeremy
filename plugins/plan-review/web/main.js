@@ -137,7 +137,7 @@ function resolutionText({ choice, by }) {
   const label = state.review.options.find((o) => o.id === choice)?.label;
   if (!label) return "Review closed without an answer";
   if (choice === "refine") {
-    const who = by === "page" ? "Feedback sent" : by === "local" ? "Refinement asked in the terminal" : "An extension (such as Control's plan checks) asked for a refinement";
+    const who = by === "page" ? "Feedback sent" : by === "local" ? "Refinement asked in the terminal" : "An extension asked for a refinement";
     return `${who}; the revised plan opens here`;
   }
   return by === "page" ? label : `${label} · answered ${by === "local" ? "in the terminal" : "by an extension"}`;

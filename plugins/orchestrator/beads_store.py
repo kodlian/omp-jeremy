@@ -25,10 +25,10 @@ CUSTOM_STATUSES = "todo:active,review:wip"
 STATUS_FOR_COLUMN = {"backlog": "open", "todo": "todo", "doing": "in_progress", "review": "review", "done": "closed"}
 COLUMN_FOR_STATUS = {**{s: c for c, s in STATUS_FOR_COLUMN.items()},
                      "blocked": "backlog", "deferred": "backlog", "pinned": "backlog", "hooked": "doing"}
-CONFIG_KEYS = ("repo", "checkout", "base", "branch", "branchEdited", "merge", "planningMode", "loop", "number")
+CONFIG_KEYS = ("repo", "checkout", "base", "branch", "branchEdited", "merge", "planningMode", "controlSet", "number")
 FIELDS = ("title", "description", "plan", "column", "dependsOn", "parent", "ticket") + CONFIG_KEYS
 RUNTIME_KEYS = ("order", "spawn", "worktree", "presentation", "execution", "pr", "merged", "planningOutcome", "origin",
-                "briefed", "updatedAt", "planUpdatedAt", "control", "keptWorktree", "intent", "lastOperation", "resumedAt",
+                "briefed", "updatedAt", "planUpdatedAt", "keptWorktree", "intent", "lastOperation", "resumedAt",
                 "beadsPending")
 # Before managed agent hosts, a started task's agent ran directly in the cmux workspace its record names.
 LEGACY_RUNTIME_KEYS = ("order", "spawn", "worktree", "workspace", "pr", "merged", "planningOutcome", "origin", "briefed",

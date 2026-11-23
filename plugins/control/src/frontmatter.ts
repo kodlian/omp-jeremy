@@ -1,8 +1,3 @@
-import type { NodeDefinition } from "./library";
-
-export const NODE_KEYS = ["name", "kind", "description", "command", "timeout", "ask", "model", "thinking", "tools", "resources"] as const;
-const BARE = /^[A-Za-z0-9][A-Za-z0-9 ._/@+-]*$/;
-
 function scalar(raw: string, where: string): string {
 	const value = raw.trim();
 	if (value.startsWith('"')) {
@@ -20,8 +15,8 @@ function scalar(raw: string, where: string): string {
 	return value;
 }
 
-/** Splits a node file into its header fields and its body (a reviewer's instructions). */
-export function parseNodeFile(text: string, path: string): { fields: Record<string, string | number | string[]>; body: string } {
+/** Splits a control file into its header fields and its body (a reviewer's instructions). */
+export function parseControlFile(text: string, path: string): { fields: Record<string, string | number | string[]>; body: string } {
 	const lines = text.split(/\r?\n/);
 	if (lines[0]?.trim() !== "---") throw new Error(`${path}: must start with a --- header`);
 	const end = lines.findIndex((line, i) => i > 0 && line.trim() === "---");
@@ -41,7 +36,6 @@ export function parseNodeFile(text: string, path: string): { fields: Record<stri
 		const pair = /^([A-Za-z_][A-Za-z0-9_]*):(.*)$/.exec(line);
 		if (!pair) throw new Error(`${where}: expected "key: value"`);
 		const [, key, rest] = pair;
-		if (!(NODE_KEYS as readonly string[]).includes(key)) throw new Error(`${path}: unknown key "${key}"`);
 		if (key in fields) throw new Error(`${path}: duplicate key "${key}"`);
 		if (!rest.trim()) {
 			list = [];
@@ -56,23 +50,4 @@ export function parseNodeFile(text: string, path: string): { fields: Record<stri
 		} else fields[key] = value;
 	}
 	return { fields, body: lines.slice(end + 1).join("\n").trim() };
-}
-
-function quote(value: string): string {
-	return BARE.test(value) && value === value.trim() ? value : JSON.stringify(value);
-}
-
-/** Writes a node as a file parseNodeFile reads back to the same definition. */
-export function serializeNode(node: NodeDefinition): string {
-	const out = ["---", `name: ${quote(node.name)}`, `kind: ${node.kind}`];
-	if (node.description) out.push(`description: ${quote(node.description)}`);
-	if (node.kind === "check" && node.command !== null) out.push(`command: ${quote(node.command)}`);
-	if (node.timeout !== null) out.push(`timeout: ${node.timeout}`);
-	out.push(`ask: ${node.ask}`);
-	if (node.model) out.push(`model: ${quote(node.model)}`);
-	if (node.thinking) out.push(`thinking: ${quote(node.thinking)}`);
-	if (node.kind === "review") out.push("tools:", ...node.tools.map((t) => `  - ${quote(t)}`));
-	if (node.resources.length) out.push("resources:", ...node.resources.map((r) => `  - ${quote(r)}`));
-	out.push("---");
-	return `${out.join("\n")}\n${node.instructions ? `\n${node.instructions}\n` : ""}`;
 }
