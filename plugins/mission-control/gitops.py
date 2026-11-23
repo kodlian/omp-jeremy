@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 import os
+import re
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from runtime import run
+
+CREATED_FROM = re.compile(r"\tbranch: Created from (\S+)")
+COMMIT = re.compile(r"[0-9a-f]{7,40}")
 
 
 def git_toplevel(path: str) -> Optional[str]:
@@ -102,3 +107,25 @@ def prepare_branch(repo: str, branch: str, base: str) -> str:
 def unmerged_files(path: str) -> List[str]:
     _, output, _ = run(["git", "-C", path, "diff", "--name-only", "--diff-filter=U"], timeout=15)
     return [name for name in output.splitlines() if name.strip()]
+
+
+def branch_base(repo: str, branch: str, default: str) -> str:
+    """The branch `branch` was made from, as cmux's sidebar nests it: its `branch.<name>.nestUnder` setting, else the
+    branch its creation record names; `default` when neither names an existing branch. Read only."""
+    code, out, _ = run(["git", "-C", repo, "config", "--get", f"branch.{branch}.nestUnder"], timeout=10)
+    if code == 0 and out.strip() and has_ref(repo, f"refs/heads/{out.strip()}"):
+        return out.strip()
+    code, common, _ = run(["git", "-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"], timeout=10)
+    try:
+        record = (Path(common.strip()) / "logs" / "refs" / "heads" / branch).read_text(encoding="utf-8") if code == 0 else ""
+    except OSError:
+        record = ""
+    m = CREATED_FROM.search(record)
+    name = m[1] if m else ""
+    for prefix in ("refs/heads/", "refs/remotes/origin/", "origin/"):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+    if name and name not in (branch, "HEAD") and not COMMIT.fullmatch(name) and has_ref(repo, f"refs/heads/{name}"):
+        return name
+    return default

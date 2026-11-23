@@ -1,9 +1,9 @@
 {
-  "name": "omp-orchestrator",
-  "version": "0.6.1",
+  "name": "omp-mission-control",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Orchestrator for omp: plans become tasks that run in their own worktrees and merge back",
+  "description": "Mission Control for omp: every worktree of a project, its agent, its links and its pull request",
   "omp": {
     "extensions": ["./dist/extension.js"]
   },

@@ -591,7 +591,7 @@ function planReview(pi) {
     tab = next;
   };
   const show = async (reviewId) => {
-    if (opened === reviewId || pending !== reviewId || !ctx || process.env.ORCHESTRATOR_TASK)
+    if (opened === reviewId || pending !== reviewId || !ctx)
       return;
     opened = reviewId;
     await openPage(ctx);

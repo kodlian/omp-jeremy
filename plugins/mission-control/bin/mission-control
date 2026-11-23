@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# orchestrator — run the orchestrator server and open its board.
-#   orchestrator       start the server when it isn't running (restarting it after server.py changed), then open the board
-#   orchestrator serve run the server in the foreground
-#   orchestrator stop | restart | status | logs
+# mission-control — run the Mission Control server and open its page.
+#   mission-control      start the server when it isn't running (restarting it after server.py changed), then open the page
+#   mission-control serve run the server in the foreground
+#   mission-control stop | restart | status | logs
 set -euo pipefail
 
 # The project root, following symlinks to this script (e.g. one in ~/.local/bin).
@@ -14,10 +14,10 @@ while [ -L "$src" ]; do
 done
 root=$(cd -P "$(dirname "$src")/.." && pwd)
 
-home=${ORCHESTRATOR_HOME:-$HOME/.orchestrator}
-port=${ORCHESTRATOR_PORT:-4747}
+home=${MISSION_CONTROL_HOME:-$HOME/.mission-control}
+port=${MISSION_CONTROL_PORT:-4747}
 url="http://127.0.0.1:$port"
-python=${ORCHESTRATOR_PYTHON:-python3}
+python=${MISSION_CONTROL_PYTHON:-python3}
 pidfile=$home/server.pid
 log=$home/server.log
 
@@ -25,16 +25,7 @@ health() { curl -fsS --max-time 1 "$url/api/health" 2>/dev/null; }
 # json_field <field>: one field of the health JSON on stdin.
 json_field() { "$python" -c 'import json, sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"; }
 
-require_beads() {
-  if ! command -v bd >/dev/null 2>&1; then
-    echo "orchestrator: Beads is required; install it with 'brew install beads'." >&2
-    exit 1
-  fi
-}
-
 start() {
-  require_beads
-  # Prepare first: it moves the data from before the rename into $home only while $home doesn't exist yet.
   "$python" "$root/server.py" --prepare
   mkdir -p "$home"
   nohup "$python" "$root/server.py" >>"$log" 2>&1 &
@@ -44,7 +35,7 @@ start() {
     if health >/dev/null; then return 0; fi
     sleep 0.1
   done
-  echo "orchestrator: the server did not start; last log lines:" >&2
+  echo "mission-control: the server did not start; last log lines:" >&2
   tail -n 20 "$log" >&2
   exit 1
 }
@@ -64,20 +55,18 @@ stop() {
 }
 
 open_board() {
-  "$python" -c 'import sys; sys.path.insert(0, sys.argv[1]); from integrations import terminals; raise SystemExit(terminals.main(sys.argv[2:]))' "$root" --override-env ORCHESTRATOR_TERMINAL --override-env OMP_TERMINAL board "$board_url"
+  "$python" -c 'import sys; sys.path.insert(0, sys.argv[1]); from integrations import terminals; raise SystemExit(terminals.main(sys.argv[2:]))' "$root" --override-env MISSION_CONTROL_TERMINAL --override-env OMP_TERMINAL board "$board_url"
 }
 
-# The checkout orchestrator starts from becomes the board's context and its registered flow, which the board opens on: new tasks branch from its branch and merge back into it.
+# The repository mission-control starts in is registered as a project, which the page opens on.
 board_url=$url
-set_context() {
+register_project() {
   git -C "$PWD" rev-parse --show-toplevel >/dev/null 2>&1 || return 0
-  local body context flow
+  local body project
   body=$("$python" -c 'import json, os; print(json.dumps({"path": os.getcwd()}))')
-  context=$(curl -fsS --max-time 10 -H 'Content-Type: application/json' -d "$body" "$url/api/context")
-  echo "orchestrator: new tasks branch from $(json_field base <<<"$context") ($(json_field path <<<"$context"))"
-  flow=$(curl -fsS --max-time 10 -H 'Content-Type: application/json' -d "$body" "$url/api/flows" |
-    "$python" -c 'import json, sys, urllib.parse; print(urllib.parse.quote(json.load(sys.stdin)["flow"]["id"], safe=""))')
-  board_url="$url/?flow=$flow"
+  project=$(curl -fsS --max-time 10 -H 'Content-Type: application/json' -d "$body" "$url/api/projects" |
+    "$python" -c 'import json, sys, urllib.parse; print(urllib.parse.quote(json.load(sys.stdin)["project"]["id"], safe=""))')
+  board_url="$url/?project=$project"
 }
 
 case "${1:-open}" in
@@ -94,19 +83,18 @@ case "${1:-open}" in
     else
       start
     fi
-    set_context
+    register_project
     open_board
     ;;
   serve)
-    require_beads
     "$python" "$root/server.py" --prepare
     exec "$python" "$root/server.py"
     ;;
   stop) stop ;;
-  restart) stop; start; echo "orchestrator: $url" ;;
+  restart) stop; start; echo "mission-control: $url" ;;
   status)
-    if status=$(health); then echo "orchestrator: running at $url (pid $(json_field pid <<<"$status"))"; else echo "orchestrator: not running"; exit 1; fi
+    if status=$(health); then echo "mission-control: running at $url (pid $(json_field pid <<<"$status"))"; else echo "mission-control: not running"; exit 1; fi
     ;;
   logs) exec tail -n 100 -f "$log" ;;
-  *) echo "usage: orchestrator [open|serve|stop|restart|status|logs]" >&2; exit 2 ;;
+  *) echo "usage: mission-control [open|serve|stop|restart|status|logs]" >&2; exit 2 ;;
 esac

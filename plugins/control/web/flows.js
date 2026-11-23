@@ -42,7 +42,7 @@ export function describeFlow(shape) {
   steps.push(`After ${shape.maxPasses} rounds, anything left comes to you.`);
   steps.push(
     shape.finish === "auto"
-      ? "Once the checks pass, the task is done without your review; an Orchestrator task merges on its own."
+      ? "Once the checks pass, the task is done without your review; a Mission Control task branched from another task merges into it on its own."
       : "You review the final change: approve it, or send it back with what to change.",
   );
   return steps;

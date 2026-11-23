@@ -1901,7 +1901,7 @@ ${node.command ?? ""}`;
 function reviewerEnv() {
   const env = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && !key.startsWith("ORCHESTRATOR_") && !key.startsWith("OMP_CONTROL_"))
+    if (value !== undefined && !key.startsWith("MISSION_CONTROL_") && !key.startsWith("OMP_CONTROL_"))
       env[key] = value;
   }
   return { ...env, OMP_CONTROL_REVIEWER: "1", OMP_MCP_TIMEOUT_MS: "1000" };
@@ -3003,7 +3003,7 @@ ${findingQuestion(f)}`;
     plan: z.enum(["none", "you", "ai"]).optional().describe('"none" (default): the agent implements right away; "you": it plans in omp plan mode and you approve the plan; "ai": planReviewer approves the plan'),
     planReviewer: z.string().optional().describe('The reviewer node that approves the plan; only with plan "ai"'),
     stages: z.array(z.object({ nodes: z.array(z.string()) })),
-    finish: z.enum(["review", "auto"]).optional().describe('"review" (default): you review the final change; "auto": done once the checks pass, and a local Orchestrator task merges')
+    finish: z.enum(["review", "auto"]).optional().describe('"review" (default): you review the final change; "auto": done once the checks pass, and a Mission Control task branched from another task merges into it')
   });
   pi.registerTool({
     name: "control_library",

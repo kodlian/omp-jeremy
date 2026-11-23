@@ -49,9 +49,9 @@
         "omp-web-design-system": "workspace:*",
       },
     },
-    "plugins/orchestrator": {
-      "name": "omp-orchestrator",
-      "version": "0.6.1",
+    "plugins/mission-control": {
+      "name": "omp-mission-control",
+      "version": "0.1.0",
       "devDependencies": {
         "@dagrejs/dagre": "^3.1.3",
         "omp-control-view": "workspace:*",
@@ -156,7 +156,7 @@
 
     "omp-integrations": ["omp-integrations@workspace:packages/integrations"],
 
-    "omp-orchestrator": ["omp-orchestrator@workspace:plugins/orchestrator"],
+    "omp-mission-control": ["omp-mission-control@workspace:plugins/mission-control"],
 
     "omp-plan-review": ["omp-plan-review@workspace:plugins/plan-review"],
 

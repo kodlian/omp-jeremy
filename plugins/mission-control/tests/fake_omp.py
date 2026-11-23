@@ -2,7 +2,9 @@
 """A stand-in `omp` for lifecycle tests: holds its session's lease like omp, streams its task's board events, reports idle,
 and on the board's stop command answers, reports a clean exit and exits. Its worktree's name picks a behavior: `slow`
 answers a stop without exiting, ignores SIGTERM and SIGHUP, and exits 16 s after it started; `selfmerge` commits and asks
-the board to merge its own task, as /orchestrator done does, writing the reply to $HOME/selfmerge.out."""
+the board to merge its own task, as /land does, writing the reply to $HOME/selfmerge.out; `planned` reports its plan
+approved, as the extension does when the user approves it, writing the reply to $HOME/planned-<task>.out and staying
+idle while the board holds it."""
 import fcntl
 import json
 import os
@@ -16,8 +18,8 @@ import urllib.request
 from pathlib import Path
 
 HOME = Path(os.environ["HOME"])
-TASK = os.environ.get("ORCHESTRATOR_TASK", "")
-PORT = int(os.environ["ORCHESTRATOR_PORT"])
+TASK = os.environ.get("MISSION_CONTROL_TASK", "")
+PORT = int(os.environ["MISSION_CONTROL_PORT"])
 CWD = os.getcwd()
 SLOW = "slow" in CWD
 busy = threading.Lock()
@@ -95,10 +97,19 @@ def self_merge() -> None:
         (HOME / "selfmerge.out").write_text(json.dumps(reply))
 
 
+def plan_approved() -> None:
+    time.sleep(1)
+    with busy:
+        reply = post(f"/api/tasks/{TASK}/planned", {})
+        (HOME / f"planned-{TASK}.out").write_text(json.dumps(reply))
+        if reply.get("hold"):
+            post("/api/agent", {"task": TASK, "path": CWD, "state": "idle", "sessionId": SID})
+
+
 def main() -> None:
     with open(HOME / "omp-args.log", "a") as log:
         log.write(json.dumps({"task": TASK, "argv": sys.argv[1:]}) + "\n")
-    lease_dir = Path(os.environ["ORCHESTRATOR_LEASE_DIR"])
+    lease_dir = Path(os.environ["MISSION_CONTROL_LEASE_DIR"])
     lease_dir.mkdir(parents=True, exist_ok=True)
     lease = os.open(lease_dir / f"{SID}.lock", os.O_RDWR | os.O_CREAT, 0o600)
     try:
@@ -114,6 +125,8 @@ def main() -> None:
     post("/api/agent", {"task": TASK, "path": CWD, "state": "idle", "sessionId": SID})
     if "selfmerge" in CWD:
         threading.Thread(target=self_merge, daemon=True).start()
+    if "planned" in CWD:
+        threading.Thread(target=plan_approved, daemon=True).start()
     threading.Event().wait()
 
 

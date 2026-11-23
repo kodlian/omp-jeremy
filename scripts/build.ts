@@ -3,14 +3,14 @@ import { dirname, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
 const designSystem = resolve(root, "packages/web-design-system/design-system.css");
-for (const target of ["plugins/orchestrator/design-system.css", "plugins/git-diff-review/web/design-system.css", "plugins/control/web/design-system.css", "plugins/plan-review/web/design-system.css"]) {
+for (const target of ["plugins/mission-control/design-system.css", "plugins/git-diff-review/web/design-system.css", "plugins/control/web/design-system.css", "plugins/plan-review/web/design-system.css"]) {
   await copyFile(designSystem, resolve(root, target));
 }
 const controlView = resolve(root, "packages/control-view");
-for (const target of ["plugins/orchestrator/control-view.css", "plugins/control/web/control-view.css"]) {
+for (const target of ["plugins/mission-control/control-view.css", "plugins/control/web/control-view.css"]) {
   await copyFile(resolve(controlView, "control-view.css"), resolve(root, target));
 }
-for (const [name, entry] of [["orchestrator", "omp/orchestrator.ts"], ["git-diff-review", "src/extension.ts"], ["control", "src/extension.ts"], ["plan-review", "src/extension.ts"]]) {
+for (const [name, entry] of [["mission-control", "omp/mission-control.ts"], ["git-diff-review", "src/extension.ts"], ["control", "src/extension.ts"], ["plan-review", "src/extension.ts"]]) {
   const dir = resolve(root, "plugins", name);
   const result = await Bun.build({
     entrypoints: [resolve(dir, entry)],
@@ -24,8 +24,8 @@ for (const [name, entry] of [["orchestrator", "omp/orchestrator.ts"], ["git-diff
   await copyFile(resolve(root, "packages/integrations/python/omp_terminals.py"), resolve(dir, "python/omp_terminals.py"));
 }
 const graph = await Bun.build({
-  entrypoints: [resolve(root, "plugins/orchestrator/graph-layout.ts")],
-  outdir: resolve(root, "plugins/orchestrator"),
+  entrypoints: [resolve(root, "plugins/mission-control/graph-layout.ts")],
+  outdir: resolve(root, "plugins/mission-control"),
   target: "browser",
   format: "iife",
   minify: true,
@@ -33,16 +33,16 @@ const graph = await Bun.build({
 if (!graph.success) throw new AggregateError(graph.logs, "Could not build task graph layout");
 const view = await Bun.build({
   entrypoints: [resolve(controlView, "src/global.ts")],
-  outdir: resolve(root, "plugins/orchestrator"),
+  outdir: resolve(root, "plugins/mission-control"),
   naming: "control-view.js",
   target: "browser",
   format: "iife",
   minify: true,
 });
 if (!view.success) throw new AggregateError(view.logs, "Could not build the control loop view");
-const dagre = Bun.resolveSync("@dagrejs/dagre", resolve(root, "plugins/orchestrator"));
+const dagre = Bun.resolveSync("@dagrejs/dagre", resolve(root, "plugins/mission-control"));
 const graphlib = Bun.resolveSync("@dagrejs/graphlib", dirname(dagre));
-const licenses = resolve(root, "plugins/orchestrator/licenses");
+const licenses = resolve(root, "plugins/mission-control/licenses");
 await mkdir(licenses, { recursive: true });
 for (const [name, entry] of [["dagre", dagre], ["graphlib", graphlib]]) {
   await copyFile(resolve(dirname(entry), "../LICENSE"), resolve(licenses, `${name}.LICENSE`));

@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Orchestrator</title>
+<title>Mission Control</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232f7bf6'/%3E%3Cg transform='translate(5 5) scale(.9167)' fill='none' stroke='%23fff' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5'/%3E%3Cpath d='M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09'/%3E%3Cpath d='M9 12a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.4 22.4 0 0 1-4 2z'/%3E%3Cpath d='M9 12H4s.55-3.03 2-4c1.62-1.08 5 .05 5 .05'/%3E%3C/g%3E%3C/svg%3E">
 <link rel="stylesheet" href="/design-system.css">
 <style>
 :root{--header-h:40px;--panel-w:460px}
@@ -36,14 +37,23 @@ button.chip:disabled{cursor:default;opacity:.7}
 .ctx .mono{overflow:hidden;font-size:var(--font-size-sm);text-overflow:ellipsis}
 button.ctx{border:0;background:none;padding:0 0 0 12px}
 button.ctx:hover{color:var(--fg)}
-.tip{display:inline-flex}
-.tip[hidden]{display:none}
 .conn{flex:none;width:7px;height:7px;margin-left:2px;border-radius:50%;background:var(--remove)}
 .conn.on{background:var(--add)}
 .search{display:flex;align-items:center;gap:6px;width:220px;height:var(--control-h);padding:0 5px 0 8px;border:1px solid transparent;border-radius:var(--radius);background:var(--surface);color:var(--faint)}
 .search:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
 .search input{flex:1;min-width:0;height:100%;padding:0;border:0;background:transparent;color:var(--fg)}
 .search:focus-within kbd{display:none}
+.tagbar{display:flex;flex:none;flex-wrap:wrap;align-items:center;gap:6px;padding:0 14px 4px;color:var(--faint)}
+.tagbar[hidden]{display:none}
+.tag{display:inline-flex;flex:none;align-items:center;gap:3px;height:18px;padding:0 7px;border:0;border-radius:9px;background:var(--accent-soft);color:var(--accent);font-size:var(--font-size-xs);font-weight:500;white-space:nowrap}
+.tag .x{display:inline-flex;margin-right:-3px;color:var(--faint);cursor:pointer}
+.tag .x:hover{color:var(--remove)}
+.tagbar button.tag{height:22px;padding:0 9px;background:var(--surface);color:var(--muted)}
+.tagbar button.tag:hover{color:var(--fg)}
+.tagbar button.tag.on{background:var(--accent);color:var(--accent-fg)}
+.c-tags{display:flex;flex-wrap:wrap;align-items:center;gap:4px;min-width:0}
+.c-tags>.chip{max-width:100%;overflow:hidden}
+.tags-edit{display:flex;flex-wrap:wrap;align-items:center;gap:4px;min-height:var(--control-h)}
 
 /* MARK: board */
 .main{position:relative;display:flex;flex:1;min-height:0}
@@ -56,6 +66,9 @@ button.ctx:hover{color:var(--fg)}
 .col-b{display:flex;flex:1;flex-direction:column;gap:8px;min-height:60px;padding:0 8px 12px;overflow-y:auto}
 .col-empty{padding:18px 10px;border-radius:8px;color:var(--faint);font-size:var(--font-size-sm);text-align:center}
 .col-b:has(.ph) .col-empty{display:none}
+.card.untracked{border:1px dashed var(--line-strong);background:transparent}
+.card.untracked .c-title{font-family:var(--mono);font-size:var(--font-size-sm)}
+.card.is-hidden{opacity:.55}
 .card{position:relative;display:flex;flex:none;flex-direction:column;gap:6px;min-width:0;padding:9px 11px 10px;border:1px solid transparent;border-radius:8px;background:var(--raised);cursor:pointer;transition:border-color .12s,box-shadow .12s}
 .card:hover{background:var(--hover)}
 .card.sel{border-color:var(--accent);background:var(--accent-soft)}
@@ -91,6 +104,12 @@ button.ctx:hover{color:var(--fg)}
 .diffstat .r{color:var(--remove)}
 .udot{flex:none;width:6px;height:6px;border-radius:50%;background:var(--warning)}
 .pr-chip{display:inline-flex;flex:none;align-items:center;gap:3px;height:18px;padding:0 5px;border-radius:var(--radius-sm);background:color-mix(in srgb,currentColor 14%,transparent);font-size:var(--font-size-xs);font-weight:600;text-decoration:none!important}
+.pr-checks{flex:none;width:6px;height:6px;margin-left:1px;border-radius:50%}
+.pr-checks.passing{background:var(--add)}
+.pr-checks.failing{background:var(--remove)}
+.pr-checks.pending{display:inline-flex;width:auto;height:auto;background:none;color:var(--faint)}
+.pr-chip .approved{color:var(--add)}
+.pr-chip .changes,.pr-chip .conflict{color:var(--remove)}
 
 /* MARK: panel */
 .resizer{flex:none;width:7px;margin:0 -3px 0 -4px;z-index:5;cursor:col-resize}
@@ -123,14 +142,13 @@ button.ctx:hover{color:var(--fg)}
 .prop:hover:not(:disabled){background:var(--hover)}
 .prop:focus{background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--accent)}
 .prop:disabled{color:var(--muted);cursor:default}
-.p-desc{display:block;width:calc(100% + 14px);min-height:56px;margin:-6px -7px 0;padding:6px 7px;overflow:hidden;border:0;border-radius:var(--radius);background:transparent;font-size:var(--font-size);line-height:1.55;resize:none}
-.p-desc:hover{background:var(--hover)}
-.p-desc:focus{background:var(--surface-2)}
+.p-prompt{margin:0;color:var(--fg);font-size:var(--font-size);line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
+.p-prompt.none{color:var(--faint)}
 .prop-row{display:flex;gap:6px;align-items:center;min-width:0}
 .prop-row>.prop{flex:1;min-width:0}
 .deps{display:flex;flex-wrap:wrap;gap:4px;align-items:center;min-height:var(--control-h)}
 
-/* MARK: plan */
+/* MARK: content */
 .md{font-size:var(--font-size);line-height:1.6;overflow-wrap:anywhere}
 .md>:first-child{margin-top:0}
 .md>:last-child{margin-bottom:0}
@@ -155,9 +173,6 @@ button.ctx:hover{color:var(--fg)}
 .empty{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:16px;border-radius:var(--radius-lg);color:var(--muted);line-height:1.5}
 .empty strong{display:flex;align-items:center;gap:7px;color:var(--fg);font-size:var(--font-size)}
 .empty strong .icon{color:var(--accent)}
-.plan-edit{width:100%;min-height:360px;padding:10px 12px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);font-family:var(--mono);font-size:var(--code-font-size-sm);line-height:1.55;resize:vertical}
-.plan-edit:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
-.edit-bar{display:flex;justify-content:flex-end;gap:6px}
 .activity{overflow:hidden;border-radius:var(--radius-lg);background:var(--surface)}
 .activity.failed{background:color-mix(in srgb,var(--remove) 6%,var(--bg))}
 .act-h{display:flex;align-items:center;gap:8px;min-height:38px;padding:0 8px 0 12px}
@@ -183,7 +198,6 @@ button.ctx:hover{color:var(--fg)}
 .banner>.icon{color:var(--merged)}
 .banner .txt{flex:1;color:var(--muted)}
 .banner .txt strong{color:var(--fg);font-weight:600}
-.banner.unsent>.icon{color:var(--warning)}
 
 /* MARK: composer */
 .composer-wrap{flex:none;padding:6px 12px 12px}
@@ -196,6 +210,8 @@ button.ctx:hover{color:var(--fg)}
 .send{display:inline-flex;flex:none;align-items:center;justify-content:center;width:var(--control-h);height:var(--control-h);padding:0;border:0;border-radius:50%;background:var(--accent);color:var(--accent-fg)}
 .send:hover{filter:brightness(1.08)}
 .send:disabled{background:var(--surface-2);color:var(--faint);pointer-events:none}
+.prop-chip select{max-width:200px;padding:0;border:0;background:transparent;color:var(--fg);font-family:var(--mono);font-size:var(--font-size-sm)}
+.prop-chip select:disabled{color:var(--muted);opacity:1}
 
 /* MARK: menu */
 .menu{position:fixed;z-index:90;min-width:210px;max-width:340px;padding:4px;border-radius:9px;background:var(--raised);box-shadow:var(--shadow);animation:pop .1s ease-out}
@@ -211,6 +227,7 @@ button.ctx:hover{color:var(--fg)}
 .menu button.danger:hover,.menu button.danger:hover .icon{background:var(--remove);color:#fff}
 .menu button:disabled{opacity:.4;pointer-events:none}
 .menu hr{margin:4px 2px;border:0;border-top:1px solid var(--line)}
+.menu-input{width:calc(100% - 8px);margin:4px}
 
 /* MARK: modals */
 .overlay{position:fixed;inset:0;z-index:70;display:flex;align-items:flex-start;justify-content:center;padding:12vh 16px 16px;background:rgb(0 0 0 / .45);animation:fade .12s ease-out}
@@ -227,14 +244,10 @@ button.ctx:hover{color:var(--fg)}
 .modal.nt{width:620px}
 .nt-head{display:flex;align-items:center;gap:6px;padding:14px 18px 0;color:var(--muted);font-size:var(--font-size-sm);font-weight:500}
 .nt-head>.icon{color:var(--accent)}
-.nt-title{width:100%;padding:10px 18px 4px;border:0;background:transparent;font-size:calc(var(--font-size-lg) * 1.2);font-weight:650}
 .nt-desc{display:block;width:100%;min-height:110px;max-height:45vh;padding:4px 18px 12px;border:0;background:transparent;font-size:var(--font-size);line-height:1.55;resize:none}
 .nt-props{display:flex;flex-wrap:wrap;gap:6px;padding:0 18px 14px}
 .prop-chip{display:inline-flex;align-items:center;gap:6px;height:var(--tool-size);padding:0 9px;border:1px solid transparent;border-radius:7px;background:var(--surface);color:var(--muted)}
 .prop-chip:focus-within{border-color:var(--accent)}
-.prop-chip input{width:96px;padding:0;border:0;background:transparent;color:var(--fg);font-family:var(--mono);font-size:var(--font-size-sm);text-transform:uppercase}
-.prop-chip input::placeholder{font-family:var(--ui);font-size:var(--ui-font-size);text-transform:none}
-.prop-chip .mono{color:var(--fg);font-size:var(--font-size-sm)}
 .nt-foot{display:flex;align-items:center;gap:8px;padding:10px 12px 10px 14px;background:var(--surface)}
 .toasts{position:fixed;bottom:18px;left:50%;z-index:100;display:flex;flex-direction:column;align-items:center;gap:6px;transform:translateX(-50%);pointer-events:none}
 .toast{display:flex;align-items:center;gap:8px;max-width:520px;padding:8px 14px;border-radius:9px;background:var(--raised);box-shadow:var(--shadow);animation:pop .14s ease-out;pointer-events:auto}
@@ -250,9 +263,8 @@ button.ctx:hover{color:var(--fg)}
 </style>
 <link rel="stylesheet" href="/pipeline.css">
 <link rel="stylesheet" href="/workbench.css">
-<link rel="stylesheet" href="/native.css">
+<link rel="stylesheet" href="/links.css">
 <link rel="stylesheet" href="/control-view.css">
-<link rel="stylesheet" href="/flow-export.css">
 <link rel="stylesheet" href="/appearance.css">
 </head>
 <body>
@@ -270,6 +282,7 @@ button.ctx:hover{color:var(--fg)}
   <button class="tool-button" id="refreshBtn" title="Refresh agents, git and pull requests"></button>
   <button class="btn primary" id="newBtn"></button>
 </header>
+<nav class="tagbar" id="tagbar" aria-label="Filter by tag" hidden></nav>
 <div class="main">
   <div class="board" id="board"></div>
   <div class="resizer" id="resizer" hidden></div>
@@ -307,7 +320,6 @@ const LUCIDE = {
   play:'<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/>',
   pause:'<rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/>',
   stop:'<rect width="18" height="18" x="3" y="3" rx="2"/>',
-  zap:'<path d="M4 14a1 1 0 0 1-.78-1.63l9-11A.5.5 0 0 1 13 1.5V9h7a1 1 0 0 1 .78 1.63l-9 11A.5.5 0 0 1 11 21.5V14z"/>',
   message:'<path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/>',
   file:'<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
   search:'<path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/>',
@@ -315,45 +327,26 @@ const LUCIDE = {
   alert:'<circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/>',
   hand:'<path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
   ticket:'<path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/>',
+  tag:'<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/>',
+  eye:'<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff:'<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/>',
+  rocket:'<path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09"/><path d="M9 12a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.4 22.4 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 .05 5 .05"/>',
 };
 const icon = (name, size = 14, cls = "") => `<svg class="icon ${cls}" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${LUCIDE[name]}</svg>`;
 const spinner = (size = 12) => `<svg class="icon spin" viewBox="0 0 16 16" width="${size}" height="${size}" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="2"/><path d="M14 8a6 6 0 0 0-6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
 const COLUMN_GLYPH = {
-  backlog:'<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2.2 2.2"/>',
-  todo:'<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/>',
+  planning:'<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2.2 2.2"/>',
+  waiting:'<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6.6 6v4M9.4 6v4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>',
   doing:'<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 4.5a3.5 3.5 0 0 1 0 7z" fill="currentColor"/>',
   review:'<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 4.5a3.5 3.5 0 1 1-3.5 3.5H8z" fill="currentColor"/>',
+  pr:'<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="8" cy="8" r="3.5" fill="currentColor"/>',
   done:'<circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M5 8.2l2 2 4-4.2" fill="none" style="stroke:var(--bg)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>',
 };
-const COLUMN_COLOR = { backlog: "var(--muted)", todo: "var(--fg)", doing: "var(--warning)", review: "var(--add)", done: "var(--merged)" };
+const COLUMN_COLOR = { planning: "var(--muted)", waiting: "var(--fg)", doing: "var(--warning)", review: "var(--add)", pr: "var(--accent)", done: "var(--merged)" };
 const colIcon = (id, size = 14) => `<svg class="icon" viewBox="0 0 16 16" width="${size}" height="${size}" style="color:${COLUMN_COLOR[id]}" aria-hidden="true">${COLUMN_GLYPH[id]}</svg>`;
-const PLANNING_MODE = {
-  auto: { label: "Auto", icon: "wrench", sub: "Briefly triage, then plan only when a decision or risk requires review" },
-  plan: { label: "Plan", icon: "file", sub: "Require plan review before implementation" },
-  fast: { label: "Fast", icon: "zap", sub: "Implement directly without plan review" },
-};
-function planningChoice(mode) { return PLANNING_MODE[mode] || PLANNING_MODE.plan; }
-function planningRoute(t) {
-  const policy = t.planningMode || "plan";
-  const route = t.planningOutcome || policy;
-  const choice = planningChoice(route);
-  const title = policy === "auto" && t.planningOutcome
-    ? `Auto triage chose ${choice.label}${route === "fast" ? " and skipped plan review" : ""}`
-    : choice.sub;
-  return { ...choice, title };
-}
-function planningBadge(t) {
-  const p = planningRoute(t);
-  return h("span", { class: "chip", title: p.title, "aria-label": `Planning: ${p.label}` }, I(p.icon, 10), p.label);
-}
-function planningItems(selected, choose) {
-  return Object.entries(PLANNING_MODE).map(([mode, p]) => ({
-    icon: p.icon, label: p.label, sub: p.sub, checked: mode === selected, action: () => choose(mode),
-  }));
-}
-const flowLoops = flowId => flows().find(f => f.id === flowId)?.controlLoops ?? null;
+const projectLoops = projectId => projects().find(p => p.id === projectId)?.controlLoops ?? null;
 const loopStages = loop => loop.stages.map(s => s.nodes.map(n => n.name).join(" + ")).join(" \u2192 ");
-const loopSummary = t => t.loop ? (flowLoops(t.flow) || []).find(l => l.id === t.loop) ?? null : null;
+const loopSummary = t => t.loop ? (projectLoops(t.project) || []).find(l => l.id === t.loop) ?? null : null;
 const loopName = t => loopSummary(t)?.name ?? t.loop;
 function loopItems(list, selected, choose) {
   return [{ icon: "x", label: "None", sub: "The task session runs no control loop", checked: !selected, action: () => choose(null) },
@@ -397,17 +390,9 @@ function elapsed(iso) {
 }
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const isTyping = () => { const a = document.activeElement; return !!a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.isContentEditable); };
-// Preferences saved before the rename from Kanboard move to the new prefix once.
-try {
-  for (const key of Object.keys(localStorage).filter(k => k.startsWith("kanboard."))) {
-    const moved = "orchestrator." + key.slice("kanboard.".length);
-    if (localStorage.getItem(moved) === null) localStorage.setItem(moved, localStorage.getItem(key));
-    localStorage.removeItem(key);
-  }
-} catch {}
 const LS = {
-  get: k => { try { return localStorage.getItem("orchestrator." + k); } catch { return null; } },
-  set: (k, v) => { try { localStorage.setItem("orchestrator." + k, v); } catch {} },
+  get: k => { try { return localStorage.getItem("mission-control." + k); } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem("mission-control." + k, v); } catch {} },
 };
 function autosize(el, max = 400) {
   el.style.height = "auto";
@@ -417,6 +402,9 @@ function autosize(el, max = 400) {
 function flash(el) { el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
 function toolButton(name, title, onclick, size = 15) {
   return h("button", { class: "tool-button", title, "aria-label": title, onclick }, I(name, size));
+}
+function actionButton(label, icon, onclick, primary = false, title = null, disabled = false) {
+  return h("button", { class: "btn sm" + (primary ? " primary" : ""), title, disabled, onclick: e => { e.stopPropagation(); onclick(); } }, I(icon, 11), label);
 }
 function toast(text, error = false, ms = error ? 6000 : 3000) {
   const t = h("div", { class: "toast" + (error ? " error" : "") }, I(error ? "alert" : "check", 14), h("span", {}, text));
@@ -451,7 +439,9 @@ let pendingRender = false;
 let openId = null;
 let highlightedDependency = null;
 let filter = "";
-let flowSel = new URLSearchParams(location.search).get("flow") || null;
+let projectSel = new URLSearchParams(location.search).get("project") || null;
+let tagSel = null;
+let showHidden = null;
 let themeHref = "/appearance.css";
 const tabFor = {};
 const drafts = new Map();
@@ -462,63 +452,140 @@ const taskNumbers = ids => ids.map(taskNumber).join(", ");
 // A card from a typed reference: a number ("12", "#12.1") in this page's project, else an id as given.
 const taskRef = raw => {
   const v = raw.trim().replace(/^#(?=\d)/, "");
-  if (!/^\d+(?:\.\d+)*$/.test(v)) return /^kb-\d+(?:\.\d+)*$/i.test(v) ? v.toUpperCase() : v;
-  const repo = flows().find(f => f.id === flowSel)?.repo;
-  return board?.tasks.find(t => t.number === v && (!repo || t.repo === repo))?.id ?? v;
+  if (!/^\d+(?:\.\d+)*$/.test(v)) return /^(?:mc|kb)-\d+(?:\.\d+)*$/i.test(v) ? v.toUpperCase() : v;
+  return board?.tasks.find(t => t.number === v && (!projectSel || t.project === projectSel))?.id ?? v;
 };
-const flows = () => (board && board.flows) || [];
-const selectedFlow = () => flows().find(f => f.id === flowSel) || null;
-const inFlow = t => !!selectedFlow() && t.flow === flowSel;
+const projects = () => (board && board.projects) || [];
+const selectedProject = () => projects().find(p => p.id === projectSel) || null;
+const inProject = t => !!selectedProject() && t.project === projectSel;
+const projectWorktrees = () => ((board && board.worktrees) || []).filter(w => w.project === projectSel);
 const colTasks = col => board.tasks.filter(t => t.column === col).sort((a, b) => a.order - b.order);
 const colTitle = id => (board.columns.find(c => c.id === id) || { title: id }).title;
-const matches = t => !filter || `${t.id} ${taskNumber(t.id)} ${t.title} ${t.ticket || ""} ${t.branch}`.toLowerCase().includes(filter);
+const tagOk = t => !tagSel?.size || (t.tags || []).some(x => tagSel.has(x));
+const hiddenBranch = branch => !!branch && (selectedProject()?.hidden || []).includes(branch);
+const shownOk = x => showHidden || !hiddenBranch(x.branch);
+const matches = t => shownOk(t) && tagOk(t) && (!filter || `${t.id} ${taskNumber(t.id)} ${t.title} ${t.ticket || ""} ${t.branch} ${(t.tags || []).join(" ")}`.toLowerCase().includes(filter));
+const worktreeMatches = w => shownOk(w) && tagOk(w) && (!filter || `${w.branch} ${w.tags.join(" ")}`.toLowerCase().includes(filter));
 
 function setBoard(b) {
   board = b;
-  if (!flowSel) lockFlow();
+  if (!selectedProject()) lockProject();
   applyTheme();
   renderContext();
+  renderTagBar();
   renderBoard();
-  if (openId) { const t = findTask(openId); if (t && inFlow(t)) updatePanel(); else closePanel(); }
-  const waiting = b.tasks.filter(t => inFlow(t) && needsAttention(t)).length;
-  document.title = waiting ? `${waiting} waiting · Orchestrator` : "Orchestrator";
+  if (openId) { const t = findTask(openId); if (t && inProject(t)) updatePanel(); else closePanel(); }
+  const waiting = b.tasks.filter(t => inProject(t) && shownOk(t) && needsAttention(t)).length;
+  document.title = waiting ? `${waiting} waiting · Mission Control` : "Mission Control";
 }
-/** Fixes the page's flow once: the URL's, else the linked task's, else the board's context; it never changes after. */
-function lockFlow() {
-  flowSel = findTask(taskRef(decodeURIComponent(location.hash.slice(1))))?.flow || board.repo?.flow || null;
-  if (!flowSel) return;
+/** The page shows one project: the URL's, else the linked task's, else the first live one, else the first. */
+function lockProject() {
+  const list = projects();
+  if (projectSel && list.some(p => p.id === projectSel)) return;
+  projectSel = findTask(taskRef(decodeURIComponent(location.hash.slice(1))))?.project || list.find(p => p.live)?.id || list[0]?.id || projectSel;
+  if (!projectSel) return;
+  tagSel = showHidden = null;
   const q = new URLSearchParams(location.search);
-  q.set("flow", flowSel);
+  q.set("project", projectSel);
   history.replaceState(null, "", location.pathname + "?" + q + location.hash);
 }
 function renderContext() {
-  const c = $("#ctx"), f = selectedFlow();
-  if (f) {
-    const parts = [I("repo", 13), h("strong", {}, f.name), I("branch", 12), h("span", { class: "mono" }, f.base)];
-    if (f.concurrencyLimit != null) parts.push(h("span", { class: "chip" }, `${f.concurrencyLimit} at once`));
+  const c = $("#ctx"), p = selectedProject();
+  if (p) {
+    const parts = [I("repo", 13), h("strong", {}, p.name), I("branch", 12), h("span", { class: "mono" }, p.defaultBranch)];
+    if (p.concurrencyLimit != null) parts.push(h("span", { class: "chip" }, `${p.concurrencyLimit} at once`));
     parts.push(I("chevronDown", 12));
     c.replaceChildren(...parts);
-    c.title = `New tasks branch from ${f.base} and merge back into it (${f.checkout}). Flow settings`;
+    c.title = `${p.repo} · pull requests go into ${p.defaultBranch}. Project settings`;
   } else {
-    c.replaceChildren(I("branch", 13), h("strong", {}, "Flow unavailable"), I("chevronDown", 12));
-    c.title = "This page's flow has no checkout or connected omp session; run /orchestrator in its checkout";
+    c.replaceChildren(I("repo", 13), h("strong", {}, "Project unavailable"), I("chevronDown", 12));
+    c.title = "This page's project isn't registered; run /mission in its checkout";
   }
-  c.onclick = () => openMenu(c, flowMenu());
+  c.onclick = () => openMenu(c, projectMenu());
 }
-function flowMenu() {
-  const cur = selectedFlow();
-  if (!cur) return [{ header: "Flow unavailable: run /orchestrator in its checkout" }];
-  return [{ header: "Flow settings" },
+function projectMenu() {
+  const cur = selectedProject();
+  if (!cur) return [{ header: "Project unavailable: run /mission in its checkout" }];
+  return [{ header: "Project settings" },
     { icon: "wrench", label: "Concurrent tasks", sub: cur.concurrencyLimit == null ? "Unlimited" : String(cur.concurrencyLimit), action: () => showConcurrencyModal(cur) },
+    { icon: "tag", label: "Tag rules", sub: cur.tagRules.length ? plural(cur.tagRules.length, "rule") : "None", action: () => showTagRulesModal(cur) },
     { icon: "play", label: "Setup script", sub: scriptName(cur.setupScript), action: () => showScriptsModal(cur) },
-    { icon: "trash", label: "Teardown script", sub: scriptName(cur.teardownScript), action: () => showScriptsModal(cur) },
-    "-", { icon: "openIn", label: "Save flow as a page", sub: "~/.orchestrator/exports", action: () => saveFlow() },
-    "-", { header: "Beads" },
-    { icon: "file", label: "Shared memories…", sub: cur.name, action: () => showMemories() }];
+    { icon: "trash", label: "Teardown script", sub: scriptName(cur.teardownScript), action: () => showScriptsModal(cur) }];
 }
-function showConcurrencyModal(flow) {
+function renderTagBar() {
+  const bar = $("#tagbar"), tags = selectedProject()?.tags || [];
+  if (!tagSel) {
+    try { tagSel = new Set(JSON.parse(LS.get("tags." + projectSel) || "[]")); } catch { tagSel = new Set(); }
+  }
+  if (showHidden === null) showHidden = LS.get("showHidden." + projectSel) === "1";
+  for (const x of [...tagSel]) if (!tags.includes(x)) tagSel.delete(x);
+  const hidden = board.tasks.filter(t => inProject(t) && hiddenBranch(t.branch)).length + projectWorktrees().filter(w => hiddenBranch(w.branch)).length;
+  if (!hidden && showHidden) {
+    showHidden = false;
+    LS.set("showHidden." + projectSel, "0");
+  }
+  bar.hidden = !tags.length && !hidden;
+  bar.replaceChildren(...(tags.length ? [I("tag", 12)] : []), ...tags.map(x => h("button", { class: "tag" + (tagSel.has(x) ? " on" : ""), "aria-pressed": String(tagSel.has(x)),
+    title: tagSel.has(x) ? `Stop filtering by ${x}` : `Show only cards tagged ${x}`, onclick: () => toggleTag(x) }, x)));
+  if (hidden) bar.append(h("span", { class: "spacer" }), h("button", { class: "tag" + (showHidden ? " on" : ""), "aria-pressed": String(showHidden),
+    title: showHidden ? "Leave hidden cards out again" : "Show the cards hidden from the board", onclick: toggleHidden }, I(showHidden ? "eye" : "eyeOff", 11), `${hidden} hidden`));
+}
+function toggleTag(x) {
+  if (!tagSel.delete(x)) tagSel.add(x);
+  LS.set("tags." + projectSel, JSON.stringify([...tagSel]));
+  renderTagBar();
+  renderBoard();
+}
+function toggleHidden() {
+  showHidden = !showHidden;
+  LS.set("showHidden." + projectSel, showHidden ? "1" : "0");
+  renderTagBar();
+  renderBoard();
+}
+async function setHidden(project, branch, hidden) {
+  try {
+    const r = await act("PATCH", "/api/projects/hidden", { id: project, branch, hidden },
+      hidden ? `${branch} is hidden; "hidden" in the tag bar shows it` : `${branch} is back on the board`);
+    const current = projects().find(p => p.id === project);
+    if (current) Object.assign(current, r.project);
+    renderTagBar();
+    if (hidden && !showHidden && findTask(openId)?.branch === branch) closePanel();
+    renderBoard();
+  } catch {}
+}
+const hideItem = (project, branch) => hiddenBranch(branch)
+  ? { icon: "eye", label: "Show on the board", action: () => setHidden(project, branch, false) }
+  : { icon: "eyeOff", label: "Hide from the board", action: () => setHidden(project, branch, true) };
+function showTagRulesModal(project) {
+  const area = h("textarea", { class: "field mono", rows: "6", spellcheck: "false", autocomplete: "off",
+    placeholder: "feature/nutrition-* nutrition\n*onboarding* onboarding ui" });
+  area.value = project.tagRules.map(r => `${r.pattern} ${r.tags.join(" ")}`).join("\n");
+  const save = h("button", { class: "btn primary" }, "Save");
+  save.onclick = async () => {
+    const rules = area.value.split("\n").map(l => l.trim().split(/\s+/)).filter(([pattern]) => pattern).map(([pattern, ...tags]) => ({ pattern, tags }));
+    save.disabled = true;
+    try {
+      const r = await act("PATCH", "/api/projects/tag-rules", { id: project.id, rules }, rules.length ? `${plural(rules.length, "tag rule")} saved` : "Tag rules cleared");
+      const current = projects().find(p => p.id === project.id);
+      if (current) Object.assign(current, r.project);
+      closeModal();
+      renderTagBar();
+      renderBoard();
+    } catch { save.disabled = false; }
+  };
+  openModal([
+    h("div", { class: "m-body" },
+      h("h2", {}, "Tag rules"),
+      h("p", { class: "m-text" }, `Tasks and worktrees of ${project.name} get the tags of every rule matching their branch name or their worktree's folder name when they are created or tracked; saving also tags its open tasks.`),
+      h("label", { class: "m-label" }, "One rule per line: a branch or folder pattern, then its tags"),
+      area,
+      h("div", { class: "m-note" }, "* matches anything, ? one character; case is ignored.")),
+    h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), save)]);
+  setTimeout(() => area.focus(), 0);
+}
+function showConcurrencyModal(project) {
   const input = h("input", { class: "field mono", type: "number", min: "1", step: "1", inputmode: "numeric",
-    placeholder: "Unlimited", value: flow.concurrencyLimit ?? "" });
+    placeholder: "Unlimited", value: project.concurrencyLimit ?? "" });
   const save = h("button", { class: "btn primary" }, "Save");
   const submit = async () => {
     const raw = input.value.trim();
@@ -530,10 +597,10 @@ function showConcurrencyModal(flow) {
     save.disabled = true;
     try {
       const limit = raw ? Number(raw) : null;
-      const r = await act("PATCH", "/api/flows", { id: flow.id, concurrencyLimit: limit },
+      const r = await act("PATCH", "/api/projects", { id: project.id, concurrencyLimit: limit },
         limit == null ? "Concurrent tasks are unlimited" : `Concurrent tasks limited to ${limit}`);
-      const current = flows().find(f => f.id === flow.id);
-      if (current) Object.assign(current, r.flow);
+      const current = projects().find(p => p.id === project.id);
+      if (current) Object.assign(current, r.project);
       closeModal();
       renderContext();
       renderBoard();
@@ -544,7 +611,7 @@ function showConcurrencyModal(flow) {
   openModal([
     h("div", { class: "m-body" },
       h("h2", {}, "Concurrent tasks"),
-      h("p", { class: "m-text" }, `Maximum task agents in In Progress for ${flow.name} · ${flow.base}. Additional started cards wait in Todo.`),
+      h("p", { class: "m-text" }, `Maximum agents In Progress for ${project.name}. Approved plans wait in Waiting until a slot frees up.`),
       h("label", { class: "m-label" }, "Tasks at once"),
       input,
       h("div", { class: "m-note" }, "Leave blank for unlimited. Lowering the limit does not stop tasks already running.")),
@@ -552,17 +619,18 @@ function showConcurrencyModal(flow) {
   setTimeout(() => { input.focus(); input.select(); }, 0);
 }
 const scriptName = path => (path ? path.split("/").pop() : "None");
-function showScriptsModal(flow) {
+function showScriptsModal(project) {
   const field = value => h("input", { class: "field mono", type: "text", spellcheck: "false", autocomplete: "off",
     placeholder: "None", value: value || "" });
-  const setup = field(flow.setupScript), teardown = field(flow.teardownScript);
+  const setup = field(project.setupScript), teardown = field(project.teardownScript);
   const save = h("button", { class: "btn primary" }, "Save");
   const submit = async () => {
     save.disabled = true;
     try {
-      const r = await act("PATCH", "/api/flows/scripts",
-        { id: flow.id, setupScript: setup.value.trim(), teardownScript: teardown.value.trim() }, `Scripts saved for ${flow.name}`);
-      for (const f of flows()) if (f.name === flow.name) Object.assign(f, { setupScript: r.flow.setupScript, teardownScript: r.flow.teardownScript });
+      const r = await act("PATCH", "/api/projects/scripts",
+        { id: project.id, setupScript: setup.value.trim(), teardownScript: teardown.value.trim() }, `Scripts saved for ${project.name}`);
+      const current = projects().find(p => p.id === project.id);
+      if (current) Object.assign(current, r.project);
       closeModal();
     } catch { save.disabled = false; }
   };
@@ -571,7 +639,7 @@ function showScriptsModal(flow) {
   openModal([
     h("div", { class: "m-body" },
       h("h2", {}, "Scripts"),
-      h("p", { class: "m-text" }, `Run with bash in the worktree, for every ${flow.name} flow: setup after a new worktree is created and before its agent starts, teardown before the worktree is removed.`),
+      h("p", { class: "m-text" }, `Run with bash in the worktree of every ${project.name} task: setup after a new worktree is created and before its agent starts, teardown before the worktree is removed.`),
       h("label", { class: "m-label" }, "Setup script"),
       setup,
       h("label", { class: "m-label" }, "Teardown script"),
@@ -580,9 +648,9 @@ function showScriptsModal(flow) {
     h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), save)]);
   setTimeout(() => { setup.focus(); setup.select(); }, 0);
 }
-/** Loads the selected flow's omp colors without flashing the previous theme. */
+/** Loads the selected project's omp colors without flashing the previous theme. */
 function applyTheme() {
-  const href = `/appearance.css?flow=${encodeURIComponent(flowSel || "")}&v=${board.themeVersion || 0}`;
+  const href = `/appearance.css?project=${encodeURIComponent(projectSel || "")}&v=${board.themeVersion || 0}`;
   if (href === themeHref) return;
   themeHref = href;
   const old = [...document.querySelectorAll('link[href^="/appearance.css"]')];
@@ -609,7 +677,6 @@ async function loadState() { try { setBoard(await api("GET", "/api/state")); } c
 
 // MARK: status
 const AGENT_LABEL = { working: "Working", thinking: "Thinking", planning: "Planning" };
-const hasStarted = t => !!t.worktree || t.spawn.state === "running" || t.spawn.state === "done" || !!t.merged;
 const INTENT_LABEL = { start: "Creating worktree", resume: "Resuming agent", stop: "Stopping agent", remove: "Removing worktree", delete: "Deleting" };
 const OP_LABEL = { start: "Start", resume: "Resume", stop: "Stop", merge: "Merge", remove: "Worktree removal", delete: "Delete" };
 function statusOf(t) {
@@ -619,25 +686,27 @@ function statusOf(t) {
   }
   if (t.spawn.state === "failed") return { tone: "err", icon: "alert", text: "Start failed" };
   if (t.column === "done") return { tone: "ok", icon: t.merged ? "merge" : "check", text: t.merged ? "Merged into " + t.base : "Done" };
-  if (t.paused) {
-    if (t.column === "todo" && t.blockedBy.length) return { tone: "faint", icon: "pause", text: "Resumes after blockers clear: " + taskNumbers(t.blockedBy) };
-    if (t.column === "todo" && t.waitingForSlot) return { tone: "faint", icon: "pause", text: "Paused · waiting for task slot" };
-    return { tone: "faint", icon: "pause", text: t.column === "todo" ? "Resuming" : "Paused" };
+  if (t.column === "waiting") {
+    if (t.held) return { tone: "faint", icon: "pause", text: "Paused" };
+    if (t.blockedBy.length) return { tone: "faint", icon: "link", text: "Waiting for " + taskNumbers(t.blockedBy) };
+    if (t.waitingForSlot) return { tone: "faint", icon: "pause", text: "Waiting for a slot" };
+    if (t.planned) return { tone: "faint", icon: "play", text: "Resuming" };
   }
-  if (!t.worktree && t.column === "todo" && t.spawn.state === "none" && t.blockedBy.length) return { tone: "faint", icon: "link", text: "Starts after blockers clear: " + taskNumbers(t.blockedBy) };
-  if (!t.worktree && t.column === "todo" && t.spawn.state === "none" && t.waitingForSlot) return { tone: "faint", icon: "play", text: "Waiting for task slot" };
-  if (t.agent) {
-    const s = t.agent.state;
-    if (s === "needs_input") return { tone: "needs", icon: "hand", text: "Needs you", since: t.agent.since };
-    if (s === "plan_ready") return { tone: "needs", icon: "file", text: "Plan ready for review", since: t.agent.since };
-    if (s === "disconnected") return { tone: "needs", icon: "alert", text: "Session disconnected" };
-    if (AGENT_LABEL[s]) return { tone: "busy", spin: true, text: AGENT_LABEL[s], since: t.agent.since };
-    if (t.column === "review" && t.merge === "local" && !t.pr) return { tone: "ok", icon: "merge", text: "Ready to merge" };
-    if (s === "stopped") return { tone: "faint", dot: true, text: "Agent stopped" };
-    return { tone: "idle", dot: true, text: "Idle" };
+  const s = t.agent?.state;
+  if (s === "needs_input") return { tone: "needs", icon: "hand", text: "Needs you", since: t.agent.since };
+  if (s === "plan_ready") return { tone: "needs", icon: "file", text: "Plan ready for review", since: t.agent.since };
+  if (s === "disconnected") return { tone: "needs", icon: "alert", text: "Session disconnected" };
+  if (AGENT_LABEL[s]) return { tone: "busy", spin: true, text: AGENT_LABEL[s], since: t.agent.since };
+  if (t.column === "review") return t.land?.mergeInto ? { tone: "ok", icon: "merge", text: "Ready to merge" } : { tone: "ok", icon: "pr", text: "Ready for pull request" };
+  if (t.column === "pr" && t.pr) {
+    if (t.pr.checks === "failing") return { tone: "needs", icon: "alert", text: "Checks failing" };
+    if (t.pr.review === "changes_requested") return { tone: "needs", icon: "message", text: "Changes requested" };
+    if (t.pr.conflicts) return { tone: "needs", icon: "alert", text: "Conflicts with " + (t.pr.base || t.base) };
+    return t.pr.state === "draft" ? { tone: "idle", icon: "prDraft", text: "Draft pull request" } : { tone: "ok", icon: "pr", text: "Pull request open" };
   }
-  if (t.plan && !t.worktree) return { tone: "faint", icon: "file", text: "Draft plan" };
-  return null;
+  if (!t.agent) return t.column === "planning" ? { tone: "faint", icon: "file", text: "Planning" } : null;
+  if (s === "stopped") return { tone: "faint", dot: true, text: "Agent stopped" };
+  return { tone: "idle", dot: true, text: "Idle" };
 }
 function stateEl(info) {
   const el = h("span", { class: `state ${info.tone}`, title: info.title || null });
@@ -669,19 +738,50 @@ function cardLine(t) {
 const PR_STYLE = { open: ["pr", "var(--add)", "Open"], draft: ["prDraft", "var(--muted)", "Draft"], merged: ["prMerged", "var(--merged)", "Merged"], closed: ["prClosed", "var(--remove)", "Closed"] };
 function prChip(pr) {
   const [ic, color, label] = PR_STYLE[pr.state] || PR_STYLE.open;
-  return h("a", { class: "pr-chip", href: pr.url, target: "_blank", rel: "noopener", draggable: "false", style: `color:${color}`, title: `${label} pull request: ${pr.title}`, onclick: e => e.stopPropagation() },
-    I(ic, 11), `#${pr.number}`);
+  const words = [`${label} pull request into ${pr.base}: ${pr.title}`];
+  const kids = [I(ic, 11), `#${pr.number}`];
+  if (pr.checks === "pending") kids.push(h("span", { class: "pr-checks pending" }, frag(spinner(9))));
+  else if (pr.checks) kids.push(h("span", { class: "pr-checks " + pr.checks }));
+  if (pr.checks) words.push("checks " + pr.checks);
+  if (pr.review === "approved") { kids.push(I("check", 10, "approved")); words.push("approved"); }
+  else if (pr.review === "changes_requested") { kids.push(I("x", 10, "changes")); words.push("changes requested"); }
+  if (pr.conflicts) { kids.push(I("alert", 10, "conflict")); words.push("conflicts"); }
+  return h("a", { class: "pr-chip", href: pr.url, target: "_blank", rel: "noopener", draggable: "false", style: `color:${color}`, title: words.join(" · "), onclick: e => e.stopPropagation() }, ...kids);
+}
+function fromChip(x) {
+  const p = projects().find(p => p.id === x.project);
+  return p && x.base && x.base !== p.defaultBranch ? h("span", { class: "chip mono", title: `Branches from ${x.base}` }, I("branch", 10), "from " + x.base) : null;
+}
+function tagRow(t) {
+  const from = fromChip(t), tags = t.tags || [];
+  return from || tags.length ? h("div", { class: "c-tags" }, from, ...tags.map(x => h("span", { class: "tag" }, x))) : null;
+}
+function landActions(t) {
+  if (t.column === "done" || !t.worktree || !t.land || !(t.git?.commits > 0)) return [];
+  const out = [], dirty = t.git.dirty > 0;
+  if (t.land.mergeInto) out.push(actionButton("Merge into " + t.land.mergeInto, "merge", () => showMergeModal(findTask(t.id) || t), true,
+    dirty ? "Commit the uncommitted changes first" : "git merge --no-ff into " + t.land.mergeInto, dirty));
+  if (t.land.pr) out.push(actionButton("Create pull request", "pr", () => createPr(t), !t.land.mergeInto, `Push ${t.branch} and open a pull request into ${t.base}`));
+  return out;
+}
+async function createPr(t) {
+  try {
+    const r = await act("POST", tpath(t.id, "/pr"), {});
+    toast(r.via === "agent" ? "Asked the agent to open it" : "Pull request opened");
+  } catch {}
 }
 const diffstat = git => h("span", { class: "diffstat" }, h("span", { class: "a" }, `+${git.added}`), " ", h("span", { class: "r" }, `\u2212${git.removed}`));
 
 // MARK: board
 const EMPTY_COLUMN = {
-  backlog: "No tasks yet. Press N to add one.",
-  todo: "Drop a task here to start it in a worktree",
+  planning: "Nothing is being planned. Press N to start a task.",
+  waiting: "Nothing waits",
   doing: "Agents at work show up here",
-  review: "Tasks with an open pull request",
-  done: "Merged pull requests land here",
+  review: "Finished work ready to land",
+  pr: "Tasks with an open pull request",
+  done: "Landed tasks end up here",
 };
+const DROP_COLUMNS = ["waiting", "doing", "done"];
 function renderBoard() {
   if (!board) return;
   if (dragging) { pendingRender = true; return; }
@@ -698,29 +798,27 @@ function renderBoard() {
   highlightDependencyPath();
 }
 function columnEl(col) {
-  const tasks = colTasks(col.id).filter(t => inFlow(t) && matches(t));
+  const tasks = colTasks(col.id).filter(t => inProject(t) && matches(t));
+  const trees = projectWorktrees().filter(w => w.column === col.id && worktreeMatches(w));
   const head = h("div", { class: "col-h", html: colIcon(col.id) },
-    h("span", { class: "col-t" }, col.title), h("span", { class: "count" }, String(tasks.length)), h("span", { class: "spacer" }));
-  if (col.id === "backlog") head.append(toolButton("plus", "New task (N)", openComposer, 14));
+    h("span", { class: "col-t" }, col.title), h("span", { class: "count" }, String(tasks.length + trees.length)), h("span", { class: "spacer" }));
+  if (col.id === "planning") head.append(toolButton("plus", "New task (N)", () => openComposer(), 14));
   const body = h("div", { class: "col-b", "data-col": col.id });
-  if (tasks.length) body.append(...tasks.map(cardEl));
-  else body.append(h("div", { class: "col-empty" }, filter ? "No matching tasks" : EMPTY_COLUMN[col.id]));
-  wireDrop(body, col.id);
-  return h("section", { class: "col", "data-col": col.id, ondblclick: e => {
-    if (!e.target.closest(".card,button,a,input")) openTaskPrompt({ column: col.id });
-  } }, head, body);
+  if (tasks.length || trees.length) body.append(...tasks.map(cardEl), ...trees.map(worktreeCard));
+  else body.append(h("div", { class: "col-empty" }, filter || tagSel?.size ? "No matching tasks" : EMPTY_COLUMN[col.id]));
+  if (DROP_COLUMNS.includes(col.id)) wireDrop(body, col.id);
+  return h("section", { class: "col", "data-col": col.id }, head, body);
 }
 function cardEl(t) {
   const top = h("div", { class: "c-top" }, h("span", { class: "c-id" }, taskNumber(t.id)));
   if (t.ticket) top.append(h("span", { class: "chip mono" }, t.ticket));
-  top.append(planningBadge(t));
   if (t.loop) top.append(loopBadge(t));
   if (t.dependsOn.length) top.append(h("span", { class: "chip", title: "Depends on " + taskNumbers(t.dependsOn) }, I("link", 10), t.dependsOn.map(taskNumber).join(" ")));
   top.append(h("span", { class: "spacer" }));
   if (t.pr) top.append(prChip(t.pr));
   const needs = needsAttention(t);
-  const el = h("div", { class: "card" + (t.id === openId ? " sel" : "") + (t.id === highlightedDependency ? " dep-highlight" : "") + (needs ? " needs" : ""), draggable: "true", "data-id": t.id, onclick: () => openPanel(t.id), ondblclick: () => openPanel(t.id, true) },
-    top, h("div", { class: "c-title" }, t.title || "Untitled"));
+  const el = h("div", { class: "card" + (t.id === openId ? " sel" : "") + (t.id === highlightedDependency ? " dep-highlight" : "") + (needs ? " needs" : "") + (hiddenBranch(t.branch) ? " is-hidden" : ""), draggable: "true", "data-id": t.id, onclick: () => openPanel(t.id), ondblclick: () => openPanel(t.id, true) },
+    top, h("div", { class: "c-title" }, t.title || "Untitled"), tagRow(t));
   const info = statusOf(t);
   if (info) el.append(h("div", { class: "c-line" }, stateEl(info)));
   const line = cardLine(t);
@@ -746,6 +844,48 @@ function cardEl(t) {
   });
   return el;
 }
+function worktreeCard(w) {
+  const top = h("div", { class: "c-top" }, h("span", { class: "chip", title: "No task tracks this worktree yet" }, "untracked"), h("span", { class: "spacer" }));
+  if (w.pr) top.append(prChip(w.pr));
+  const el = h("div", { class: "card untracked" + (hiddenBranch(w.branch) ? " is-hidden" : ""), "data-path": w.path, tabindex: "0", title: w.path }, top, h("div", { class: "c-title" }, w.branch));
+  el.onclick = () => openMenu(el, worktreeMenu(w, el));
+  el.onkeydown = e => { if (e.key === "Enter") el.click(); };
+  const tags = tagRow(w);
+  if (tags) el.append(tags);
+  if (w.git && (w.git.added || w.git.removed || w.git.dirty > 0)) {
+    const foot = h("div", { class: "c-foot" }, h("span", { class: "spacer" }));
+    if (w.git.added || w.git.removed) foot.append(diffstat(w.git));
+    if (w.git.dirty > 0) foot.append(h("span", { class: "udot", title: plural(w.git.dirty, "uncommitted file") }));
+    el.append(foot);
+  }
+  return el;
+}
+async function adoptWorktree(w, extra = {}) {
+  const t = await act("POST", "/api/worktrees/adopt", { path: w.path, ...extra });
+  const cur = findTask(t.id);
+  if (cur) Object.assign(cur, t); else board.tasks.push(t);
+  board.worktrees = board.worktrees.filter(x => x.path !== w.path);
+  renderBoard();
+  return t;
+}
+const adoptThen = (w, fn, extra) => async () => { try { await fn(await adoptWorktree(w, extra)); } catch {} };
+function worktreeMenu(w, anchor) {
+  const prOpen = w.pr && (w.pr.state === "open" || w.pr.state === "draft");
+  return [{ header: w.branch },
+    { icon: "kanban", label: "Track as task", action: adoptThen(w, t => openPanel(t.id)) },
+    { icon: "tag", label: "Add tags…", action: () => openMenu(anchor, tagMenu([], tags => adoptThen(w, t => openPanel(t.id), { tags })())) },
+    { icon: "play", label: "Start agent", action: adoptThen(w, t => act("POST", tpath(t.id, "/move"), { column: "doing" }, `${taskNumber(t.id)} is starting its agent`)) },
+    { icon: "pr", label: "Create pull request", disabled: prOpen, action: adoptThen(w, createPr) },
+    { icon: "openIn", label: "Open worktree", action: adoptThen(w, t => openWorktree(t.id)) },
+    hideItem(w.project, w.branch),
+    "-", { icon: "trash", label: "Remove worktree…", danger: true, action: () => confirmModal("Remove the worktree?",
+      `Deletes ${w.path} and branch ${w.branch}, after stopping any agent the board runs there.`, "Remove worktree",
+      adoptThen(w, async t => {
+        const r = await act("DELETE", tpath(t.id), { cleanup: true, confirmWorking: true });
+        if (r && r.pending) toast(r.message || "The worktree is removed once its agent has stopped");
+        else { board.tasks = board.tasks.filter(x => x.id !== t.id); if (openId === t.id) closePanel(); renderBoard(); toast("Worktree removed"); }
+      })) }];
+}
 function refreshCard(t) {
   if (dragging) { pendingRender = true; return; }
   if (boardView === "pipeline") { renderPipeline(); return; }
@@ -763,7 +903,7 @@ function wireDrop(body, col) {
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
     body.parentElement.classList.add("over");
-    const cards = [...body.querySelectorAll(".card:not(.dragging)")];
+    const cards = [...body.querySelectorAll(".card[data-id]:not(.dragging)")];
     const after = cards.find(c => { const r = c.getBoundingClientRect(); return e.clientY < r.top + r.height / 2; });
     if (after) { if (placeholder.nextSibling !== after) body.insertBefore(placeholder, after); }
     else if (body.lastChild !== placeholder) body.append(placeholder);
@@ -774,7 +914,7 @@ function wireDrop(body, col) {
     e.preventDefault();
     body.parentElement.classList.remove("over");
     const id = dragging.id;
-    const sibs = [...body.children].filter(c => c === placeholder || (c.classList.contains("card") && c.dataset.id !== id));
+    const sibs = [...body.children].filter(c => c === placeholder || (c.dataset.id && c.dataset.id !== id));
     const i = sibs.indexOf(placeholder);
     const prev = sibs[i - 1] && findTask(sibs[i - 1].dataset.id);
     const next = sibs[i + 1] && findTask(sibs[i + 1].dataset.id);
@@ -786,15 +926,20 @@ function wireDrop(body, col) {
     placeholder.remove();
     dragging = null;
     const t = findTask(id);
-    if (t && t.column === col) { if (prev || next) reorderCard(t, order, next ? { before: next.id } : { after: prev.id }); }
+    if (t && t.column === col) { if (col === "waiting" && (prev || next)) reorderCard(t, order, next ? { before: next.id } : { after: prev.id }); else renderBoard(); }
     else requestMove(id, col, order);
   });
 }
-const needsStart = (t, col) => (col === "todo" || col === "doing") && !t.worktree && (t.spawn.state === "none" || t.spawn.state === "failed");
 async function requestMove(id, col, order) {
   const t = findTask(id);
   if (!t) return;
-  if (needsStart(t, col)) { showStartModal(t, col, order); renderBoard(); return; }
+  if (col === "doing" && t.column !== "doing" && t.blockedBy.length && t.spawn.state !== "failed") {
+    confirmModal(`Resume ${taskNumber(t.id)} now?`,
+      `It builds on ${taskNumbers(t.blockedBy)}, which ${t.blockedBy.length === 1 ? "hasn't" : "haven't"} landed. Left in Waiting, the board resumes it once ${t.blockedBy.length === 1 ? "it has" : "they have"}.`,
+      "Resume anyway", () => doMove(t, col, order, true, t.moveRequiresConfirmation === true), { cls: "primary" });
+    renderBoard();
+    return;
+  }
   if (col !== t.column && t.moveRequiresConfirmation) { confirmWorkingMove(t, col, order); return; }
   await doMove(t, col, order);
 }
@@ -837,6 +982,17 @@ function openMenu(anchor, items, opts = {}) {
   for (const it of items) {
     if (it === "-") { el.append(h("hr")); continue; }
     if (it.header) { el.append(h("div", { class: "menu-h" }, it.header)); continue; }
+    if (it.input) {
+      const input = h("input", { class: "field menu-input", placeholder: it.input, spellcheck: "false", autocomplete: "off" });
+      input.addEventListener("keydown", e => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        const v = input.value.trim();
+        if (v) { closeMenu(); it.action(v); }
+      });
+      el.append(input);
+      continue;
+    }
     const b = h("button", { class: it.danger ? "danger" : "", role: "menuitem", disabled: it.disabled, onclick: () => { closeMenu(); it.action(); } });
     if (it.html) b.append(frag(it.html));
     else if (it.icon) b.append(I(it.icon, 14));
@@ -859,6 +1015,7 @@ function openMenu(anchor, items, opts = {}) {
   el.style.left = `${left}px`;
   el.style.top = `${Math.max(8, top)}px`;
   menu = { el, anchor };
+  el.querySelector(".menu-input")?.focus();
 }
 function closeMenu() { if (menu) { menu.el.remove(); menu = null; } }
 document.addEventListener("mousedown", e => { if (menu && !menu.el.contains(e.target) && !menu.anchor.contains(e.target)) closeMenu(); }, true);
@@ -886,53 +1043,24 @@ function confirmModal(title, text, label, fn, opts = {}) {
   setTimeout(() => ok.focus(), 0);
 }
 function confirmWorkingMove(t, col, order) {
-  const pauses = (col === "todo" || col === "backlog") && !!t.worktree && !t.paused;
-  const frees = t.column === "doing" && col !== "doing";
-  const capacity = frees ? " It also frees this flow's task slot, so another queued task may start." : "";
-  const resumes = col === "todo" ? "Todo resumes it once it's first in line with its dependencies done and a task slot free." : "Backlog keeps it paused until you move it back.";
+  const pauses = col === "waiting" && !!t.worktree && !t.paused;
   confirmModal(pauses ? `Pause ${taskNumber(t.id)}?` : `Move working ${taskNumber(t.id)} to ${colTitle(col)}?`,
-    pauses ? `Its agent stops what it's doing; the worktree and omp session stay. ${resumes}${capacity}`
-      : `Moving the card only changes Orchestrator status; it does not stop omp or remove the worktree.${capacity}`,
+    pauses ? "Its agent stops what it's doing; the worktree and omp session stay. It waits until you move it back to In Progress, and frees its task slot meanwhile."
+      : "Moving the card only changes its column; it does not stop omp or remove the worktree.",
     pauses ? "Pause" : "Move anyway", () => doMove(t, col, order, false, true));
 }
 function confirmStop(t) {
-  const where = t.column === "review" ? "The card stays in Review" : "The card parks in Backlog";
+  const where = t.column === "review" || t.column === "pr" ? `The card stays in ${colTitle(t.column)}` : "The card parks in Waiting";
   confirmModal(`Stop ${taskNumber(t.id)}'s agent?`,
-    `Its omp session exits; the worktree, branch and saved session stay. ${where}; moving it to Todo or In Progress resumes it. Closing only its terminal attachment does not stop the agent.`,
+    `Its omp session exits; the worktree, branch and saved session stay. ${where}; moving it to In Progress resumes it. Closing only its terminal attachment does not stop the agent.`,
     "Stop agent", async () => {
       try { const r = await act("POST", tpath(t.id, "/stop"), {}, `${taskNumber(t.id)} stopped`); if (r && r.note) toast(r.note, true); } catch {}
     });
 }
-function showStartModal(t, col, order, force) {
-  const input = h("input", { class: "field mono", value: t.branch, spellcheck: "false" });
-  const start = h("button", { class: "btn primary" }, I("play", 12), "Start");
-  const go = async () => {
-    start.disabled = true;
-    const branch = input.value.trim();
-    try {
-      if (branch && branch !== t.branch) { const r = await act("PATCH", tpath(t.id), { branch }); if (r && r.id) Object.assign(t, r); }
-      closeModal();
-      await doMove(t, col, order, force);
-    } catch { start.disabled = false; }
-  };
-  start.onclick = go;
-  input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } });
-  openModal([
-    h("div", { class: "m-body" },
-      h("h2", {}, `Start ${taskNumber(t.id)}`),
-      h("p", { class: "m-text" }, t.plan
-        ? "omp starts in plan mode in a new git worktree: it updates the draft plan to the code and waits for your approval."
-        : "omp starts in plan mode in a new git worktree: it plans from the title and description and waits for your approval."),
-      h("label", { class: "m-label" }, "Branch"), input,
-      h("div", { class: "m-note" }, I("branch", 12), "From", h("span", { class: "mono" }, t.base), t.merge === "local" ? "· merges back locally into" : "· pull request into", h("span", { class: "mono" }, t.base)),
-      t.blockedBy.length && !force ? h("div", { class: "m-note" }, I("link", 12), `Waits in Todo until its blockers clear: ${taskNumbers(t.blockedBy)}`) : null),
-    h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), start)]);
-  setTimeout(() => { input.focus(); input.select(); }, 0);
-}
 function confirmDelete(t) {
   const text = t.moveRequiresConfirmation
     ? "This task may still be working. Deleting it removes board tracking, but omp, its terminal attachment, worktree and branch stay."
-    : t.worktree ? "The board forgets this task. Its worktree, branch and terminal attachment stay." : "The task and its plan are deleted.";
+    : "The board forgets this task. Its worktree, branch and terminal attachment stay.";
   confirmModal(`Delete ${taskNumber(t.id)}?`, text, "Delete task", async () => {
     try {
       const r = await act("DELETE", tpath(t.id), { confirmWorking: t.moveRequiresConfirmation === true });
@@ -950,15 +1078,14 @@ function confirmCleanup(t) {
   });
 }
 function confirmRecover(t) {
-  confirmModal(`Return ${taskNumber(t.id)} to Backlog?`,
-    `Its worktree ${t.worktree} no longer exists. This clears the missing worktree pointer and stale agent state so the task can start again. The title, description, plan and dependencies are kept; any existing branch and its commits are untouched. No agent is started.`,
-    "Return to Backlog", async () => {
+  confirmModal(`Remove ${taskNumber(t.id)}?`,
+    `Its worktree ${t.worktree} was deleted outside the board, so the task can't continue. Removing the card leaves its branch and commits untouched.`,
+    "Remove card", async () => {
       try {
-        const recovered = await act("POST", tpath(t.id, "/recover"), {}, `${taskNumber(t.id)} returned to Backlog`);
-        board.tasks = board.tasks.map(x => x.id === t.id ? recovered : x);
+        await act("POST", tpath(t.id, "/recover"), {}, `${taskNumber(t.id)} removed`);
+        board.tasks = board.tasks.filter(x => x.id !== t.id);
+        if (openId === t.id) closePanel();
         renderBoard();
-        updatePanel();
-        loadState();
       } catch {}
     });
 }
@@ -976,66 +1103,46 @@ function showMergeModal(t) {
     }, { cls: "primary", extra: h("label", { class: "check" }, cleanup, "Stop the agent and remove its worktree") });
 }
 
-// MARK: new task
-function openTaskPrompt({ column = "backlog", task = null, relation = null } = {}) {
-  if (modals.length || !board) return;
-  const f = selectedFlow();
-  if (!f) { toast("This flow is unavailable: run /orchestrator in its checkout", true); return; }
-  const prompt = h("textarea", { class: "nt-desc", rows: "5", placeholder: "Describe the task for the main agent…", "aria-label": "Task prompt" });
-  const send = h("button", { class: "btn primary" }, "Send to main agent", h("kbd", {}, "⌘↩"));
-  const cancel = h("button", { class: "btn ghost", onclick: closeModal }, "Cancel");
-  let sending = false;
-  const submit = async () => {
-    if (sending) return;
-    if (!prompt.value.trim()) { prompt.focus(); return; }
-    sending = true;
-    send.disabled = true;
-    send.replaceChildren(frag(spinner(12)), "Sending…");
-    try {
-      await act("POST", "/api/flows/prompt", {
-        text: prompt.value.trim(), flow: f.id, column,
-        ...(task ? { task: task.id, relation } : {}),
-      }, "Sent to the main agent");
-      if (box.isConnected && modals.at(-1)?.contains(box)) closeModal();
-    } catch {} finally {
-      sending = false;
-      send.disabled = false;
-      send.replaceChildren("Send to main agent", h("kbd", {}, "⌘↩"));
-    }
+// MARK: tags
+function tagMenu(current, add) {
+  const unused = (selectedProject()?.tags || []).filter(x => !current.includes(x));
+  return [{ input: "New tag…", action: v => add(v.toLowerCase().split(/[\s,]+/).filter(Boolean)) },
+    ...(unused.length ? ["-", { header: "Tags in this project" }, ...unused.map(x => ({ icon: "tag", label: x, action: () => add([x]) }))] : [])];
+}
+function tagEditor(onChange) {
+  const ed = { tags: [], el: h("div", { class: "tags-edit" }) };
+  const add = toolButton("plus", "Add a tag", () => openMenu(add, tagMenu(ed.tags, v => ed.change([...ed.tags, ...v]))), 12);
+  ed.show = tags => {
+    ed.tags = [...tags];
+    ed.el.replaceChildren(...ed.tags.map(x => h("span", { class: "tag" }, x, h("span", { class: "x", role: "button", title: `Remove ${x}`, "aria-label": `Remove tag ${x}`,
+      onclick: e => { e.stopPropagation(); ed.change(ed.tags.filter(y => y !== x)); } }, I("x", 9)))), add);
   };
-  send.onclick = submit;
-  const detail = task ? (relation === "after" ? `Depends on ${taskNumber(task.id)}` : `Prerequisite for ${taskNumber(task.id)}`) : `Requested column: ${colTitle(column)}`;
-  const box = openModal([
-    h("div", { class: "nt-head" }, I("message", 13), "New task request"),
-    h("div", { class: "m-body" }, h("p", { class: "m-text" }, `${f.name} · ${f.base}${f.live ? "" : " · main agent offline"}`), h("p", { class: "m-text" }, detail)),
-    prompt,
-    h("div", { class: "nt-foot" }, h("span", { class: "hint" }, "The main agent creates or updates the task."), h("span", { class: "spacer" }), cancel, send),
-  ], "nt");
-  box.addEventListener("keydown", e => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
-  });
-  setTimeout(() => prompt.focus(), 0);
+  ed.change = tags => { ed.show([...new Set(tags)]); onChange(ed.tags); };
+  ed.show([]);
+  return ed;
 }
 
-function openComposer({ parent = null } = {}) {
+// MARK: new task
+function openComposer({ parent = null, after: afterId = null, onCreated = null } = {}) {
   if (modals.length || !board) return;
-  const flow = selectedFlow();
-  if (!flow && !parent) { toast("This flow is unavailable: run /orchestrator in its checkout", true); return; }
-  const title = h("input", { class: "nt-title", placeholder: "Task title", spellcheck: "false" });
-  const desc = h("textarea", { class: "nt-desc", placeholder: "What should change, and why? Markdown works.", rows: "4" });
-  const ticket = h("input", { placeholder: "Ticket", spellcheck: "false", maxlength: "40" });
-  let planningMode = "auto";
-  const planning = h("button", { class: "prop-chip", type: "button" });
-  const renderPlanning = () => {
-    const p = planningChoice(planningMode);
-    planning.replaceChildren(I(p.icon, 13), p.label, I("chevronDown", 11));
-    planning.title = p.sub;
-    planning.setAttribute("aria-label", `Planning mode: ${p.label}`);
-  };
-  planning.onclick = () => openMenu(planning, planningItems(planningMode, mode => { planningMode = mode; renderPlanning(); }));
-  renderPlanning();
+  const project = selectedProject();
+  if (!project) { toast("This project is unavailable: run /mission in its checkout", true); return; }
+  const prompt = h("textarea", { class: "nt-desc", rows: "5", "aria-label": "Task prompt",
+    placeholder: "What should change, and why? Its agent plans this first; you review the plan in its terminal." });
+  const open = board.tasks.filter(t => inProject(t) && t.column !== "done" && !t.merged).sort(byId);
+  const anchor = afterId && findTask(afterId);
+  const afterTasks = anchor && !open.includes(anchor) ? [...open, anchor] : open;
+  const branches = [...new Set([project.defaultBranch, ...open.map(t => t.branch), ...projectWorktrees().map(w => w.branch), ...(anchor ? [anchor.base] : [])])];
+  const base = h("select", { "aria-label": "Branches from" }, ...branches.map(b => h("option", { value: b }, b)));
+  const parentTask = parent && findTask(parent);
+  if (parentTask && branches.includes(parentTask.base)) base.value = parentTask.base;
+  const after = h("select", { "aria-label": "After" }, h("option", { value: "" }, "None"), ...afterTasks.map(t => h("option", { value: t.id }, `${taskNumber(t.id)} ${t.title}${open.includes(t) ? "" : " (landed)"}`)));
+  after.onchange = () => { const a = findTask(after.value); if (a) base.value = open.includes(a) ? a.branch : a.base; base.disabled = !!a; };
+  if (anchor) { after.value = anchor.id; after.onchange(); }
+  let tags = [];
+  const tagEd = tagEditor(v => { tags = v; });
   let loopId = null;
-  const loopList = flowLoops(flow?.id);
+  const loopList = projectLoops(project.id);
   const loopChip = h("button", { class: "prop-chip", type: "button", hidden: loopList === null });
   const renderLoopChip = () => {
     const l = (loopList || []).find(x => x.id === loopId);
@@ -1045,46 +1152,43 @@ function openComposer({ parent = null } = {}) {
   };
   loopChip.onclick = () => openMenu(loopChip, loopItems(loopList, loopId, id => { loopId = id; renderLoopChip(); }));
   renderLoopChip();
+  const parentPick = linksParentPicker(parent, projectSel);
   const create = h("button", { class: "btn primary" }, "Create task", h("kbd", {}, "\u2318\u21A9"));
   const submit = async () => {
-    const name = title.value.trim();
-    if (!name) { title.focus(); title.classList.remove("shake"); void title.offsetWidth; title.classList.add("shake"); return; }
+    const text = prompt.value.trim();
+    if (!text) { prompt.focus(); prompt.classList.remove("shake"); void prompt.offsetWidth; prompt.classList.add("shake"); return; }
     create.disabled = true;
     try {
-      const t = await act("POST", "/api/tasks", { title: name, description: desc.value, ticket: ticket.value.trim() || null, planningMode, loop: loopId,
-        ...(parentPick.value ? { parent: parentPick.value } : flow ? { repo: flow.checkout } : {}) });
+      const a = findTask(after.value);
+      const from = !a ? { base: base.value } : open.includes(a) ? { after: a.id } : { base: a.base, dependsOn: [a.id] };
+      const t = await act("POST", "/api/tasks", { prompt: text, repo: project.repo, ...from,
+        tags, loop: loopId, ...(parentPick.value ? { parent: parentPick.value } : {}) });
       if (!findTask(t.id)) board.tasks.push(t);
+      onCreated?.(t);
       closeModal();
       renderBoard();
       openPanel(t.id);
     } catch { create.disabled = false; }
   };
   create.onclick = submit;
-  desc.addEventListener("input", () => autosize(desc, innerHeight * 0.45));
-  const parentPick = nativeParentPicker(parent, flowSel);
-  const parentTask = parent && findTask(parent);
-  const base = parentTask ? parentTask.base : flow ? flow.base : board.repo ? board.repo.base : "";
+  prompt.addEventListener("input", () => autosize(prompt, innerHeight * 0.45));
   const box = openModal([
-    h("div", { class: "nt-head" }, I("kanban", 13), "New task"),
-    title, desc,
+    h("div", { class: "nt-head" }, I("kanban", 13), "New task", h("span", { class: "spacer" }), project.name),
+    prompt,
     h("div", { class: "nt-props" },
-      h("label", { class: "prop-chip", title: "Ticket ID, used in the branch name and the pull request" }, I("ticket", 13), ticket),
-      planning, loopChip, parentPick.el,
-      h("span", { class: "prop-chip", title: `Branches from ${base} and opens its pull request into ${base}` }, I("branch", 13), h("span", { class: "mono" }, base))),
-    h("div", { class: "nt-foot" }, h("span", { class: "spacer" }), h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), create)], "nt");
+      h("label", { class: "prop-chip", title: "The branch its worktree starts from" }, I("branch", 13), base),
+      h("label", { class: "prop-chip", title: "Builds on an open task: branches from its branch and waits for it to land" }, I("link", 13), "After", after),
+      loopChip, parentPick.el,
+      h("span", { class: "prop-chip", title: "Tags" }, I("tag", 13), tagEd.el)),
+    h("div", { class: "nt-foot" }, h("span", { class: "hint" }, "Creates a worktree and starts omp in plan mode"), h("span", { class: "spacer" }),
+      h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), create)], "nt");
   box.addEventListener("keydown", e => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
-    else if (e.key === "Enter" && e.target === title) { e.preventDefault(); desc.focus(); }
-    else if (e.key === "Enter" && e.target === ticket) { e.preventDefault(); submit(); }
   });
-  setTimeout(() => title.focus(), 0);
+  setTimeout(() => prompt.focus(), 0);
 }
 
-// MARK: discuss
-const flowOf = t => flows().find(f => f.id === t.flow);
-const canDiscuss = t => !!(flowOf(t) || {}).live;
-const discussOff = t => `Run /orchestrator in ${(flowOf(t) || {}).checkout || t.repo} to discuss cards with omp`;
-const discussInOmp = t => act("POST", tpath(t.id, "/discuss"), {}, "Opened in omp").catch(() => {});
+// MARK: terminals
 async function openWorkspace() {
   const id = openId;
   try {
@@ -1098,8 +1202,7 @@ async function openWorkspace() {
     }
   } catch {}
 }
-async function openWorktree() {
-  const id = openId;
+async function openWorktree(id = openId) {
   try {
     const r = await act("POST", tpath(id, "/worktree/open"), {});
     if (!r.opened) {
@@ -1110,27 +1213,6 @@ async function openWorktree() {
           h("button", { class: "btn primary", onclick: () => copyText(r.cd, "Command copied") }, "Copy command"))]);
     }
   } catch {}
-}
-
-function showPlanReview(t) {
-  const feedback = h("textarea", { class: "field", rows: "3", placeholder: "What should change?", "aria-label": "Plan review feedback" });
-  const approve = h("button", { class: "btn primary" }, "Approve");
-  const refine = h("button", { class: "btn" }, "Request changes");
-  const submit = async decision => {
-    if (decision === "refine" && !feedback.value.trim()) { feedback.focus(); return; }
-    approve.disabled = refine.disabled = true;
-    try {
-      await act("POST", tpath(t.id, "/review"), { decision, feedback: feedback.value.trim() }, "Plan review sent");
-      closeModal();
-    } catch { approve.disabled = refine.disabled = false; }
-  };
-  approve.onclick = () => submit("approve");
-  refine.onclick = () => submit("refine");
-  approve.disabled = refine.disabled = !sessionConnected(t);
-  openModal([h("div", { class: "m-body nv-scroll" }, h("h2", {}, `Review ${taskNumber(t.id)}`),
-    h("div", { class: "md", html: md(t.plan) }), feedback,
-    !sessionConnected(t) ? h("p", { class: "m-note" }, "The omp session must reconnect before it can receive this review.") : null),
-    h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), refine, approve)], "nv-wide");
 }
 
 // MARK: panel
@@ -1145,7 +1227,7 @@ function currentTab(t) {
 }
 function setTab(tab) { tabFor[openId] = tab; updatePanel(); }
 function openPanel(id, expanded = false) {
-  if (!findTask(id) || !inFlow(findTask(id))) return;
+  if (!findTask(id) || !inProject(findTask(id))) return;
   if (openId !== id) { highlightDependency(null); openId = id; buildPanel(); }
   if (location.hash !== "#" + id) history.replaceState(null, "", "#" + id);
   $("#panel").hidden = $("#resizer").hidden = false;
@@ -1173,14 +1255,12 @@ function boundField(el, key, opts = {}) {
     if (key === "title" && el.value.includes("\n")) el.value = el.value.replace(/\n+/g, " ");
     el.dataset.dirty = "1";
     if (opts.autosize) autosize(el, opts.autosize);
-    if (opts.send) syncUnsent();
   });
   el.commit = async () => {
     const t = findTask(openId);
     if (!t || el.dataset.dirty !== "1") return;
-    let v = el.value;
-    if (key === "ticket") v = v.trim() || null;
-    else if (key !== "description") v = v.trim();
+    let v = el.value.trim();
+    if (key === "ticket") v = v || null;
     if ((t[key] ?? "") === (v ?? "")) { delete el.dataset.dirty; return; }
     const r = await act("PATCH", tpath(t.id), { [key]: v });
     delete el.dataset.dirty;
@@ -1189,14 +1269,9 @@ function boundField(el, key, opts = {}) {
     renderBoard();
     updatePanel();
   };
-  el.addEventListener("blur", () => el.commit().catch(() => {}).finally(() => { if (opts.send) syncUnsent(); }));
+  el.addEventListener("blur", () => el.commit().catch(() => {}));
   el.addEventListener("keydown", e => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && opts.send) {
-      e.preventDefault();
-      const t = findTask(openId);
-      if (t && takesUpdates(t)) sendUpdate(); else el.blur();
-    }
-    else if (e.key === "Enter" && opts.enter) { e.preventDefault(); el.blur(); }
+    if (e.key === "Enter") { e.preventDefault(); el.blur(); }
     else if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
@@ -1216,95 +1291,49 @@ function setField(el, v) {
   return true;
 }
 
+const MOVE_TARGETS = ["waiting", "doing", "done"];
 function buildPanel() {
   const id = h("span", { class: "p-id" });
-  const status = h("button", { class: "status-btn", title: "Move to another column" });
+  const status = h("button", { class: "status-btn", title: "Pause, resume or finish the task" });
   status.onclick = () => {
     const t = findTask(openId);
-    openMenu(status, board.columns.map(c => ({ html: colIcon(c.id), label: c.title, checked: c.id === t.column, action: () => requestMove(t.id, c.id) })));
+    openMenu(status, MOVE_TARGETS.map(c => ({ html: colIcon(c), label: colTitle(c), checked: c === t.column, action: () => requestMove(t.id, c) })));
   };
   const primary = h("span", { class: "p-primary" });
   const openBtn = toolButton("openIn", "Connect to the agent terminal", openWorkspace);
   const more = toolButton("more", "More actions", () => openMenu(more, moreMenu(findTask(openId)), { align: "right" }));
   const head = h("div", { class: "p-head" }, id, status, h("span", { class: "spacer" }), primary, openBtn, more, toolButton("x", "Close (Esc)", closePanel));
 
-  const title = boundField(h("textarea", { class: "p-title", rows: "1", placeholder: "Title", spellcheck: "false" }), "title", { enter: true, autosize: 120, send: true });
-  const taskDot = h("span", { class: "dot", style: "color:var(--warning)" });
-  const tabTask = h("button", { onclick: () => setTab("task") }, I("file", 13), "Task", taskDot);
+  const title = boundField(h("textarea", { class: "p-title", rows: "1", placeholder: "Title", spellcheck: "false" }), "title", { autosize: 120 });
+  const tabTask = h("button", { onclick: () => setTab("task") }, I("file", 13), "Task");
   const agentDot = h("span", { class: "dot" });
   const tabAgent = h("button", { onclick: () => setTab("agent") }, I("terminal", 13), "Agent", agentDot);
   const loopDot = h("span", { class: "dot", style: "color:var(--warning)" });
   const tabLoop = h("button", { onclick: () => setTab("loop") }, I("refresh", 13), "Loop", loopDot);
 
   // task pane
-  const ticket = boundField(h("input", { class: "prop mono", placeholder: "Add a ticket", spellcheck: "false" }), "ticket", { enter: true });
-  const branch = boundField(h("input", { class: "prop mono", spellcheck: "false" }), "branch", { enter: true });
-  const base = boundField(h("input", { class: "prop mono", spellcheck: "false" }), "base", { enter: true });
-  const mergeChip = h("button", { class: "chip", onclick: () => { const t = findTask(openId); act("PATCH", tpath(t.id), { merge: t.merge === "local" ? "pr" : "local" }).catch(() => {}); } });
-  const planningChip = h("button", { class: "chip", onclick: () => {
+  const ticket = boundField(h("input", { class: "prop mono", placeholder: "Add a ticket", spellcheck: "false" }), "ticket");
+  const fixed = () => h("input", { class: "prop mono", disabled: true });
+  const branch = fixed(), base = fixed(), loop = fixed(), repo = fixed();
+  const loopLabel = h("label", { title: "The Control loop the task session runs; fixed once the task exists" }, I("refresh", 13), "Loop");
+  const tags = tagEditor(async next => {
     const t = findTask(openId);
-    openMenu(planningChip, planningItems(t.planningMode, async mode => {
-      try {
-        const r = await act("PATCH", tpath(t.id), { planningMode: mode });
-        if (r && r.id) Object.assign(t, r);
-        renderBoard();
-        updatePanel();
-      } catch {}
-    }));
-  } });
-  const loopChip = h("button", { class: "chip", onclick: () => {
-    const t = findTask(openId);
-    openMenu(loopChip, loopItems(flowLoops(t.flow), t.loop, async loop => {
-      try {
-        const r = await act("PATCH", tpath(t.id), { loop });
-        if (r && r.id) Object.assign(t, r);
-        renderBoard();
-        updatePanel();
-      } catch {}
-    }));
-  } });
-  const loopLabel = h("label", {}, I("refresh", 13), "Loop");
-  const repo = boundField(h("input", { class: "prop mono", spellcheck: "false" }), "repo", { enter: true });
+    try { const r = await act("PATCH", tpath(t.id), { tags: next }); if (r && r.id) Object.assign(t, r); renderBoard(); } catch {}
+    updatePanel();
+  });
   const deps = h("div", { class: "deps" });
   const depsAdd = toolButton("plus", "Add a dependency", () => openMenu(depsAdd, dependencyMenu(findTask(openId))), 13);
   const props = h("div", { class: "props" },
     h("label", {}, I("ticket", 13), "Ticket"), ticket,
     h("label", {}, I("branch", 13), "Branch"), branch,
-    h("label", { title: "The branch this task starts from and lands on" }, I("prMerged", 13), "Merges into"), h("div", { class: "prop-row" }, base, mergeChip),
-    h("label", {}, I("zap", 13), "Planning"), planningChip,
-    loopLabel, loopChip,
+    h("label", { title: "The branch this task starts from" }, I("prMerged", 13), "From"), base,
+    loopLabel, loop,
     h("label", {}, I("repo", 13), "Repository"), repo,
+    h("label", {}, I("tag", 13), "Tags"), tags.el,
     h("label", {}, I("link", 13), "Depends on"), deps);
-  const desc = boundField(h("textarea", { class: "p-desc", rows: "2", placeholder: "Add a description…" }), "description", { autosize: 420, send: true });
-  const unsentText = h("div", { class: "txt" });
-  const unsentDismiss = h("button", { class: "btn sm ghost", title: "Keep this edit on the card without sending it", onclick: dismissUpdate }, "Dismiss");
-  const unsentSend = h("button", { class: "btn sm primary", title: "Save and send the new title and description to the agent", onmousedown: e => e.preventDefault(), onclick: sendUpdate },
-    I("arrowUp", 11), "Send to agent", h("kbd", {}, "\u2318\u21A9"));
-  const unsent = h("div", { class: "banner unsent" }, I("message", 16), unsentText, unsentDismiss, unsentSend);
-
-  const planMeta = h("span", { class: "meta" });
-  const editBtn = toolButton("pencil", "Edit the plan", () => setEditing(true), 14);
-  const copyBtn = toolButton("copy", "Copy the plan", () => copyText(findTask(openId).plan, "Plan copied"), 14);
-  const discussBtn = toolButton("message", "Discuss in omp", () => discussInOmp(findTask(openId)), 14);
-  const discussTip = h("span", { class: "tip" }, discussBtn);
-  const planView = h("div", { class: "md" });
-  const emptyDiscuss = h("button", { class: "btn sm", onclick: () => discussInOmp(findTask(openId)) }, I("message", 12), "Discuss in omp");
-  const emptyDiscussTip = h("span", { class: "tip" }, emptyDiscuss);
-  const planEmptyText = h("span");
-  const planEmpty = h("div", { class: "empty" },
-    planEmptyText,
-    h("div", { class: "actions" }, emptyDiscussTip));
-  const planEdit = h("textarea", { class: "plan-edit", spellcheck: "false" });
-  planEdit.addEventListener("keydown", e => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); savePlan(); }
-    else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setEditing(false); }
-  });
-  const editBar = h("div", { class: "edit-bar" }, h("button", { class: "btn sm ghost", onclick: () => setEditing(false) }, "Cancel"),
-    h("button", { class: "btn sm primary", onclick: savePlan }, "Save plan"));
+  const prompt = h("p", { class: "p-prompt" });
   const taskPane = h("div", { class: "pane" }, props,
-    h("section", { class: "sec" }, h("div", { class: "sec-h" }, "Description"), desc, unsent),
-    h("section", { class: "sec" }, h("div", { class: "sec-h" }, "Plan", planMeta, h("span", { class: "spacer" }), editBtn, copyBtn, discussTip),
-      planEmpty, planView, planEdit, editBar));
+    h("section", { class: "sec" }, h("div", { class: "sec-h" }, "Prompt"), prompt));
 
   // agent pane
   const spawn = { ic: h("span", { class: "ic" }), lbl: h("span", { class: "lbl" }), err: h("div", { class: "act-err" }), log: h("pre", { class: "log" }) };
@@ -1315,23 +1344,22 @@ function buildPanel() {
   const gitRow = h("div", { class: "git-row" });
   const actions = h("div", { class: "actions" },
     h("button", { class: "btn sm", "data-presentation-diff": true, title: "Open the presentation's diff viewer", onclick: () => act("POST", tpath(openId, "/diff/open"), {}).catch(() => {}) }, I("compare", 13), "Terminal diff"),
-    h("button", { class: "btn sm", onclick: openWorktree }, I("openIn", 13), "Open worktree"));
+    h("button", { class: "btn sm", onclick: () => openWorktree() }, I("openIn", 13), "Open worktree"));
   const cleanupText = h("div", { class: "txt" });
   const cleanup = h("div", { class: "banner" }, I("prMerged", 16), cleanupText,
     h("button", { class: "btn sm danger", onclick: () => confirmCleanup(findTask(openId)) }, "Remove worktree"));
   const health = h("div", { class: "banner" }, I("alert", 16),
-    h("div", { class: "txt" }, h("strong", {}, "Worktree missing"), " The recorded worktree was deleted outside the board, so the task can't resume or start. Return it to Backlog to start it again; its plan, description and branch are kept."),
-    h("button", { class: "btn sm", onclick: () => confirmRecover(findTask(openId)) }, "Return to Backlog"));
+    h("div", { class: "txt" }, h("strong", {}, "Worktree missing"), " The recorded worktree was deleted outside the board, so the task can't continue. Removing the card leaves its branch and commits untouched."),
+    h("button", { class: "btn sm", onclick: () => confirmRecover(findTask(openId)) }, "Remove card"));
   const opFailText = h("div", { class: "txt" });
   const opFail = h("div", { class: "banner" }, I("alert", 16), opFailText);
-  const syncChip = h("span", { class: "chip", title: "The column change reaches Beads once it is reachable" }, "not yet saved to Beads");
   const term = h("pre", { class: "term" });
   term.addEventListener("scroll", () => { if (P) P.termPinned = term.scrollHeight - term.scrollTop - term.clientHeight < 8; });
   const closed = h("div", { class: "empty" }, h("strong", {}, I("terminal", 14), "Session disconnected"),
     h("span", {}, "The board cannot confirm the agent's current state. A missing terminal attachment does not mean the agent stopped."),
     h("button", { class: "btn sm", onclick: openWorkspace }, I("openIn", 12), "Connect terminal"));
   const removed = h("div", { class: "empty" }, h("strong", {}, I("check", 14), "Worktree removed"), h("span", {}, "The task's worktree and branch were cleaned up."));
-  const live = h("div", { class: "sec" }, health, opFail, syncChip, agentHead, agentStep, agentMsg, gitRow, actions, cleanup, term, closed);
+  const live = h("div", { class: "sec" }, health, opFail, agentHead, agentStep, agentMsg, gitRow, actions, cleanup, term, closed);
   const agentPane = h("div", { class: "pane" }, spawn.el, live, removed);
 
   // loop pane
@@ -1351,37 +1379,32 @@ function buildPanel() {
   $("#panel").replaceChildren(head, h("div", { class: "p-title-wrap" }, title),
     h("div", { class: "p-tabs" }, h("div", { class: "segmented" }, tabTask, tabAgent, tabLoop)),
     h("div", { class: "p-scroll" }, taskPane, agentPane, loopPane), composer);
-  P = { id, status, primary, openBtn, title, tabTask, taskDot, tabAgent, agentDot, tabLoop, loopDot, ticket, branch, base, mergeChip, planningChip, loopChip, loopLabel, repo, deps, depsAdd, desc, unsent, unsentText, unsentDismiss, unsentSend,
-        planMeta, editBtn, copyBtn, discussBtn, discussTip, emptyDiscuss, emptyDiscussTip,
-        planView, planEmpty, planEmptyText, planEdit, editBar, taskPane, spawn, agentHead, agentStep, agentMsg, gitRow, actions, cleanup, cleanupText, health, opFail, opFailText, syncChip, term, closed, removed, live, agentPane,
+  P = { id, status, primary, openBtn, title, tabTask, tabAgent, agentDot, tabLoop, loopDot, ticket, branch, base, loop, loopLabel, repo, tags, deps, depsAdd, prompt,
+        taskPane, spawn, agentHead, agentStep, agentMsg, gitRow, actions, cleanup, cleanupText, health, opFail, opFailText, term, closed, removed, live, agentPane,
         loopPane, loopView, loopOpen, loopKey: null,
-        composer, ta, hint, send, cmode: null, planSrc: null, editing: false, termPinned: true, sending: false, sendingUpdate: false };
-  P.native = nativePanel(props, taskPane);
+        composer, ta, hint, send, cmode: null, termPinned: true, sending: false };
+  P.links = linksPanel(props, taskPane);
 }
 
 function moreMenu(t) {
-  const items = [];
-  if (!t.worktree) items.push({ icon: "message", label: "Discuss in omp", disabled: !canDiscuss(t), title: canDiscuss(t) ? undefined : discussOff(t), action: () => discussInOmp(t) });
-  if (!t.worktree && t.spawn.state !== "running" && t.blockedBy.length) items.push({ icon: "play", label: "Start now (ignore dependencies)", action: () => showStartModal(t, "todo", undefined, true) });
-  items.push({ icon: "copy", label: "Copy branch name", action: () => copyText(t.branch, "Branch name copied") });
-  if (t.plan) items.push({ icon: "copy", label: "Copy plan", action: () => copyText(t.plan, "Plan copied") });
+  const items = [{ icon: "copy", label: "Copy branch name", action: () => copyText(t.branch, "Branch name copied") }];
+  if (t.branch) items.push(hideItem(t.project, t.branch));
   if (t.health?.worktreeMissing) {
-    items.push("-", { icon: "alert", label: "Return to Backlog…", action: () => confirmRecover(t) });
+    items.push("-", { icon: "trash", label: "Remove card…", action: () => confirmRecover(t) });
   } else if (t.worktree) {
-    items.push("-", { icon: "openIn", label: "Open worktree", action: openWorktree });
+    items.push("-", { icon: "openIn", label: "Open worktree", action: () => openWorktree() });
     if (t.presentation?.capabilities?.diff) items.push({ icon: "compare", label: "Open terminal diff", action: () => act("POST", tpath(t.id, "/diff/open"), {}).catch(() => {}) });
+    if (t.land?.pr && t.column !== "done") items.push({ icon: "pr", label: "Create pull request", action: () => createPr(t) });
     if (t.column !== "done" && !t.merged && t.agent?.state !== "stopped") items.push({ icon: "stop", label: "Stop agent…", action: () => confirmStop(t) });
     if (t.column !== "done") items.push({ icon: "trash", label: "Remove worktree…", danger: true, action: () => confirmCleanup(t) });
   }
-  items.push("-", { header: "Beads" },
-    { icon: "plus", label: "Create child task…", disabled: t.column === "done" || !!t.merged, action: () => openComposer({ parent: t.id }) },
-    { icon: "refresh", label: "History…", action: () => showHistory(t.id) });
+  items.push("-", { icon: "plus", label: "Create child task…", disabled: t.column === "done" || !!t.merged, action: () => openComposer({ parent: t.id }) });
   items.push("-", { icon: "trash", label: "Delete task…", danger: true, action: () => confirmDelete(t) });
   return items;
 }
 function dependencyMenu(t) {
-  const tree = new Set([...nativeAncestors(t.id), ...nativeDescendants(t.id)]);
-  const items = board.tasks.filter(x => x.id !== t.id && x.flow === t.flow && !tree.has(x.id) && !t.dependsOn.includes(x.id) && x.column !== "done")
+  const tree = new Set([...linksAncestors(t.id), ...linksDescendants(t.id)]);
+  const items = board.tasks.filter(x => x.id !== t.id && x.project === t.project && !tree.has(x.id) && !t.dependsOn.includes(x.id) && x.column !== "done")
     .map(x => ({ label: `${taskNumber(x.id)} ${x.title}`, action: () => act("PATCH", tpath(t.id), { dependsOn: [...t.dependsOn, x.id] }).catch(() => {}) }));
   return items.length ? items : [{ header: "No other open task" }];
 }
@@ -1439,51 +1462,25 @@ function dependencyChip(t, id) {
 function updatePanel() {
   const t = findTask(openId);
   if (!t || !P) return;
-  const fixed = hasStarted(t);
   P.id.textContent = taskNumber(t.id);
   P.status.replaceChildren(frag(colIcon(t.column)), h("span", {}, colTitle(t.column)), I("chevronDown", 12, "chev"));
-  P.primary.replaceChildren();
-  const queued = t.column === "todo" && t.spawn.state === "none" && (t.blockedBy.length > 0 || t.waitingForSlot);
   const missing = !!t.health?.worktreeMissing;
-  if (missing) {
-    P.primary.append(h("button", { class: "btn sm primary", title: "The worktree was deleted; clear its pointer so the task can start again", onclick: () => confirmRecover(t) },
-      I("alert", 11), "Return to Backlog"));
-  } else if (!t.worktree && !queued && (t.spawn.state === "none" || t.spawn.state === "failed")) {
-    const after = taskNumbers(t.blockedBy);
-    const waits = t.blockedBy.length ? `Queues the task; it starts on its own once its blockers clear: ${after}. Readiness explains each one.` : "Create the worktree and start omp on this task";
-    P.primary.append(h("button", { class: "btn sm primary", title: waits, onclick: () => requestMove(t.id, "todo") },
-      I("play", 11), t.spawn.state === "failed" ? "Retry start" : t.blockedBy.length ? "Start after blockers" : "Start"));
-  } else if (t.paused) {
-    const after = taskNumbers(t.blockedBy);
-    const waits = t.blockedBy.length ? `Waits in Todo until its blockers clear: ${after}. Readiness explains each one.` : "Moves it to In Progress; its agent continues where it stopped";
-    P.primary.append(h("button", { class: "btn sm primary", title: waits, onclick: () => requestMove(t.id, "doing") },
-      I("play", 11), t.blockedBy.length ? "Resume after blockers" : "Resume"));
-  } else if (t.worktree && t.agent && t.agent.state === "plan_ready") {
-    P.primary.append(h("button", { class: "btn sm primary", title: "Review the agent's proposed plan", onclick: () => showPlanReview(t) }, I("file", 11), "Review plan"));
-  } else if (t.worktree && t.merge === "local" && t.column !== "done" && t.git && t.git.commits > 0) {
-    P.primary.append(h("button", { class: "btn sm primary", disabled: t.git.dirty > 0, title: t.git.dirty > 0 ? "Commit the uncommitted changes first" : "git merge --no-ff into " + t.base,
-      onclick: () => showMergeModal(t) }, I("merge", 11), "Merge into " + t.base));
-  }
+  const btn = (label, icon, onclick, title) => actionButton(label, icon, onclick, true, title);
+  P.primary.replaceChildren(...(missing ? [btn("Remove card", "trash", () => confirmRecover(t), "The worktree was deleted outside the board; remove the card")]
+    : t.spawn.state === "failed" ? [btn("Retry start", "play", () => doMove(t, "doing"), "Create the worktree and start omp on this task again")]
+    : t.paused || (t.column === "doing" && t.agent?.state === "stopped") ? [btn("Resume", "play", () => requestMove(t.id, "doing"),
+      t.blockedBy.length ? `It waits for ${taskNumbers(t.blockedBy)}; resuming now asks first` : "Moves it to In Progress; its agent continues where it stopped")]
+    : t.agent?.state === "plan_ready" ? [btn("Review plan", "file", openWorkspace, "Opens the agent's terminal, where its plan waits for review")]
+    : landActions(t)));
   P.openBtn.hidden = !t.worktree || missing;
   if (setField(P.title, t.title) || !P.title.style.height) autosize(P.title, 120);
   setField(P.ticket, t.ticket);
   setField(P.branch, t.branch);
   setField(P.base, t.base);
-  P.mergeChip.replaceChildren(I(t.merge === "local" ? "merge" : "pr", 11), t.merge === "local" ? "locally" : "via pull request");
-  P.mergeChip.disabled = fixed;
-  P.mergeChip.title = fixed ? "Fixed once the task starts" : "Click to switch how this task lands on " + t.base;
-  const planning = planningChoice(t.planningMode);
-  P.planningChip.replaceChildren(I(planning.icon, 10), planning.label, I("chevronDown", 10));
-  P.planningChip.setAttribute("aria-label", `Planning mode: ${planning.label}`);
-  P.planningChip.disabled = fixed;
-  P.planningChip.title = fixed ? "Fixed once the task starts" : planning.sub;
-  const loops = flowLoops(t.flow);
-  P.loopChip.hidden = P.loopLabel.hidden = !loops && !t.loop;
-  P.loopChip.replaceChildren(I("refresh", 10), t.loop ? loopName(t) : "None", I("chevronDown", 10));
-  P.loopChip.setAttribute("aria-label", `Control loop: ${t.loop ? loopName(t) : "none"}`);
-  P.loopChip.disabled = fixed || !loops;
-  P.loopChip.title = fixed ? "Fixed once the task starts" : "The Control loop the task session runs after implementing";
+  P.loop.hidden = P.loopLabel.hidden = !t.loop;
+  setField(P.loop, t.loop ? loopName(t) : "");
   setField(P.repo, t.repo);
+  if (JSON.stringify(P.tags.tags) !== JSON.stringify(t.tags || [])) P.tags.show(t.tags || []);
   const depsKey = JSON.stringify(t.dependsOn);
   if (P.deps.dataset.key !== depsKey) {
     highlightDependency(null);
@@ -1493,11 +1490,10 @@ function updatePanel() {
   P.deps.querySelectorAll("[data-dependency]").forEach(chip => {
     chip.title = findTask(chip.dataset.dependency)?.title || "deleted";
   });
-  nativePanelUpdate(t);
-  P.branch.disabled = P.base.disabled = P.repo.disabled = fixed;
-  P.title.disabled = P.desc.disabled = t.column === "done" || !!t.merged;
-  if (setField(P.desc, t.description) || !P.desc.style.height) autosize(P.desc, 420);
-  syncUnsent(t);
+  linksPanelUpdate(t);
+  P.title.disabled = t.column === "done" || !!t.merged;
+  P.prompt.textContent = t.description || "No prompt: this card tracks a worktree made outside the board.";
+  P.prompt.classList.toggle("none", !t.description);
 
   const tab = currentTab(t);
   P.tabAgent.disabled = !canShowAgent(t);
@@ -1513,7 +1509,6 @@ function updatePanel() {
   P.agentPane.hidden = tab !== "agent";
   P.loopPane.hidden = tab !== "loop";
   updateLoop(t);
-  updatePlan(t);
   updateAgent(t);
   updateComposer(t, tab);
   if (tab === "agent") startPeek(); else stopPeek();
@@ -1529,94 +1524,6 @@ function updateLoop(t) {
   ControlView.renderLoop(P.loopView, shape, t.control, {
     onDecide: (decisions, pause) => act("POST", tpath(t.id, "/control/decide"), { decisions, pause }).catch(() => {}),
   });
-}
-
-function updatePlan(t) {
-  if (P.planSrc !== t.plan) { P.planSrc = t.plan; P.planView.innerHTML = md(t.plan); }
-  const has = !!(t.plan || "").trim();
-  P.planMeta.dataset.ago = t.planUpdatedAt || "";
-  P.planMeta.textContent = t.planUpdatedAt ? `Updated ${ago(t.planUpdatedAt)}` : "";
-  P.planEmptyText.textContent = t.planningMode === "plan"
-    ? "No plan yet: this task will plan in its worktree and wait for your approval."
-    : t.planningMode === "fast"
-      ? "Fast task: it will implement directly without plan review."
-      : "Auto task: it will briefly triage, then implement directly unless a decision or risk needs plan review.";
-  P.planEmpty.hidden = has || P.editing || !!t.worktree;
-  P.planView.hidden = !has || P.editing;
-  P.planEdit.hidden = P.editBar.hidden = !P.editing;
-  P.editBtn.hidden = P.copyBtn.hidden = !has || P.editing;
-  P.discussTip.hidden = !!t.worktree || P.editing || !P.planEmpty.hidden;
-  const on = canDiscuss(t);
-  const tip = on ? "Bring the flow's omp session to the front with this task in its prompt" : discussOff(t);
-  for (const [b, w] of [[P.discussBtn, P.discussTip], [P.emptyDiscuss, P.emptyDiscussTip]]) {
-    b.disabled = !on;
-    b.title = w.title = tip;
-  }
-}
-function setEditing(on) {
-  if (!P) return;
-  P.editing = on;
-  if (on) P.planEdit.value = findTask(openId).plan || "";
-  updatePanel();
-  if (on) P.planEdit.focus();
-}
-async function savePlan() {
-  const t = findTask(openId);
-  if (!t) return;
-  try { const r = await act("PATCH", tpath(t.id), { plan: P.planEdit.value }); if (r && r.id) Object.assign(t, r); setEditing(false); renderBoard(); } catch {}
-}
-
-// MARK: edits to a started task
-const takesUpdates = t => (!!t.worktree || t.spawn.state === "running") && t.column !== "done" && !t.merged;
-function updateBlocked(t) {
-  if (!t.worktree) return "It can be sent once its agent is running.";
-  if (t.paused) return "It's paused: its agent gets it when it resumes.";
-  if (!sessionConnected(t)) return "Its omp session is disconnected; reconnect it before sending.";
-  const state = t.agent && t.agent.state;
-  if (state === "plan_ready") return "Its agent is waiting for plan review: include it there, or send it once the agent resumes.";
-  if (state === "needs_input") return "Its agent is waiting for your answer: connect to its terminal.";
-  if (!state || state === "stopped" || state === "disconnected") return "Its omp session is not connected.";
-  return null;
-}
-function syncUnsent(t = findTask(openId)) {
-  if (!P || !t) return;
-  const draft = takesUpdates(t) && [P.title, P.desc].some(el => el.dataset.dirty === "1");
-  P.taskDot.hidden = !t.pendingUpdate;
-  P.unsent.hidden = !(draft || t.pendingUpdate);
-  if (P.unsent.hidden) return;
-  const blocked = updateBlocked(t);
-  P.unsentText.replaceChildren(h("strong", {}, draft ? "Unsaved edit." : "Not sent to the agent."), " ",
-    blocked || (draft ? "Send it to the agent, or click away to keep it on the card only." : "It still works from the previous version."));
-  P.unsentSend.disabled = P.sendingUpdate || !!blocked;
-  P.unsentDismiss.hidden = draft;
-}
-async function sendUpdate() {
-  const p = P, id = openId;
-  if (!p || p.sendingUpdate || !findTask(id)) return;
-  p.sendingUpdate = true;
-  syncUnsent();
-  try {
-    await p.title.commit();
-    await p.desc.commit();
-    const t = findTask(id);
-    if (t && t.pendingUpdate) {
-      const r = await act("POST", tpath(id, "/update"), {});
-      const cur = findTask(id);
-      if (cur) cur.pendingUpdate = false;
-      toast(r.reopened ? `Sent to ${id}'s agent; the card moved back to In Progress` : `Sent to ${id}'s agent`);
-    }
-  } catch {}
-  p.sendingUpdate = false;
-  if (P === p) syncUnsent();
-}
-async function dismissUpdate() {
-  const id = openId;
-  try {
-    await act("POST", tpath(id, "/update"), { dismiss: true }, "Kept on the card without sending it");
-    const cur = findTask(id);
-    if (cur) cur.pendingUpdate = false;
-    syncUnsent();
-  } catch {}
 }
 
 function updateAgent(t) {
@@ -1635,7 +1542,7 @@ function updateAgent(t) {
   P.live.hidden = !t.worktree;
   P.removed.hidden = !!t.worktree || spawning || spawnFailed;
   if (!t.worktree) return;
-  P.agentHead.replaceChildren(stateEl(t.agent ? statusOf({ ...t, spawn: { state: "done" } }) : { tone: "faint", dot: true, text: "No agent" }), planningBadge(t), h("span", { class: "spacer" }));
+  P.agentHead.replaceChildren(stateEl(t.agent ? statusOf({ ...t, spawn: { state: "done" } }) : { tone: "faint", dot: true, text: "No agent" }), h("span", { class: "spacer" }));
   if (t.pr) P.agentHead.append(prChip(t.pr));
   const step = t.agent && (AGENT_LABEL[t.agent.state] || t.agent.state === "needs_input") ? t.agent.step : null;
   P.agentStep.hidden = !step;
@@ -1656,7 +1563,6 @@ function updateAgent(t) {
   const failed = t.lastOperation && !t.lastOperation.ok && !t.intent ? t.lastOperation : null;
   P.opFail.hidden = !failed;
   if (failed) P.opFailText.replaceChildren(h("strong", {}, `${OP_LABEL[failed.op] || failed.op} failed ${ago(failed.at)}:`), " " + (failed.error || ""));
-  P.syncChip.hidden = !t.syncPending;
   P.actions.hidden = missing;
   P.cleanupText.replaceChildren(t.intent?.op === "remove"
     ? h("span", {}, h("strong", {}, "Removing the worktree"), t.intent.attempt > 0 ? ` · retrying: ${t.intent.lastError || ""}` : " once its agent has exited.")
@@ -1766,18 +1672,21 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
 <script src="/graph-layout.js"></script>
 <script src="/control-view.js"></script>
 <script src="/pipeline.js"></script>
-<script src="/flow-export.js"></script>
 <script src="/workbench.js"></script>
-<script src="/native.js"></script>
+<script src="/links.js"></script>
 <script>
 "use strict";
 // MARK: wiring
-$("#brand").append(I("kanban", 16), "Orchestrator");
+$("#brand").append(I("rocket", 18), "Mission Control");
 $("#search").prepend(I("search", 13));
 $("#refreshBtn").append(I("refresh", 14));
 $("#refreshBtn").onclick = () => act("POST", "/api/refresh", {}, "Refreshing agents, git and pull requests").catch(() => {});
 $("#newBtn").append(I("plus", 14), "New task", h("kbd", {}, "N"));
 $("#newBtn").onclick = () => openComposer();
+// Double-clicking empty space starts a task; the Graph handles its own canvas, which places the new node where you clicked.
+$("#board").addEventListener("dblclick", e => {
+  if (boardView !== "pipeline" && e.target.matches(".board,.col-b,.col-empty,.workbench,.wb-grid,.wb-empty")) openComposer();
+});
 if (LS.get("boardView") === "live") boardView = "live";
 for (const [view, id, glyph] of [["board", "boardViewBtn", "kanban"], ["pipeline", "pipelineViewBtn", "branch"], ["live", "liveViewBtn", "activity"]]) {
   const button = $("#" + id);
@@ -1806,7 +1715,7 @@ document.addEventListener("keydown", e => {
     return;
   }
   if (isTyping() || modals.length || e.metaKey || e.ctrlKey || e.altKey) return;
-  if (e.key === "n") { e.preventDefault(); openComposer(); }
+  if (e.key === "n" || e.key === "N") { e.preventDefault(); openComposer(); }
   else if (e.key === "/") { e.preventDefault(); $("#filter").focus(); }
 });
 window.addEventListener("hashchange", () => {
@@ -1816,7 +1725,6 @@ window.addEventListener("hashchange", () => {
 });
 setInterval(() => {
   document.querySelectorAll("[data-elapsed]").forEach(el => { if (el.dataset.elapsed) el.textContent = elapsed(el.dataset.elapsed); });
-  if (P && P.planMeta.dataset.ago) P.planMeta.textContent = `Updated ${ago(P.planMeta.dataset.ago)}`;
 }, 1000);
 
 (async () => {

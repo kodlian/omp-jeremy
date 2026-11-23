@@ -318,7 +318,7 @@ export default function control(pi: ExtensionAPI) {
 		await activate(false);
 	};
 
-	/** Where a newly attached loop measures from: the Orchestrator's base, else where the branch left its default branch, else HEAD. */
+	/** Where a newly attached loop measures from: the Mission Control task's base, else where the branch left its default branch, else HEAD. */
 	const startBaseline = async (at: string): Promise<Baseline> => {
 		const ref = process.env.OMP_CONTROL_BASE ?? (await defaultBranch(at));
 		if (ref) return { kind: "merge-base", ref };
@@ -690,7 +690,7 @@ export default function control(pi: ExtensionAPI) {
 		plan: z.enum(["none", "you", "ai"]).optional().describe('"none" (default): the agent implements right away; "you": it plans in omp plan mode and you approve the plan; "ai": planReviewer approves the plan'),
 		planReviewer: z.string().optional().describe('The reviewer node that approves the plan; only with plan "ai"'),
 		stages: z.array(z.object({ nodes: z.array(z.string()) })),
-		finish: z.enum(["review", "auto"]).optional().describe('"review" (default): you review the final change; "auto": done once the checks pass, and a local Orchestrator task merges'),
+		finish: z.enum(["review", "auto"]).optional().describe('"review" (default): you review the final change; "auto": done once the checks pass, and a Mission Control task branched from another task merges into it'),
 	});
 
 	pi.registerTool({

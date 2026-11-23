@@ -86,7 +86,7 @@ Text uses the browser's native font smoothing. The font file and base size are s
 
 Syntax colors follow omp's syntax tokens by default, with an option to use Review's own light/dark palette. Diff rows use a faint addition/deletion tint, stronger gutter cues, and restrained changed-word highlights; hunk headers stay neutral so they do not compete with the code.
 
-File groups use spacing and subtle surfaces instead of outlined cards. Sticky file headings, semantic gutters and visible keyboard focus retain the hierarchy without extra separators. Colors, buttons, icon buttons, the comparison switch and text fields come from the shared design system also used by the Orchestrator; diff rows, syntax colors, pickers and menus stay specific to Review.
+File groups use spacing and subtle surfaces instead of outlined cards. Sticky file headings, semantic gutters and visible keyboard focus retain the hierarchy without extra separators. Colors, buttons, icon buttons, the comparison switch and text fields come from the shared design system also used by Mission Control; diff rows, syntax colors, pickers and menus stay specific to Review.
 
 ## Development
 

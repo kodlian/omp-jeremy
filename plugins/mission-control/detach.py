@@ -30,12 +30,12 @@ class DetachError(Exception):
 
 
 def label() -> str:
-    return os.environ.get("ORCHESTRATOR_TMUX_LABEL", "orchestrator")
+    return os.environ.get("MISSION_CONTROL_TMUX_LABEL", "mission-control")
 
 
 def session_name(task_id: str) -> str:
     """The tmux session of a task, lowercase so text that shows card ids by number never rewrites it."""
-    return "orch-" + re.sub(r"[^a-z0-9_-]", "-", task_id.lower())
+    return "mc-" + re.sub(r"[^a-z0-9_-]", "-", task_id.lower())
 
 
 def server_args(ex: Dict[str, Any]) -> List[str]:
@@ -215,7 +215,7 @@ def write_launcher(path: Path, ex: Dict[str, Any], script: Path) -> None:
                   f"/bin/sh {shlex.quote(str(script))}")
     text = ("#!/bin/sh\n"
             "# Starts the task's agent in its tmux session unless it already runs, then shows it in this terminal.\n"
-            'wt="${ORCHESTRATOR_WORKTREE:-$PWD}"\n'
+            'wt="${MISSION_CONTROL_WORKTREE:-$PWD}"\n'
             f"{server} has-session -t {shlex.quote(f'={name}')} 2>/dev/null || {launch}\n"
             f"exec {attach_command(ex)}\n")
     path.parent.mkdir(parents=True, exist_ok=True)

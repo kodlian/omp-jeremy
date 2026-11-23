@@ -9,7 +9,7 @@ omp plugin marketplace add kodlian/omp-jeremy
 omp plugin install control@omp-jeremy
 ```
 
-Restart omp. Loops need a git repository. They check everything since the branch left its default branch (`origin`'s default, else `main` or `master`), committed or not, so attaching a flow to finished work reviews it right away; on the default branch itself they check what isn't pushed yet. A task session started by the Orchestrator checks the change since its base branch. `/control since <branch or commit>` (or **Check changes since…** on the page) measures from somewhere else.
+Restart omp. Loops need a git repository. They check everything since the branch left its default branch (`origin`'s default, else `main` or `master`), committed or not, so attaching a flow to finished work reviews it right away; on the default branch itself they check what isn't pushed yet. A task session started by Mission Control checks the change since its base branch. `/control since <branch or commit>` (or **Check changes since…** on the page) measures from somewhere else.
 
 ## Use
 
@@ -28,14 +28,14 @@ Once a flow is attached, the agent calls `control_check` before its final answer
 
 In a flow with planning, Control enters plan mode whenever the session goes idle, so each new request plans first. Leave plan mode yourself to send a quick request straight to the implement loop.
 
-Findings a check is sure of go straight back to the agent, and only those stop the later stages. Findings it isn't sure of don't interrupt: the loop keeps going, and they wait until nothing certain is left, then come to you all at once: pick one of the fixes the reviewer proposes or **Leave it as is**, add a comment for the agent to any choice (or send only a comment and let the agent decide), or press Esc to pause the flow. The Control page and the Orchestrator card panel offer the same decisions. Every answer is remembered for the session, even when a reviewer words the finding differently later: a dismissed finding stays dismissed, a finding you said to fix goes back to the agent with your note instead of asking you again, and reviewers are told all your answers and the notes you sent back from your reviews, so they don't flag them again. A finding the agent fixed on its own that comes back goes to you, marked **again**.
+Findings a check is sure of go straight back to the agent, and only those stop the later stages. Findings it isn't sure of don't interrupt: the loop keeps going, and they wait until nothing certain is left, then come to you all at once: pick one of the fixes the reviewer proposes or **Leave it as is**, add a comment for the agent to any choice (or send only a comment and let the agent decide), or press Esc to pause the flow. The Control page and the Mission Control card panel offer the same decisions. Every answer is remembered for the session, even when a reviewer words the finding differently later: a dismissed finding stays dismissed, a finding you said to fix goes back to the agent with your note instead of asking you again, and reviewers are told all your answers and the notes you sent back from your reviews, so they don't flag them again. A finding the agent fixed on its own that comes back goes to you, marked **again**.
 
 The implementing agent doesn't stop to ask either: when it makes a choice it isn't sure of, it sends it with `control_check` (the question, the options it considered, the one it chose). Its questions come to you with the reviewers' doubts: keep its choice, or pick another option and it goes back to the agent as a fix. Answers are remembered like the others.
 
 A flow ends in one of two ways (`finish` in its file, the toggle under the diagram in the editor):
 
 - **Review** (the default): once everything is settled (nothing left to fix, every doubt answered), you review the final change: a summary (the request, the files grouped by folder with line counts, what the loop fixed) in omp, and on the Control page the change's size and the images the checks wrote; with git-diff-review installed, **Open in Review** reads the change there, in its own tab. **Approve** ends the loop; **Send back** gives the agent your note. The page opens on its own when your review is due and it isn't open already. If you send a new request before answering, the review stays open and covers both requests; finished reviews are listed under **Past reviews**.
-- **Auto**: the change is done once the checks pass, without your review. In an Orchestrator task that merges locally, the task then merges on its own; a pull-request task leaves the PR to you.
+- **Auto**: the change is done once the checks pass, without your review. In a Mission Control task branched from another task, the task then merges into that task's branch on its own; a task that lands through a pull request leaves the PR to you.
 
 The agent can also manage the library with `control_library` (list, read, save), attach a loop with `control_attach`, and show the run with `control_status`.
 
@@ -82,9 +82,9 @@ Header keys: `name`, `kind` (`check` or `review`), `description`, `command` (che
 
 With no flow attached, the Control page lists the library's flows: pick one to see its diagram and, in plain words, what happens from now on, then **Use from now on**. With a flow attached, it shows the flow as control-loop block diagrams with live states (click a check to filter its findings), the decisions waiting for you and your review; the flow's name opens Switch, Edit, Library and Detach. **Edit** opens the same diagram with **+** slots: add a command or AI check, run checks together, plan first with your approval or an AI reviewer's (or not at all), choose how the flow finishes, then **Use in this session** or **Save to ▾** Project or Global. The Library lists flows and checks by level with Edit, Copy to, Move to and Delete; **Draft with omp** asks the agent to research the project and save a check. Back and Esc go up one level.
 
-## With the Orchestrator
+## With Mission Control
 
-When both plugins are installed, the board's composer and card panel get a **Loop** picker (fixed once the card starts), the card's session runs that loop, and the card's **Loop** tab shows the live graph and takes decisions.
+When both plugins are installed, Mission Control's new-task composer gets a **Loop** picker (fixed once the task exists), the task's session runs that loop, and the card's **Loop** tab shows the live graph and takes decisions.
 
 ## Local development
 

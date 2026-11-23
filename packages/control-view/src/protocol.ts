@@ -5,7 +5,7 @@ export const COMMAND_EVENT = "control:command"; // payload: ControlCommand
 
 /** check: a command that must exit 0; review: an AI reviewer. */
 export type NodeKind = "check" | "review";
-/** How a loop ends once its checks pass: you review the change, or it's done (and an Orchestrator task can merge). */
+/** How a loop ends once its checks pass: you review the change, or it's done (and a Mission Control task can merge). */
 export type Finish = "review" | "auto";
 /** How a request is planned: not at all; in omp plan mode with you approving the plan; or with one AI reviewer approving it. */
 export type PlanMode = "none" | "you" | "ai";

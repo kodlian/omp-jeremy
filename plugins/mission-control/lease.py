@@ -12,7 +12,7 @@ from typing import Dict, Optional, Tuple
 
 from runtime import run, which
 
-LEASE_DIR = Path(os.environ.get("ORCHESTRATOR_LEASE_DIR") or (
+LEASE_DIR = Path(os.environ.get("MISSION_CONTROL_LEASE_DIR") or (
     os.path.join(os.environ["XDG_STATE_HOME"], "omp/run/session-owners") if os.environ.get("XDG_STATE_HOME")
     else "~/.omp/run/session-owners")).expanduser()
 CACHE_SECONDS = 2.0

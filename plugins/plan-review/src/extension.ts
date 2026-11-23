@@ -54,8 +54,7 @@ export default function planReview(pi: ExtensionAPI) {
 
 	/** Brings the page forward for a review, once. */
 	const show = async (reviewId: string) => {
-		// Orchestrator task sessions already show their plan on the board.
-		if (opened === reviewId || pending !== reviewId || !ctx || process.env.ORCHESTRATOR_TASK) return;
+		if (opened === reviewId || pending !== reviewId || !ctx) return;
 		opened = reviewId;
 		await openPage(ctx);
 	};

@@ -71,12 +71,8 @@ function wbKind(t) {
   if (t.column === "done") return "done";
   const s = t.agent?.state;
   if (!t.paused && (s === "needs_input" || s === "plan_ready" || s === "disconnected")) return "handoff";
-  if (t.column === "review") return "handoff";
-  if (!t.worktree) {
-    if (t.column === "todo") return "queued";
-    if (t.column === "backlog" && !t.paused && t.spawn.state === "none" && !t.blockedBy.length) return "ready";
-    return null;
-  }
+  if (t.column === "review" || t.column === "pr") return "handoff";
+  if (t.column === "waiting") return "queued";
   return "active";
 }
 function wbHandoff(t) {
@@ -86,8 +82,8 @@ function wbHandoff(t) {
   if (s === "needs_input") return { tone: "needs", icon: "hand", label: "Needs your answer" };
   if (s === "plan_ready") return { tone: "needs", icon: "file", label: "Plan ready for review" };
   if (s === "disconnected") return { tone: "needs", icon: "alert", label: "Session disconnected" };
-  if (t.merge === "local" && !t.pr) return { tone: "ok", icon: "merge", label: "Ready to merge" };
-  return { tone: "ok", icon: "pr", label: "Ready for review" };
+  if (t.column === "pr") { const info = statusOf(t); return { tone: info?.tone === "needs" ? "needs" : "ok", icon: "pr", label: info?.text || "Pull request open" }; }
+  return t.land?.mergeInto ? { tone: "ok", icon: "merge", label: "Ready to merge" } : { tone: "ok", icon: "pr", label: "Ready for pull request" };
 }
 function wbRank(t) {
   const s = t.agent?.state;
@@ -100,18 +96,15 @@ function wbRank(t) {
 // MARK: actions
 function wbWith(id, fn) { openPanel(id); fn(); }
 function wbActions(t, kind) {
-  const out = [], s = t.agent?.state, cur = () => findTask(t.id) || t;
-  const btn = (label, icon, onclick, primary = false, title = null, disabled = false) =>
-    h("button", { class: "btn sm" + (primary ? " primary" : ""), title, disabled, onclick: e => { e.stopPropagation(); onclick(); } }, I(icon, 11), label);
-  if (t.health?.worktreeMissing) out.push(btn("Return to Backlog", "refresh", () => confirmRecover(cur()), true));
-  else if (t.spawn.state === "failed") out.push(btn("Retry start", "play", () => requestMove(t.id, "todo"), true));
-  else if (s === "plan_ready" && t.worktree) out.push(btn("Review plan", "file", () => showPlanReview(cur()), true));
+  const out = [], s = t.agent?.state, cur = () => findTask(t.id) || t, btn = actionButton;
+  if (t.health?.worktreeMissing) out.push(btn("Remove card", "trash", () => confirmRecover(cur()), true));
+  else if (t.spawn.state === "failed") out.push(btn("Retry start", "play", () => doMove(cur(), "doing"), true));
+  else if (s === "plan_ready" && t.worktree) out.push(btn("Review plan", "file", () => wbWith(t.id, openWorkspace), true, "Opens the agent's terminal, where its plan waits for review"));
   else if (s === "needs_input" && t.worktree) out.push(btn("Answer in terminal", "terminal", () => wbWith(t.id, openWorkspace), true, "The board can't answer this prompt; it opens the agent's terminal"));
   else if (s === "disconnected" && t.worktree) out.push(btn("Connect terminal", "terminal", () => wbWith(t.id, openWorkspace), true));
-  else if (kind === "handoff" && t.worktree && t.merge === "local" && t.git?.commits > 0 && t.column !== "done")
-    out.push(btn("Merge into " + t.base, "merge", () => showMergeModal(cur()), true, t.git.dirty > 0 ? "Commit the uncommitted changes first" : "git merge --no-ff into " + t.base, t.git.dirty > 0));
+  else if (kind === "handoff") out.push(...landActions(t));
   if (!t.health?.worktreeMissing && t.worktree && kind === "active" && (sessionConnected(t) || wbRunning(t))) out.push(btn("Terminal", "terminal", () => wbWith(t.id, openWorkspace), false, "Connect to the agent terminal"));
-  if (!t.health?.worktreeMissing && t.worktree) out.push(btn("Open worktree", "openIn", () => wbWith(t.id, openWorktree)));
+  if (!t.health?.worktreeMissing && t.worktree) out.push(btn("Open worktree", "openIn", () => wbWith(t.id, () => openWorktree())));
   if (t.pr) out.push(prChip(t.pr));
   return out;
 }
@@ -129,6 +122,8 @@ function wbBody(t, kind) {
   const parts = [], s = t.agent?.state;
   parts.push(h("header", { class: "wb-task-header" }, h("span", { class: "wb-task-id" }, taskNumber(t.id)),
     h("strong", { class: "wb-title", title: t.title || "" }, t.title || "Untitled")));
+  const tags = tagRow(t);
+  if (tags) parts.push(tags);
   const head = h("div", { class: "wb-head" }, h("span", { class: "wb-col", "data-col": t.column }, colTitle(t.column)), wbStateEl(t), h("span", { class: "spacer" }));
   if (t.git && (t.git.added || t.git.removed)) head.append(diffstat(t.git));
   if (t.git?.dirty > 0) head.append(h("span", { class: "udot", title: plural(t.git.dirty, "uncommitted file") }));
@@ -143,7 +138,6 @@ function wbBody(t, kind) {
     if (t.spawn.log) parts.push(h("pre", { class: "wb-log" }, wbLines(t.spawn.log, 6)));
   }
   if (t.agent?.message && t.agent.message.trim() !== String(step ?? "").trim()) parts.push(h("div", { class: "wb-msg" }, I("message", 12), h("span", {}, wbClip(t.agent.message))));
-  if (s === "plan_ready" && t.plan) parts.push(h("div", { class: "wb-plan" }, h("div", { class: "wb-label" }, "Proposed plan"), h("div", { class: "wb-plan-text" }, wbClip(t.plan, 900))));
   if (s === "needs_input") parts.push(h("div", { class: "wb-note" }, "Answer in the agent's terminal; the board can't reply to this prompt."));
   return parts;
 }
@@ -169,12 +163,12 @@ function wbTile(t) {
 function wbUpdateTile(tile, t, kind, preview) {
   const p = tile.wb;
   tile.dataset.kind = kind;
-  const key = JSON.stringify([kind, t.title, t.column, t.agent, t.spawn, t.plan && t.agent?.state === "plan_ready" ? t.plan : null, t.git, t.pr, t.paused, t.blockedBy, t.waitingForSlot, t.merge, t.base, t.worktree, t.execution, t.session?.connected, t.merged, t.health]);
+  const key = JSON.stringify([kind, t.title, t.column, t.agent, t.spawn, t.git, t.pr, t.paused, t.held, t.blockedBy, t.waitingForSlot, t.land, t.base, t.tags, t.worktree, t.execution, t.session?.connected, t.merged, t.health]);
   if (tile.dataset.content !== key) {
     tile.dataset.content = key;
     p.top.replaceChildren(...wbBody(t, kind));
   }
-  const actionsKey = JSON.stringify([kind, t.agent?.state, t.spawn.state, t.worktree, t.merge, t.base, t.git?.commits, t.git?.dirty, t.pr, t.execution, t.session?.connected, t.health]);
+  const actionsKey = JSON.stringify([kind, t.agent?.state, t.spawn.state, t.worktree, t.land, t.base, t.git?.commits, t.git?.dirty, t.pr, t.execution, t.session?.connected, t.health]);
   if (tile.dataset.actions !== actionsKey) {
     tile.dataset.actions = actionsKey;
     p.foot.replaceChildren(...wbActions(t, kind));
@@ -201,25 +195,17 @@ function wbUpdateTile(tile, t, kind, preview) {
   if (view && p.termKey !== view.key) { p.termKey = view.key; wbPaint(p.term, view); p.term.scrollTop = p.term.scrollHeight; }
 }
 function wbRow(t) {
-  const ready = wbKind(t) === "ready";
-  const info = ready ? null : statusOf(t);
-  const row = h(ready ? "div" : "button", { class: "workbench-tile wb-row" + (t.id === openId ? " sel" : ""), "data-id": t.id,
-    tabindex: ready ? "0" : null,
-    onclick: e => { if (!e.target.closest("[data-start-task]")) openPanel(t.id); },
-    onkeydown: e => { if (ready && e.target === row && e.key === "Enter") openPanel(t.id); } },
+  const info = statusOf(t);
+  const row = h("button", { class: "workbench-tile wb-row" + (t.id === openId ? " sel" : ""), "data-id": t.id, onclick: () => openPanel(t.id) },
     h("span", { class: "wb-id" }, taskNumber(t.id)), h("span", { class: "wb-row-title" }, t.title || "Untitled"),
-    ready ? null : info ? stateEl({ ...info, spin: false, dot: info.spin || info.dot }) : h("span", { class: "state faint" }, colTitle(t.column)));
-  if (ready) row.append(h("button", { class: "btn sm", "data-start-task": t.id,
-    title: wb.readyAvailable ? "Start this task" : "Queue this task until an agent slot is free",
-    onclick: e => { e.stopPropagation(); requestMove(t.id, "todo"); } }, I("play", 11), "Start"));
-  row.dataset.kind = ready ? "ready" : t.column === "done" ? "done" : "queued";
+    info ? stateEl({ ...info, spin: false, dot: info.spin || info.dot }) : h("span", { class: "state faint" }, colTitle(t.column)));
+  row.dataset.kind = t.column === "done" ? "done" : "queued";
   return row;
 }
 
 // MARK: render
 function wbInit() {
   wb.summary = h("div", { class: "wb-summary" });
-  wb.ready = h("section", { class: "wb-quiet" });
   wb.work = h("section", { class: "wb-work" });
   wb.workHead = h("div", { class: "wb-quiet-h" });
   wb.grid = h("div", { class: "wb-grid" });
@@ -227,20 +213,17 @@ function wbInit() {
   wb.empty = h("div", { class: "wb-empty" });
   wb.queued = h("section", { class: "wb-quiet" });
   wb.done = h("section", { class: "wb-quiet" });
-  wb.root = h("div", { class: "workbench", "aria-label": "Live agent workbench" }, wb.summary, wb.ready, wb.empty, wb.work, wb.queued, wb.done);
+  wb.root = h("div", { class: "workbench", "aria-label": "Live agent workbench" }, wb.summary, wb.empty, wb.work, wb.queued, wb.done);
 }
 function renderWorkbench() {
   if (!board || boardView !== "live") return;
   if (!wb.root) wbInit();
   const host = $("#board");
   if (wb.root.parentNode !== host) host.replaceChildren(wb.root);
-  if (wb.scope !== flowSel) { wb.scope = flowSel; wb.order.clear(); wb.seq = 0; }
-  const scoped = board.tasks.filter(inFlow), shown = scoped.filter(matches);
-  const groups = { handoff: [], active: [], ready: [], queued: [], done: [] };
-  for (const t of shown) { const k = wbKind(t); if (k) groups[k].push(t); }
-  const limit = selectedFlow()?.concurrencyLimit;
-  const active = scoped.filter(t => (t.column === "doing" && t.worktree) || t.spawn.state === "running").length;
-  wb.readyAvailable = limit == null || active < limit;
+  if (wb.scope !== projectSel) { wb.scope = projectSel; wb.order.clear(); wb.seq = 0; }
+  const scoped = board.tasks.filter(inProject), shown = scoped.filter(matches);
+  const groups = { handoff: [], active: [], queued: [], done: [] };
+  for (const t of shown) groups[wbKind(t)].push(t);
   const primary = [...groups.handoff, ...groups.active];
   const fresh = primary.filter(t => !wb.order.has(t.id)).sort((a, b) => wbRank(a) - wbRank(b) || a.order - b.order);
   for (const t of fresh) wb.order.set(t.id, wb.seq++);
@@ -263,30 +246,26 @@ function renderWorkbench() {
   });
 
   const doneSorted = groups.done.sort((a, b) => (Date.parse(b.merged?.at || "") || 0) - (Date.parse(a.merged?.at || "") || 0) || b.order - a.order);
-  wbQuiet(wb.queued, "Queued", groups.queued.sort((a, b) => a.order - b.order), groups.queued.length);
-  wbQuiet(wb.ready, "Backlog · Ready to start", groups.ready.sort((a, b) => a.order - b.order), groups.ready.length);
+  wbQuiet(wb.queued, "Waiting", groups.queued.sort((a, b) => a.order - b.order), groups.queued.length);
   wbQuiet(wb.done, "Recently done", doneSorted.slice(0, WB_DONE), doneSorted.length);
 
-  const backlog = shown.filter(t => t.column === "backlog" && !wbKind(t)).length;
   const working = groups.active.filter(t => !t.paused && (t.spawn.state === "running" || AGENT_LABEL[t.agent?.state])).length;
   const summary = [h("span", { class: "wb-count needs" }, I("hand", 12), plural(groups.handoff.length, "handoff")),
     h("span", { class: "wb-count busy" }, I("activity", 12), `${working} working`),
-    h("span", { class: "wb-count ok" }, `${groups.ready.length} ready`),
-    h("span", { class: "wb-count" }, `${groups.queued.length} queued`), h("span", { class: "wb-count" }, `${groups.done.length} done`)];
-  if (backlog) summary.push(h("span", { class: "wb-count faint", title: "Other backlog tasks show on the Board" }, `${backlog} other backlog`));
+    h("span", { class: "wb-count" }, `${groups.queued.length} waiting`), h("span", { class: "wb-count" }, `${groups.done.length} done`)];
   summary.push(h("span", { class: "spacer" }), h("span", { class: "wb-hint" }, eligible.length
     ? `Terminal previews are read-only and refresh while this tab is visible (${Math.min(eligible.length, WB_PREVIEWS)} of ${eligible.length})`
     : "No agent terminals are running"));
-  const sumKey = JSON.stringify([groups.handoff.length, working, groups.ready.length, groups.queued.length, groups.done.length, backlog, eligible.length]);
+  const sumKey = JSON.stringify([groups.handoff.length, working, groups.queued.length, groups.done.length, eligible.length]);
   if (wb.summary.dataset.key !== sumKey) { wb.summary.dataset.key = sumKey; wb.summary.replaceChildren(...summary); }
 
   let empty = null;
-  if (!selectedFlow()) empty = ["Flow unavailable", "Run /orchestrator in this flow's checkout to see its agents here."];
-  else if (!scoped.length) empty = ["No tasks in this flow yet", "Create a task and start it; its agent's activity shows up here."];
-  else if (!shown.length) empty = ["No matching tasks", `Nothing in this flow matches "${filter}". Clear the filter to see every agent.`];
+  if (!selectedProject()) empty = ["Project unavailable", "Run /mission in this project's checkout to see its agents here."];
+  else if (!scoped.length) empty = ["No tasks in this project yet", "Create a task; its agent's activity shows up here."];
+  else if (!shown.length) empty = ["No matching tasks", "Nothing in this project matches the filter. Clear it to see every agent."];
   else if (!primary.length) empty = ["No agent is working or waiting for you", groups.queued.length
-    ? "Queued tasks start on their own once their blockers clear or a task slot frees up."
-    : groups.ready.length ? "Pick a dependency-ready task above to start work." : "Start a task from the Board (drag it to Todo) to see its agent here."];
+    ? "Waiting tasks resume on their own once what they build on lands and a task slot frees up."
+    : "Create a task (N) to see its agent here."];
   wb.empty.hidden = !empty;
   if (empty && wb.empty.dataset.key !== empty.join()) { wb.empty.dataset.key = empty.join(); wb.empty.replaceChildren(h("strong", {}, I("activity", 14), empty[0]), h("span", {}, empty[1])); }
   const attention = groups.handoff.length;
@@ -300,7 +279,7 @@ function renderWorkbench() {
 }
 function wbQuiet(section, title, tasks, total) {
   section.hidden = !tasks.length;
-  const key = JSON.stringify([total, wb.readyAvailable, tasks.map(t => [t.id, t.title, statusOf(t)?.text, t.id === openId])]);
+  const key = JSON.stringify([total, tasks.map(t => [t.id, t.title, statusOf(t)?.text, t.id === openId])]);
   if (section.dataset.key === key) return;
   section.dataset.key = key;
   section.replaceChildren(h("div", { class: "wb-quiet-h" }, title, h("span", { class: "meta" }, total > tasks.length ? `${tasks.length} of ${total}` : String(total))),
@@ -345,12 +324,12 @@ async function wbFetch(id) {
     if (res.ok) { wb.screens.set(id, wbScreen(data)); wb.failed.delete(id); }
     else wb.failed.set(id, { key: wbExecutionKey(findTask(id)), message: data?.error || `${res.status} ${res.statusText}` });
     const t = findTask(id), tile = wb.tiles.get(id);
-    if (t && tile && inFlow(t)) wbUpdateTile(tile, t, wbKind(t), true);
+    if (t && tile && inProject(t)) wbUpdateTile(tile, t, wbKind(t), true);
   } catch (error) {
     if (!c.signal.aborted && wb.previews.includes(id)) {
       const t = findTask(id), tile = wb.tiles.get(id);
       wb.failed.set(id, { key: wbExecutionKey(t), message: error.message || String(error) });
-      if (t && tile && inFlow(t)) wbUpdateTile(tile, t, wbKind(t), true);
+      if (t && tile && inProject(t)) wbUpdateTile(tile, t, wbKind(t), true);
     }
   }
   finally {

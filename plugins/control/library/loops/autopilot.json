@@ -1,6 +1,6 @@
 {
   "name": "Autopilot",
-  "description": "Quality, conventions and project-rules reviewers, no review from you: once they pass the change is done, and a local Orchestrator task merges",
+  "description": "Quality, conventions and project-rules reviewers, no review from you: once they pass the change is done, and a Mission Control task branched from another task merges into it",
   "maxPasses": 4,
   "stages": [
     {

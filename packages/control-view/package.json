@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Control loop protocol and run view shared by the Control and Orchestrator pages",
+  "description": "Control loop protocol and run view shared by the Control and Mission Control pages",
   "exports": {
     "./protocol": "./src/protocol.ts",
     "./render": "./src/render.ts",

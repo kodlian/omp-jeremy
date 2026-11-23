@@ -13,7 +13,8 @@ from typing import Dict, List, Optional, Tuple
 PRIVATE_USE = re.compile("[\ue000-\uf8ff\U000f0000-\U0010ffff]")
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07")
 # A caller's terminal and task identity must never become the implicit target of what the server runs.
-CALLER_ENV = re.compile(r"CMUX_(?!SOCKET_PASSWORD$).*|TMUX|TMUX_PANE|ORCHESTRATOR_TERMINAL|OMP_TERMINAL(?:_PRESENTER)?|ORCHESTRATOR_TASK"
+CALLER_ENV = re.compile(r"CMUX_(?!SOCKET_PASSWORD$).*|TMUX|TMUX_PANE|MISSION_CONTROL_TERMINAL|OMP_TERMINAL(?:_PRESENTER)?"
+                        r"|MISSION_CONTROL_TASK"
                         r"|WT_INPLACE|WT_LAUNCHER|WT_CLOSE_ON_CANCEL")
 # The launching terminal emulator's identity is wrong for an agent PTY that any terminal may attach to.
 TERMINAL_ENV = re.compile(r"TERM_PROGRAM(?:_VERSION)?|TERM_SESSION_ID|TERMINFO|COLORTERM|COLUMNS|LINES|WINDOWID"
