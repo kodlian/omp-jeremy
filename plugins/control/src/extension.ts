@@ -17,7 +17,7 @@ const AUTO = "Auto: after each request that changes code";
 const APPLY = "Apply right away";
 const ASK = "Ask me before applying";
 
-/** Where a change is measured from: the Orchestrator's base, else where the branch left its default branch, else HEAD. */
+/** Where a change is measured from: Mission Control's base, else where the branch left its default branch, else HEAD. */
 async function startBaseline(at: string): Promise<Baseline> {
 	const ref = process.env.OMP_CONTROL_BASE ?? (await defaultBranch(at));
 	if (ref) return { kind: "merge-base", ref };

@@ -5,17 +5,19 @@ import { basename, join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
 const EXTRA_PATH = `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`;
-// The board also looks for Beads and tmux in Homebrew's directories when they aren't on PATH.
-const BD = Bun.which("bd", { PATH: EXTRA_PATH });
+// The board also looks for tmux in Homebrew's directories when it isn't on PATH.
 const TMUX = Bun.which("tmux", { PATH: EXTRA_PATH });
-const CALLER = /^(CMUX_|TMUX|OMP_TERMINAL|ORCHESTRATOR_|WT_)/;
+const CALLER = /^(CMUX_|TMUX|OMP_TERMINAL|MISSION_CONTROL_|WT_)/;
 
 type Workspace = { ref: string; title: string; cwd: string; surface: string; command: string | null; waitsFor: string | null };
 type FakeCmux = { workspaces: Record<string, Workspace>; log: { op: string; workspace?: string; session?: string; afterReply?: boolean | null }[] };
 type Task = {
 	id: string;
 	branch: string;
+	base: string;
 	column: string;
+	dependsOn: string[];
+	planned: string | null;
 	worktree: string | null;
 	spawn: { state: string; error: string | null };
 	presentation: { kind: string; cmux?: { workspace: string } } | null;
@@ -24,13 +26,18 @@ type Task = {
 	attachCommand: string | null;
 	intent: { op: string; stage: string | null; attempt: number; lastError: string | null } | null;
 	lastOperation: { op: string; ok: boolean; error: string | null; output: string } | null;
-	pendingUpdate: boolean;
-	syncPending: boolean;
+	pr: { number: number; state: string; checks: string | null; review: string | null; conflicts: boolean } | null;
+	land: { mergeInto: string | null; pr: boolean };
+	tags: string[];
 };
+type Worktree = { path: string; project: string; branch: string; base: string; column: string; tags: string[] };
+type Project = { id: string; tags: string[]; hidden: string[]; tagRules: { pattern: string; tags: string[] }[] };
+type State = { tasks: Task[]; projects: Project[]; worktrees: Worktree[] };
 type Context = { kind: "cmux"; cmux: { cli: string; socket: string; workspace: string; surface: string } };
 
 let dir = "";
 let bin = "";
+let repo = "";
 let port = 0;
 let label = "";
 let env: Record<string, string> = {};
@@ -43,16 +50,16 @@ const HOOKS = {
 	wt: `#!/bin/sh
 set -e
 if [ -f "$HOME/wt-slow" ]; then sleep 6; exit 1; fi
-wt=$(git -C "$ORCHESTRATOR_REPO" worktree list --porcelain | awk -v b="refs/heads/$ORCHESTRATOR_BRANCH" '$1=="worktree"{p=$2} $1=="branch"&&$2==b{print p; exit}')
+wt=$(git -C "$MISSION_CONTROL_REPO" worktree list --porcelain | awk -v b="refs/heads/$MISSION_CONTROL_BRANCH" '$1=="worktree"{p=$2} $1=="branch"&&$2==b{print p; exit}')
 if [ -n "$wt" ]; then
-  echo "reuse $ORCHESTRATOR_BRANCH" >>"$HOME/wt.log"
+  echo "reuse $MISSION_CONTROL_BRANCH" >>"$HOME/wt.log"
 else
-  wt="$FAKE_WT_ROOT/$ORCHESTRATOR_BRANCH"
-  git -C "$ORCHESTRATOR_REPO" worktree add -q "$wt" "$ORCHESTRATOR_BRANCH"
-  echo "$ORCHESTRATOR_BRANCH" >>"$HOME/wt.log"
+  wt="$FAKE_WT_ROOT/$MISSION_CONTROL_BRANCH"
+  git -C "$MISSION_CONTROL_REPO" worktree add -q "$wt" "$MISSION_CONTROL_BRANCH"
+  echo "$MISSION_CONTROL_BRANCH" >>"$HOME/wt.log"
   if [ -f "$HOME/wt-fails" ]; then rm "$HOME/wt-fails"; echo "sidebar step failed" >&2; exit 1; fi
 fi
-cmux new-workspace --name "$ORCHESTRATOR_BRANCH" --cwd "$wt" --command "$ORCHESTRATOR_AGENT_COMMAND"
+cmux new-workspace --name "$MISSION_CONTROL_BRANCH" --cwd "$wt" --command "$MISSION_CONTROL_AGENT_COMMAND"
 `,
 	// Like cmuxkit's wt-rm: it closes workspaces only with the caller's cmux identity, which the board never passes.
 	// $HOME/wt-rm-fails makes it fail once, as when the worktree is busy.
@@ -67,14 +74,14 @@ git worktree remove --force --force "$root"
 git branch -D -q "$branch"
 if [ -n "\${CMUX_WORKSPACE_ID:-}" ]; then cmux workspace close --force --workspace "$CMUX_WORKSPACE_ID"; fi
 `,
-	// Beads timing out on writes while $HOME/bd-fail exists.
-	bd: `#!/bin/sh
-if [ -f "$HOME/bd-fail" ]; then
-  for arg in "$@"; do
-    if [ "$arg" = update ]; then echo "bd update timed out after 60s" >&2; exit 1; fi
-  done
+	// GitHub's pull requests of the repository, as $HOME/gh-prs.json lists them.
+	gh: `#!/bin/sh
+if [ "$1 $2" = "pr list" ]; then
+  if [ -f "$HOME/gh-prs.json" ]; then cat "$HOME/gh-prs.json"; else echo "[]"; fi
+  exit 0
 fi
-exec "$REAL_BD" "$@"
+echo "gh $*: not stubbed" >&2
+exit 1
 `,
 };
 
@@ -118,7 +125,7 @@ function sessions(): string[] {
 }
 
 function sessionName(id: string): string {
-	return `orch-${id.toLowerCase().replace(/[^a-z0-9_-]/g, "-")}`;
+	return `mc-${id.toLowerCase().replace(/[^a-z0-9_-]/g, "-")}`;
 }
 
 /** The argument lists the fake omp started with for a task, oldest first. */
@@ -168,35 +175,44 @@ async function restartServer(): Promise<void> {
 	await startServer();
 }
 
-/** A created card started from Todo; the board starts and closes terminals in its own process, so the test polls its
- * state rather than awaiting a signal. */
-async function startTask(title: string, options: { from?: Context; merge?: "local" | "pr" } = {}): Promise<Task & { worktree: string }> {
-	const { from, merge = "local" } = options;
-	const created = await api<Task>("POST", "/api/tasks", { title, merge, ...(from ? { origin: { session: "lifecycle", terminal: from } } : {}) });
-	await api("POST", `/api/tasks/${created.id}/move`, { column: "todo" });
-	const t = await waitFor(`${created.id} to start`, async () => {
-		const c = await card(created.id);
+/** Waits until a created task has started: its worktree exists and its omp runs there. */
+async function started(id: string): Promise<Task & { worktree: string }> {
+	const t = await waitFor(`${id} to start`, async () => {
+		const c = await card(id);
 		if (c.spawn.state === "failed") throw new Error(`${c.id} didn't start: ${c.spawn.error}`);
 		return c.spawn.state === "done" && c.worktree && !c.intent ? c : null;
 	}, 30_000).catch(async (e) => {
-		const c = await card(created.id);
+		const c = await card(id);
 		throw c.spawn.state === "failed" ? new Error(`${c.id} didn't start: ${c.spawn.error}`) : e;
 	});
 	return t as Task & { worktree: string };
 }
 
-/** A started card with a commit to merge. */
-async function startedTask(title: string, from?: Context): Promise<Task & { worktree: string }> {
-	const t = await startTask(title, { from });
-	run(["git", "-C", t.worktree, "commit", "-q", "--allow-empty", "-m", `${title} work`]);
+/** A task created from `prompt`, which starts at once; the board starts and closes terminals in its own process, so the
+ * test polls its state rather than awaiting a signal. */
+async function startTask(prompt: string, options: { from?: Context; base?: string; after?: string } = {}): Promise<Task & { worktree: string }> {
+	const { from, base, after } = options;
+	const created = await api<Task>("POST", "/api/tasks", {
+		prompt, repo, ...(base ? { base } : {}), ...(after ? { after } : {}),
+		...(from ? { origin: { session: "lifecycle", terminal: from } } : {}),
+	});
+	expect(created.column).toBe("planning");
+	return started(created.id);
+}
+
+/** A started task branched from `parent`, so it merges back locally, with a commit to merge. */
+async function startedTask(prompt: string, from?: Context): Promise<Task & { worktree: string }> {
+	const t = await startTask(prompt, { from, base: "parent" });
+	run(["git", "-C", t.worktree, "commit", "-q", "--allow-empty", "-m", `${prompt} work`]);
 	return t;
 }
 
-describe.skipIf(!BD || !TMUX)("a task's lifecycle", () => {
+describe.skipIf(!TMUX)("a task's lifecycle", () => {
 	beforeAll(async () => {
-		dir = realpathSync(mkdtempSync("/tmp/orchestrator-lifecycle-"));
+		dir = realpathSync(mkdtempSync("/tmp/mission-control-lifecycle-"));
 		bin = join(dir, "bin");
-		label = `orch-test-${basename(dir)}`;
+		repo = join(dir, "repo");
+		label = `mc-test-${basename(dir)}`;
 		for (const sub of ["bin", "home", "board", "repo", "worktrees", "leases"]) mkdirSync(join(dir, sub));
 		copyFileSync(join(import.meta.dir, "fake_cmux.py"), join(bin, "cmux"));
 		copyFileSync(join(import.meta.dir, "fake_omp.py"), join(bin, "omp"));
@@ -209,15 +225,17 @@ describe.skipIf(!BD || !TMUX)("a task's lifecycle", () => {
 		probe.stop(true);
 		Object.assign(env, {
 			HOME: join(dir, "home"), PATH: `${bin}:${EXTRA_PATH}`, PYTHONDONTWRITEBYTECODE: "1",
-			ORCHESTRATOR_HOME: join(dir, "board"), ORCHESTRATOR_PORT: String(port), ORCHESTRATOR_REPO: join(dir, "repo"),
-			ORCHESTRATOR_TMUX_LABEL: label, ORCHESTRATOR_LEASE_DIR: join(dir, "leases"), ORCHESTRATOR_RESUME_GRACE: "5", REAL_BD: BD!,
+			MISSION_CONTROL_HOME: join(dir, "board"), MISSION_CONTROL_PORT: String(port),
+			MISSION_CONTROL_TMUX_LABEL: label, MISSION_CONTROL_LEASE_DIR: join(dir, "leases"), MISSION_CONTROL_RESUME_GRACE: "5",
 			FAKE_CMUX_STATE: join(dir, "cmux.json"), FAKE_WT_ROOT: join(dir, "worktrees"),
 		});
-		run(["git", "init", "-q", "-b", "main"], join(dir, "repo"));
-		run(["git", "commit", "-q", "--allow-empty", "-m", "init"], join(dir, "repo"));
+		run(["git", "init", "-q", "-b", "main"], repo);
+		run(["git", "commit", "-q", "--allow-empty", "-m", "init"], repo);
+		// The branch that tasks merging locally branch from, checked out where they merge.
+		run(["git", "-C", repo, "worktree", "add", "-q", "-b", "parent", join(dir, "parent")]);
 		run(["python3", "server.py", "--prepare"], ROOT);
 		await startServer();
-		origin = context(openWorkspace(join(dir, "repo")));
+		origin = context(openWorkspace(repo));
 	}, 60_000);
 
 	afterAll(() => {
@@ -227,7 +245,7 @@ describe.skipIf(!BD || !TMUX)("a task's lifecycle", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	// Each started card costs seconds of Beads and git work, so the requester cases run once per landing, not per worktree kind.
+	// Each started card costs seconds of git work, so the requester cases run once per landing, not per worktree kind.
 	const CASES = [
 		{ hooks: true, remove: false, requester: "board" },
 		{ hooks: true, remove: true, requester: "board" },
@@ -248,7 +266,7 @@ describe.skipIf(!BD || !TMUX)("a task's lifecycle", () => {
 			mkdirSync(join(t.worktree, "src"));
 			openWorkspace(join(t.worktree, "src"));
 			const replied = join(dir, `${t.id}.replied`);
-			const asker = requester === "inside" ? openWorkspace(t.worktree, replied) : requester === "outside" ? openWorkspace(join(dir, "repo")) : undefined;
+			const asker = requester === "inside" ? openWorkspace(t.worktree, replied) : requester === "outside" ? openWorkspace(repo) : undefined;
 			const before = inside(cmux(), t.worktree);
 			expect(before.length).toBe(requester === "inside" ? 3 : 2);
 			expect(t.presentation?.kind ?? null).toBe(hooks ? null : "cmux");
@@ -274,6 +292,138 @@ describe.skipIf(!BD || !TMUX)("a task's lifecycle", () => {
 		}, 60_000);
 	}
 
+	test("A task from the default branch lands through a pull request, not a merge", async () => {
+		useHooks(false);
+		const t = await startTask("lands remotely");
+		expect(t.land).toEqual({ mergeInto: null, pr: true });
+		const res = await call("POST", `/api/tasks/${t.id}/merge`, { cleanup: false, commit: true });
+		expect(res).toMatchObject({ status: 409, data: { error: expect.stringContaining("lands through a pull request") } });
+	}, 60_000);
+
+	test("Cards reach the columns people can't drag them to on their own", async () => {
+		useHooks(false);
+		const t = await startTask("moved by hand");
+		const res = await call("POST", `/api/tasks/${t.id}/move`, { column: "review" });
+		expect(res).toMatchObject({ status: 409, data: { error: "Cards reach Review on their own" } });
+	}, 60_000);
+
+	test("A task with nothing to wait for goes In Progress once its plan is approved", async () => {
+		useHooks(false);
+		const t = await startTask("solo plan");
+		expect(await api("POST", `/api/tasks/${t.id}/planned`)).toEqual({ hold: false });
+		const planned = await card(t.id);
+		expect(planned.column).toBe("doing");
+		expect(planned.planned).not.toBeNull();
+	}, 60_000);
+
+	test("A next task branches from its task, waits once its plan is approved, and resumes on its base once that task lands", async () => {
+		useHooks(false);
+		const first = await startedTask("stack base");
+		const next = await startTask("planned next", { after: first.id });
+		expect(next.base).toBe(first.branch);
+		expect(next.dependsOn).toEqual([first.id]);
+		expect(next.land.mergeInto).toBe(first.branch);
+		const waiting = await waitFor("the next task to wait", async () => {
+			const c = await card(next.id);
+			return c.column === "waiting" && c.planned ? c : null;
+		}, 15_000);
+		expect(waiting.agent?.state).toBe("idle");
+		expect(JSON.parse(readFileSync(join(dir, "home", `planned-${next.id}.out`), "utf8"))).toMatchObject({ hold: true });
+
+		await api("POST", `/api/tasks/${first.id}/merge`, { cleanup: false, commit: true });
+		const resumed = await waitFor("the next task to resume", async () => {
+			const c = await card(next.id);
+			return c.column === "doing" && (c.intent?.op === "resume" || c.lastOperation?.op === "resume") ? c : null;
+		}, 20_000);
+		expect(resumed.base).toBe("parent");
+	}, 90_000);
+
+	test("An open pull request moves its task to Pull Request with its checks; committed work without one goes to Review", async () => {
+		useHooks(false);
+		const pr = await startTask("open pull request");
+		const ready = await startTask("committed work");
+		for (const t of [pr, ready]) await api("POST", `/api/tasks/${t.id}/planned`);
+		writeFileSync(join(dir, "home", "gh-prs.json"), JSON.stringify([{
+			number: 7, state: "OPEN", url: "https://example.com/pull/7", title: "Open pull request", isDraft: false,
+			headRefName: pr.branch, baseRefName: "main", reviewDecision: "CHANGES_REQUESTED", mergeable: "CONFLICTING",
+			statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }, { status: "COMPLETED", conclusion: "FAILURE" }],
+		}]));
+		run(["git", "-C", ready.worktree, "commit", "-q", "--allow-empty", "-m", "ready work"]);
+		await api("POST", "/api/refresh");
+		const opened = await waitFor("the pull request", async () => {
+			const c = await card(pr.id);
+			return c.column === "pr" ? c : null;
+		}, 15_000);
+		expect(opened.pr).toMatchObject({ number: 7, state: "open", checks: "failing", review: "changes_requested", conflicts: true });
+		expect(opened.land.pr).toBe(false);
+		await waitFor("the committed task to reach Review", async () => (await card(ready.id)).column === "review", 15_000);
+	}, 90_000);
+
+	test("A task's tags are short lowercase words, and its project lists every tag in use", async () => {
+		useHooks(false);
+		const t = await api<Task>("POST", "/api/tasks", { prompt: "tagged work", repo, tags: ["Nutrition", "nutrition", "ds"] });
+		expect(t.tags).toEqual(["nutrition", "ds"]);
+		const refused = await call("PATCH", `/api/tasks/${t.id}`, { tags: ["bad tag"] });
+		expect(refused).toMatchObject({ status: 400, data: { error: "Tags are up to 8 short words: lowercase letters, digits, . _ -" } });
+		const state = await api<State>("GET", "/api/state");
+		expect(state.projects.find((p) => p.id === "repo")?.tags).toEqual(["ds", "nutrition"]);
+	}, 60_000);
+
+	test("Tag rules tag a project's tasks and worktrees by branch or folder name, and hidden branches are kept per project", async () => {
+		useHooks(false);
+		const open = await api<Task>("POST", "/api/tasks", { prompt: "rule target", repo });
+		const saved = await api<{ project: Project }>("PATCH", "/api/projects/tag-rules", { id: "repo", rules: [{ pattern: "FEATURE/rule-*", tags: ["Rules"] }] });
+		expect(saved.project.tagRules).toEqual([{ pattern: "FEATURE/rule-*", tags: ["rules"] }]);
+		expect((await card(open.id)).tags).toEqual(["rules"]);
+		const next = await api<Task>("POST", "/api/tasks", { prompt: "rule follow-up", repo, tags: ["ds"] });
+		expect(next.tags).toEqual(["ds", "rules"]);
+		expect((await call("PATCH", "/api/projects/tag-rules", { id: "repo", rules: [{ pattern: "feature/*", tags: [] }] })).status).toBe(400);
+		await api("PATCH", "/api/projects/tag-rules", { id: "repo", rules: [] });
+
+		const kept = join(dir, "keep-nutrition");
+		run(["git", "-C", repo, "worktree", "add", "-q", "-b", "keepme", kept]);
+		await api("PATCH", "/api/projects/tag-rules", { id: "repo", rules: [{ pattern: "keep-*", tags: ["kept"] }] });
+		await api("POST", "/api/refresh");
+		const listed = await waitFor("the worktree", async () => (await api<State>("GET", "/api/state")).worktrees.find((w) => w.branch === "keepme"), 15_000);
+		expect(listed.tags).toEqual(["kept"]);
+		await api("PATCH", "/api/projects/tag-rules", { id: "repo", rules: [] });
+		expect((await api<State>("GET", "/api/state")).worktrees.find((w) => w.branch === "keepme")?.tags).toEqual([]);
+
+		const hidden = await api<{ project: Project }>("PATCH", "/api/projects/hidden", { id: "repo", branch: "keepme", hidden: true });
+		expect(hidden.project.hidden).toEqual(["keepme"]);
+		await api("PATCH", "/api/projects/hidden", { id: "repo", branch: open.branch, hidden: true });
+		const shown = await api<{ project: Project }>("PATCH", "/api/projects/hidden", { id: "repo", branch: "keepme", hidden: false });
+		expect(shown.project.hidden).toEqual([open.branch]);
+		await api("PATCH", "/api/projects/hidden", { id: "repo", branch: open.branch, hidden: false });
+		run(["git", "-C", repo, "worktree", "remove", "--force", kept]);
+	}, 60_000);
+
+	test("A worktree no task owns is listed, adopted once, and an adopted task without an agent holds no slot", async () => {
+		useHooks(false);
+		const other = join(dir, "other");
+		const side = join(dir, "side");
+		mkdirSync(other);
+		run(["git", "init", "-q", "-b", "main"], other);
+		run(["git", "commit", "-q", "--allow-empty", "-m", "init"], other);
+		run(["git", "-C", other, "worktree", "add", "-q", "-b", "side", side]);
+		const { project } = await api<{ project: { id: string } }>("POST", "/api/projects", { path: other });
+		await api("POST", "/api/refresh");
+		const listed = await waitFor("the worktree", async () => (await api<State>("GET", "/api/state")).worktrees.find((w) => w.branch === "side"), 15_000);
+		expect(listed).toMatchObject({ path: side, project: project.id, base: "main", column: "doing", tags: [] });
+
+		const adopted = await api<Task>("POST", "/api/worktrees/adopt", { path: side });
+		expect(adopted).toMatchObject({ worktree: side, branch: "side", base: "main", column: "doing" });
+		expect((await api<State>("GET", "/api/state")).worktrees.some((w) => w.branch === "side")).toBe(false);
+		expect((await api<Task>("POST", "/api/worktrees/adopt", { path: side })).id).toBe(adopted.id);
+
+		await api("PATCH", "/api/projects", { id: project.id, concurrencyLimit: 1 });
+		const first = await started((await api<Task>("POST", "/api/tasks", { prompt: "limit base", repo: other })).id);
+		const next = await api<Task>("POST", "/api/tasks", { prompt: "planned under limit", repo: other, after: first.id });
+		await waitFor("the next task to wait", async () => (await card(next.id)).column === "waiting", 30_000);
+		await api("POST", `/api/tasks/${first.id}/move`, { column: "done", confirmWorking: true });
+		await waitFor("the next task to resume", async () => (await card(next.id)).column === "doing", 20_000);
+	}, 90_000);
+
 	test("Stop closes the terminal a createWorktree hook opened", async () => {
 		useHooks(true);
 		const t = await startedTask("stop hooked", origin);
@@ -287,16 +437,12 @@ describe.skipIf(!BD || !TMUX)("a task's lifecycle", () => {
 		useHooks(false);
 		flag("local-tmux", true);
 		try {
-			const created = await api<Task>("POST", "/api/tasks", { title: "reused workspace", merge: "local", origin: { session: "lifecycle", terminal: origin } });
 			// The worktree and its cmux workspace from a start before a board restart.
 			const path = join(dir, "worktrees", "reused");
-			run(["git", "-C", join(dir, "repo"), "worktree", "add", "-q", "-b", created.branch, path]);
+			run(["git", "-C", repo, "worktree", "add", "-q", "-b", "feature/reused", path]);
 			const left = openWorkspace(path);
-			await api("POST", `/api/tasks/${created.id}/move`, { column: "todo" });
-			const t = await waitFor("the start", async () => {
-				const c = await card(created.id);
-				return c.spawn.state === "done" && !c.intent ? c : null;
-			}, 30_000);
+			const created = await api<Task>("POST", "/api/tasks", { prompt: "reused workspace", repo, branch: "feature/reused", origin: { session: "lifecycle", terminal: origin } });
+			const t = await started(created.id);
 			expect(t.worktree).toBe(path);
 			expect(t.presentation?.cmux?.workspace).toBe(left);
 			expect(cmux().log).toContainEqual({ op: "attach", workspace: left, session: sessionName(t.id) });
@@ -308,7 +454,7 @@ describe.skipIf(!BD || !TMUX)("a task's lifecycle", () => {
 
 	test("A resumed task with a createWorktree hook comes back in the terminal the hook opens, where the user's setup places it", async () => {
 		useHooks(true);
-		const t = await startTask("hook resume", { from: origin, merge: "pr" });
+		const t = await startTask("hook resume", { from: origin });
 		expect(cmux().workspaces[t.presentation!.cmux!.workspace].command).toContain("agent.sh");
 		await api("POST", `/api/tasks/${t.id}/stop`);
 		expect(inside(cmux(), t.worktree)).toEqual([]);
@@ -328,7 +474,7 @@ describe.skipIf(!BD || !TMUX)("a task's lifecycle", () => {
 		useHooks(false);
 		flag("local-tmux", true);
 		try {
-			const t = await startTask("local tmux resume", { from: origin, merge: "pr" });
+			const t = await startTask("local tmux resume", { from: origin });
 			expect(inside(cmux(), t.worktree)).toHaveLength(1);
 			await api("POST", `/api/tasks/${t.id}/stop`);
 			expect(inside(cmux(), t.worktree)).toEqual([]);
@@ -371,11 +517,11 @@ describe.skipIf(!BD || !TMUX)("a task's lifecycle", () => {
 
 	test("A resume continues a cleanly exited session with --resume and a killed one with --restore", async () => {
 		useHooks(false);
-		const t = await startTask("resume flags", { merge: "pr" });
+		const t = await startTask("resume flags");
 		await api("POST", `/api/tasks/${t.id}/stop`);
 		await waitFor("the stop", async () => {
 			const c = await card(t.id);
-			return c.column === "backlog" && c.execution?.state === "stopped" && !c.intent;
+			return c.column === "waiting" && c.execution?.state === "stopped" && !c.intent;
 		}, 15_000);
 		const pidFile = join(dir, "home", `omp-${t.id}.pid`);
 		rmSync(pidFile, { force: true });
@@ -399,18 +545,18 @@ describe.skipIf(!BD || !TMUX)("a task's lifecycle", () => {
 
 	test("A resumed agent's message waits in its resume file until its omp delivers it", async () => {
 		useHooks(false);
-		const t = await startTask("nudge handshake", { merge: "pr" });
+		const t = await startTask("nudge handshake");
 		await api("POST", `/api/tasks/${t.id}/stop`);
-		expect((await api<Task>("PATCH", `/api/tasks/${t.id}`, { title: "renamed" })).pendingUpdate).toBe(true);
+		await waitFor("the stop", async () => {
+			const c = await card(t.id);
+			return c.column === "waiting" && c.execution?.state === "stopped" && !c.intent;
+		}, 15_000);
 		await api("POST", `/api/tasks/${t.id}/move`, { column: "doing" });
 		const file = join(dir, "board", "tasks", t.id, "resume.json");
 		await waitFor("the resume file", async () => existsSync(file), 15_000);
-		const resume = JSON.parse(readFileSync(file, "utf8"));
-		expect(resume.update.title).toBe("renamed");
-		expect(resume.text).toContain("continue where you stopped");
+		expect(JSON.parse(readFileSync(file, "utf8")).text).toContain("continue where you stopped");
 		await api("POST", `/api/tasks/${t.id}/resumed`);
 		expect(existsSync(file)).toBe(false);
-		expect((await card(t.id)).pendingUpdate).toBe(false);
 	}, 60_000);
 
 	test("A worktree removal survives a board restart and finishes once a slow agent is gone", async () => {
@@ -432,64 +578,35 @@ describe.skipIf(!BD || !TMUX)("a task's lifecycle", () => {
 	test("A start survives a board restart in its createWorktree hook, with one agent", async () => {
 		useHooks(true);
 		flag("wt-slow", true);
-		const created = await api<Task>("POST", "/api/tasks", { title: "restart start", merge: "local" });
-		await api("POST", `/api/tasks/${created.id}/move`, { column: "todo" });
+		const created = await api<Task>("POST", "/api/tasks", { prompt: "restart start", repo });
+		// The board must be killed while its own process waits on the hook, which the test can't observe.
 		await Bun.sleep(2000);
 		flag("wt-slow", false);
 		await restartServer();
-		const started = await waitFor("the start", async () => {
-			const c = await card(created.id);
-			return c.spawn.state === "done" && c.worktree && !c.intent ? c : null;
-		}, 30_000);
-		expect(existsSync(started.worktree!)).toBe(true);
+		const t = await started(created.id);
+		expect(existsSync(t.worktree)).toBe(true);
 		expect(sessions().filter((s) => s === sessionName(created.id))).toHaveLength(1);
 	}, 60_000);
 
 	test("A failed start leaves nothing to redo: starting again reuses its worktree", async () => {
 		useHooks(true);
 		flag("wt-fails", true);
-		const created = await api<Task>("POST", "/api/tasks", { title: "fails once", merge: "local" });
-		await api("POST", `/api/tasks/${created.id}/move`, { column: "todo" });
+		const created = await api<Task>("POST", "/api/tasks", { prompt: "fails once", repo });
 		const failed = await waitFor("the failed start", async () => {
 			const c = await card(created.id);
 			return c.spawn.state === "failed" && !c.intent ? c : null;
 		}, 30_000);
 		expect(failed.lastOperation).toMatchObject({ op: "start", ok: false });
 		expect(failed.spawn.error).toContain("sidebar step failed");
-		await api("POST", `/api/tasks/${created.id}/move`, { column: "todo" });
-		const started = await waitFor("the second start", async () => {
-			const c = await card(created.id);
-			return c.spawn.state === "done" && c.worktree && !c.intent ? c : null;
-		}, 30_000);
-		expect(started.worktree).toBe(join(dir, "worktrees", created.branch));
+		await api("POST", `/api/tasks/${created.id}/move`, { column: "doing" });
+		const t = await started(created.id);
+		expect(t.worktree).toBe(join(dir, "worktrees", created.branch));
 		expect(readFileSync(join(dir, "home", "wt.log"), "utf8").split("\n").filter((line) => line === created.branch)).toHaveLength(1);
-	}, 60_000);
-
-	test("A merge succeeds while Beads can't take writes, and its column reaches Beads once it can", async () => {
-		useHooks(false);
-		const t = await startedTask("beads outage");
-		flag("bd-fail", true);
-		try {
-			const res = await api<{ ok: boolean }>("POST", `/api/tasks/${t.id}/merge`, { cleanup: false, commit: true });
-			expect(res.ok).toBe(true);
-			const merged = await card(t.id);
-			expect(merged.column).toBe("done");
-			expect(merged.syncPending).toBe(true);
-		} finally {
-			flag("bd-fail", false);
-		}
-		await waitFor("the column to reach Beads", async () => !(await card(t.id)).syncPending, 25_000);
-		const shown = Bun.spawnSync([BD!, "--json", "show", t.id], {
-			cwd: join(dir, "board", "beads"),
-			env: { ...env, BEADS_DIR: join(dir, "board", "beads", ".beads") },
-		});
-		expect(shown.stdout.toString()).toMatch(/"status":\s*"closed"/);
 	}, 60_000);
 
 	test("A task's own session merges it, and the board removes its worktree once that session has exited", async () => {
 		useHooks(false);
-		const created = await api<Task>("POST", "/api/tasks", { title: "selfmerge work", merge: "local" });
-		await api("POST", `/api/tasks/${created.id}/move`, { column: "todo" });
+		const created = await api<Task>("POST", "/api/tasks", { prompt: "selfmerge work", repo, base: "parent" });
 		const done = await waitFor("the self-merge", async () => {
 			const c = await card(created.id);
 			return c.column === "done" && !c.worktree && !c.intent ? c : null;

@@ -7,10 +7,10 @@
   },
   "plugins": [
     {
-      "name": "orchestrator",
-      "description": "Beads-backed task orchestration, worktrees and agent sessions",
-      "source": "./plugins/orchestrator",
-      "version": "0.7.0"
+      "name": "mission-control",
+      "description": "Mission Control: worktrees, agents, linked tasks and pull requests of a project",
+      "source": "./plugins/mission-control",
+      "version": "0.1.0"
     },
     {
       "name": "git-diff-review",

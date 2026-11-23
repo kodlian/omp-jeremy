@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Orchestrator server: a local board whose tasks are triaged, optionally planned and implemented by omp in worktrees."""
+"""Mission Control server: every worktree of a project, its omp agent, its links and its pull request."""
 from __future__ import annotations
 
 import copy
+import fnmatch
 import hashlib
 import json
 import os
@@ -16,29 +17,28 @@ import threading
 import time
 import unicodedata
 import uuid
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
-import beads_store as beads
 import detach
+import import_orchestrator
 import lease
 import screen
 from cmux import cmux_config, ghostty_cli, terminal_appearance
-from gitops import (base_ref, checkout_info, default_branch, drop_missing_worktrees, find_worktree, git_toplevel,
-                    has_ref, merge_base, prepare_branch, unmerged_files)
+from gitops import (base_ref, branch_base, checkout_info, default_branch, drop_missing_worktrees, find_worktree, git_toplevel,
+                    has_ref, merge_base, prepare_branch, registered_worktrees, unmerged_files)
 from integrations import PACKAGE_ROOT, terminals
-from runtime import ANSI, child_env, now_iso, plain, run, same_dir, tail, which, within, write_atomic
+from runtime import ANSI, now_iso, plain, run, same_dir, tail, which, within, write_atomic
 
 ROOT = Path(__file__).resolve().parent
-HOME = Path(os.environ.get("ORCHESTRATOR_HOME", "~/.orchestrator")).expanduser()
+HOME = Path(os.environ.get("MISSION_CONTROL_HOME", "~/.mission-control")).expanduser()
 TASKS_DIR = HOME / "tasks"
 HOST = "127.0.0.1"
-PORT = int(os.environ.get("ORCHESTRATOR_PORT", "4747"))
-BRANCH_PREFIX = os.environ.get("ORCHESTRATOR_BRANCH_PREFIX", "feature/")
+PORT = int(os.environ.get("MISSION_CONTROL_PORT", "4747"))
+BRANCH_PREFIX = os.environ.get("MISSION_CONTROL_BRANCH_PREFIX", "feature/")
 APPEARANCE_TTL = 30.0
 THEME_COLOR = re.compile(r"#(?:[0-9a-fA-F]{3}){1,2}")
 THEME_VARS = {"--bg", "--fg", "--accent", "--accent-fg", "--muted", "--add", "--remove", "--warning", "--cyan"}
@@ -56,29 +56,34 @@ def code_mtime() -> float:
 
 CODE_MTIME = code_mtime()
 
-COLUMNS = [("backlog", "Backlog"), ("todo", "Todo"), ("doing", "In Progress"), ("review", "Review"), ("done", "Done")]
+COLUMNS = [("planning", "Planning"), ("waiting", "Waiting"), ("doing", "In Progress"), ("review", "Review"),
+           ("pr", "Pull Request"), ("done", "Done")]
 COLUMN_IDS = [c for c, _ in COLUMNS]
-LIVE_COLUMNS = {"todo", "doing", "review"}
+MOVABLE_COLUMNS = ("waiting", "doing", "done")
 MOVE_GUARDED_AGENT_STATES = {"planning", "thinking", "working", "needs_input", "plan_ready", "disconnected"}
-PAUSED_COLUMNS = ("todo", "backlog")
+PAUSED_COLUMNS = ("waiting",)
 CONTROL_TIMEOUT = 10.0
 STOP_TIMEOUT = 8.0
-RESUME_GRACE = float(os.environ.get("ORCHESTRATOR_RESUME_GRACE", "180"))
-RESUME_TEXT = "Orchestrator moved {id} back to In Progress: continue where you stopped."
+RESUME_GRACE = float(os.environ.get("MISSION_CONTROL_RESUME_GRACE", "180"))
+RESUME_TEXT = "Mission Control moved {id} back to In Progress: continue where you stopped."
+LANDED_TEXT = ("Mission Control: what {id} waited for has landed. Rebase on {base} if it moved, then implement the "
+               "approved plan.")
+PR_TEXT = "Commit everything, push {branch} and open a pull request into {base}."
+DEFAULT_BRANCH_TTL = 60.0
+TITLE_LIMIT = 60
 INTENT_BACKOFF = (2.0, 5.0, 15.0, 60.0)
 INTENT_ATTEMPTS = 4
 INTENT_WAIT = 15.0
 MERGE_WAIT = 600.0
 SCREEN_LINES = 500
-BEADS_BACKOFF = (5.0, 15.0, 60.0)
 VERB = {"start": "starting", "resume": "resuming", "stop": "stopping", "merge": "merging",
         "remove": "removing its worktree", "delete": "being deleted"}
-PLANNING_MODES = {"auto", "plan", "fast"}
 CONTROL_SET_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 CONTROL_SETS_LIMIT = 200_000
 SPAWN_LOG_LIMIT = 6000
 PRESENTATION_INTERVAL = 30.0
 SWEEP_INTERVAL = 60.0
+WORKTREES_INTERVAL = 30.0
 MESSAGE_LIMIT = 2000
 TERMINAL_LIMIT = 4096
 DIFF_LIMIT = 500_000
@@ -112,31 +117,35 @@ def slugify(text: str, limit: int = 40) -> str:
     return slug or "task"
 
 
-def initial_context() -> Dict[str, str]:
-    for candidate in (os.environ.get("ORCHESTRATOR_REPO"), os.getcwd()):
-        if candidate and Path(candidate).expanduser().is_dir():
-            info = checkout_info(str(Path(candidate).expanduser()))
-            if info:
-                return info
-    return {"checkout": os.getcwd(), "repo": os.getcwd(), "base": "main"}
+def prompt_title(prompt: str) -> str:
+    """A task's title from its prompt: the first line, cut at a word boundary to TITLE_LIMIT characters."""
+    line = prompt.strip().splitlines()[0].strip()
+    if len(line) <= TITLE_LIMIT:
+        return line
+    head = line[:TITLE_LIMIT + 1]
+    return (head.rsplit(" ", 1)[0].rstrip(" ,;:-") if " " in head else "") or line[:TITLE_LIMIT]
 
 
-def flow_id(repo: str, base: str) -> str:
-    return f"{os.path.basename(repo)}@{base}"
+def project_id(repo: str) -> str:
+    """A project's id: its main checkout's folder name, with a hash of its path when another registered project has that
+    name."""
+    name = os.path.basename(repo)
+    if any(os.path.basename(p["repo"]) == name and not same_dir(p["repo"], repo) for p in store.projects):
+        return f"{name}-{hashlib.sha1(os.path.realpath(repo).encode()).hexdigest()[:6]}"
+    return name
 
 
-def checkout_exists(path: Optional[str]) -> bool:
-    """Whether `path` is still a git checkout: a repository, or a linked worktree whose git directory remains."""
-    if not path:
-        return False
-    dot_git = Path(path) / ".git"
-    if dot_git.is_dir():
-        return True
-    try:
-        text = dot_git.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    return text.startswith("gitdir:") and (Path(path) / text[len("gitdir:"):].strip()).is_dir()
+DEFAULT_BRANCHES: Dict[str, Tuple[float, str]] = {}
+
+
+def repo_default_branch(repo: str) -> str:
+    """The repository's default branch, read again at most every DEFAULT_BRANCH_TTL seconds."""
+    cached = DEFAULT_BRANCHES.get(repo)
+    if cached and time.time() - cached[0] < DEFAULT_BRANCH_TTL:
+        return cached[1]
+    branch = default_branch(repo) if Path(repo).is_dir() else "main"
+    DEFAULT_BRANCHES[repo] = (time.time(), branch)
+    return branch
 
 
 CONFIG_FILE = HOME / "config.json"
@@ -209,8 +218,8 @@ def run_script(label: str, script: str, cwd: str, timeout: float, env: Dict[str,
 
 
 def script_env(t: Dict[str, Any], worktree: str) -> Dict[str, str]:
-    return {"ORCHESTRATOR_TASK": t["id"], "ORCHESTRATOR_REPO": t["repo"], "ORCHESTRATOR_BRANCH": t["branch"],
-            "ORCHESTRATOR_BASE": t["base"], "ORCHESTRATOR_WORKTREE": worktree}
+    return {"MISSION_CONTROL_TASK": t["id"], "MISSION_CONTROL_REPO": t["repo"], "MISSION_CONTROL_BRANCH": t["branch"],
+            "MISSION_CONTROL_BASE": t["base"], "MISSION_CONTROL_WORKTREE": worktree}
 
 
 # --- event hub ------------------------------------------------------------------
@@ -221,7 +230,7 @@ def sse(event: str, data: Any) -> str:
 
 class Hub:
     """Fans server-sent events out to every connected board and omp session; snapshots are coalesced. A task's omp session
-    also takes commands (pause, message, plan review, stop) and answers each one."""
+    also takes commands (pause, message, control decisions, stop) and answers each one."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -230,7 +239,8 @@ class Hub:
         self.answers: Dict[str, Dict[str, Any]] = {}
 
     def subscribe(self, meta: Dict[str, Any]) -> "queue.Queue[str]":
-        """`meta`: the stream's session, flow, task (a task's own session) and validated terminal context (each optional)."""
+        """`meta`: the stream's session, project, task (a task's own session) and validated terminal context (each
+        optional)."""
         q: "queue.Queue[str]" = queue.Queue(maxsize=2000)
         with self.lock:
             self.subscribers[q] = {**meta, "at": time.time()}
@@ -240,16 +250,16 @@ class Hub:
         with self.lock:
             self.subscribers.pop(q, None)
 
-    def flow_live(self, flow: str) -> bool:
+    def project_live(self, project: str) -> bool:
         with self.lock:
-            return any(m.get("flow") == flow for m in self.subscribers.values())
+            return any(m.get("project") == project for m in self.subscribers.values())
 
-    def flow_session(self, flow: str, preferred: Optional[str]) -> Optional[Dict[str, Any]]:
-        """The stream of `preferred` with `flow`, else the most recently connected stream with `flow`."""
+    def project_terminal(self, project: str) -> Optional[Dict[str, Any]]:
+        """The terminal context of the most recently connected omp session streaming for `project`."""
         with self.lock:
-            streams = sorted((m for m in self.subscribers.values() if m.get("flow") == flow and m.get("session")),
+            streams = sorted((m for m in self.subscribers.values() if m.get("project") == project and m.get("terminal")),
                              key=lambda m: m["at"], reverse=True)
-        return next((m for m in streams if m["session"] == preferred), None) or next(iter(streams), None)
+        return streams[0]["terminal"] if streams else None
 
     def publish(self, event: str, data: Any, session: Optional[str] = None) -> bool:
         """Sends to every stream, or only to `session`'s; returns whether any stream got it."""
@@ -296,7 +306,7 @@ class Hub:
             q = self.task_stream(task_id)
             if q is None:
                 raise ApiError(409, f"{task_id}'s omp session isn't connected to the board; restart it to load the "
-                                    "current Orchestrator plugin")
+                                    "current Mission Control plugin")
             self.answers[cid] = answer
             q.put_nowait(sse("control", {"id": cid, "task": task_id, "action": action, **(payload or {})}))
         try:
@@ -336,33 +346,30 @@ hub = Hub()
 # --- store ----------------------------------------------------------------------
 
 BOARD_FILE = HOME / "board.json"
+RECORD_FILE = "task.json"
+RECORD_KEYS = ("id", "title", "description", "column", "held", "dependsOn", "parent", "ticket", "tags", "notes", "repo",
+               "base", "branch", "controlSet", "number", "createdAt", "updatedAt", "order", "spawn", "worktree", "presentation",
+               "execution", "pr", "merged", "origin", "keptWorktree", "intent", "lastOperation", "resumedAt",
+               "planned")
+NEW_ID = re.compile(r"MC-(\d+)")
 
 
-def beads_api_error(e: beads.BeadsError) -> ApiError:
-    if isinstance(e, beads.BeadsConflict):
-        return ApiError(409, f"{e}; the board shows the Beads version on its next refresh")
-    return ApiError(502, str(e))
+def new_intent(op: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """An operation the board's reconciler drives to its end, stage by stage, across board restarts."""
+    return {"id": uuid.uuid4().hex, "op": op, "at": now_iso(), "stage": None, "params": params, "attempt": 0,
+            "retryAt": None, "lastError": None, "log": ""}
 
 
 class Store:
-    """Tasks in Beads (beads_store) plus their runtime record (tasks/<id>/execution.json) and live status.
-
-    The board's context is the checkout `orchestrator` was started from: new tasks branch from its branch (`base`)
-    and their pull requests target it.
-    """
+    """Tasks, one JSON record each (tasks/<id>/task.json), the registered projects (board.json) and live status: agents,
+    git and pull requests of tasks, and the worktrees no task owns."""
 
     def __init__(self) -> None:
         self.lock = threading.RLock()
         self.tasks: Dict[str, Dict[str, Any]] = {}
-        self.workspace = beads.Workspace(HOME, child_env())
-        self.seen: Dict[str, Dict[str, Any]] = {}
-        self.persisted: Dict[str, Dict[str, Any]] = {}
-        self.synced: Optional[Tuple[Any, ...]] = None
-        self.writes = 0
-        self.native_blocked: Dict[str, List[str]] = {}
-        self.blocked_at: Optional[Tuple[Any, ...]] = None
-        self.context: Dict[str, str] = {}
-        self.flows: List[Dict[str, Any]] = []
+        self.next_id = 1
+        self.projects: List[Dict[str, Any]] = []
+        self.worktrees: List[Dict[str, Any]] = []
         self.activity: Dict[str, Dict[str, Any]] = {}
         self.facts: Dict[str, Dict[str, Any]] = {}
         self.themes: Dict[str, Dict[str, Any]] = {}
@@ -376,24 +383,51 @@ class Store:
             saved = json.loads(BOARD_FILE.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             saved = {}
-        context = saved.get("context") or {}
-        self.context = context if Path(context.get("checkout") or "/nonexistent").is_dir() else initial_context()
-        self.flows = [f for f in saved.get("flows") or []
-                      if isinstance(f, dict) and Path(f.get("checkout") or "/nonexistent").is_dir()]
-        for flow in self.flows:
-            limit = flow.get("concurrencyLimit")
-            flow["concurrencyLimit"] = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else None
-        self.workspace.require_binary()
-        if not self.workspace.prepared():
-            raise beads.BeadsError(f"{self.workspace.root} isn't prepared: run python3 {ROOT / 'server.py'} --prepare")
-        fingerprint = self.workspace.fingerprint()
-        found = self.workspace.list_all()
-        blocked = self.workspace.blocked()
+        self.projects = [{"repo": p["repo"], "concurrencyLimit": valid_limit(p.get("concurrencyLimit")),
+                          "controlSets": p.get("controlSets") if valid_set_summaries(p.get("controlSets")) else None,
+                          "hidden": valid_hidden(p.get("hidden")), "tagRules": valid_tag_rules(p.get("tagRules"))}
+                         for p in saved.get("projects") or [] if isinstance(p, dict) and isinstance(p.get("repo"), str)]
+        next_id = saved.get("nextId")
+        self.next_id = next_id if isinstance(next_id, int) and not isinstance(next_id, bool) and next_id > 0 else 1
         with self.lock:
-            self.synced = fingerprint
-            self.native_blocked, self.blocked_at = blocked, fingerprint
-            self.reconcile(found)
+            for folder in sorted(TASKS_DIR.iterdir()):
+                m = NEW_ID.fullmatch(folder.name)
+                if m:
+                    self.next_id = max(self.next_id, int(m[1]) + 1)
+                path = folder / RECORD_FILE
+                if not path.is_file():
+                    continue
+                try:
+                    t = json.loads(path.read_text(encoding="utf-8"))
+                    if not isinstance(t, dict) or not isinstance(t.get("repo"), str):
+                        raise ValueError("not a task record")
+                except (OSError, ValueError) as e:
+                    print(f"mission-control: skipped {path}: {e}", file=sys.stderr)
+                    continue
+                t["id"] = folder.name
+                self.adopt(t)
         self.sweep_hosts()
+
+    def adopt(self, t: Dict[str, Any]) -> None:
+        """Takes a task record in as a card, with defaults for what it lacks (call under self.lock)."""
+        for key, default in (("title", ""), ("description", ""), ("notes", ""), ("branch", ""), ("held", False)):
+            if not isinstance(t.get(key), type(default)):
+                t[key] = default
+        for key in ("dependsOn", "tags"):
+            t[key] = [v for v in t[key] if isinstance(v, str)] if isinstance(t.get(key), list) else []
+        t["column"] = t.get("column") if t.get("column") in COLUMN_IDS else COLUMN_IDS[0]
+        t["base"] = t.get("base") or default_branch(t["repo"])
+        t["controlSet"] = t["controlSet"] if isinstance(t.get("controlSet"), str) and CONTROL_SET_ID.fullmatch(t["controlSet"]) else None
+        t["createdAt"] = t.get("createdAt") or now_iso()
+        t["updatedAt"] = t.get("updatedAt") or t["createdAt"]
+        if not isinstance(t.get("spawn"), dict):
+            t["spawn"] = {"state": "none", "error": None, "log": ""}
+        if t["spawn"].get("state") == "running" and not t.get("intent"):
+            t["intent"] = new_intent("start", {})
+        if not isinstance(t.get("order"), (int, float)):
+            t["order"] = self.next_order(t["column"])
+        t.update(agent=None, git=None)
+        self.tasks[t["id"]] = t
 
     def sweep_hosts(self) -> None:
         """Removes the directory an older board's agent host left for an external agent, once that agent is gone."""
@@ -406,333 +440,40 @@ class Store:
                 shutil.rmtree(ex["dir"], ignore_errors=True)
                 with self.lock:
                     ex["dir"] = None
-                    self.write_record(t)
-
-    def sync(self) -> bool:
-        """Takes in task edits made in Beads outside the board; True when the board changed."""
-        fingerprint = self.workspace.fingerprint()
-        if fingerprint is not None and fingerprint == self.synced:
-            return False
-        with self.lock:
-            writes = self.writes
-        try:
-            found = self.workspace.list_all()
-            blocked = self.workspace.blocked()
-        except beads.BeadsError as e:
-            raise beads_api_error(e)
-        with self.lock:
-            # A board write during the listing makes it stale; the next tick lists again.
-            if self.writes != writes:
-                return False
-            self.synced = fingerprint
-            changed = blocked != self.native_blocked
-            self.native_blocked, self.blocked_at = blocked, fingerprint
-            return self.reconcile(found) or changed
-
-    def fresh_blocked(self) -> bool:
-        """Re-reads Beads' blockers unless Beads is unchanged since the last read, before the board starts or resumes
-        work; a failed read raises rather than start on stale blockers (call under self.lock). True when they changed."""
-        fingerprint = self.workspace.fingerprint()
-        if fingerprint is not None and fingerprint == self.blocked_at:
-            return False
-        try:
-            blocked = self.workspace.blocked()
-        except beads.BeadsError as e:
-            raise beads_api_error(e)
-        changed = blocked != self.native_blocked
-        self.native_blocked, self.blocked_at = blocked, fingerprint
-        return changed
-
-    def blockers_after_write(self) -> None:
-        """Re-reads Beads' blockers after a parent or dependency write, so the reply shows them; the write already landed,
-        so a failed read only leaves the next sync to catch up (call under self.lock)."""
-        try:
-            self.fresh_blocked()
-        except ApiError as e:
-            print(f"orchestrator: couldn't re-read Beads' blockers: {e.message}", file=sys.stderr)
-
-    def reconcile(self, found: List[Dict[str, Any]]) -> bool:
-        """Brings the cards in line with the listed beads (call under self.lock)."""
-        listed = {b["id"]: b for b in found if b.get("id")}
-        changed = False
-        for task_id in [i for i in self.tasks if i not in listed]:
-            print(f"orchestrator: {task_id} was deleted in Beads; its card is gone, any worktree stays", file=sys.stderr)
-            self.forget(task_id)
-            changed = True
-        for task_id, bead in listed.items():
-            f = beads.fields(bead)
-            if task_id not in self.tasks:
-                changed |= self.adopt(task_id, f)
-                continue
-            seen = self.seen[task_id]
-            if f["status"] != seen["status"] or f["metadata"] != seen["metadata"] or f["updatedAt"] != seen["updatedAt"] \
-                    or any(beads.differs(k, f[k], seen.get(k)) for k in beads.FIELDS):
-                self.apply(self.tasks[task_id], f)
-                changed = True
-        return changed
-
-    def adopt(self, task_id: str, f: Dict[str, Any]) -> bool:
-        """Builds the card of a bead the board doesn't hold; ones new from bd join the context flow."""
-        try:
-            runtime = json.loads(self.runtime_path(task_id).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            runtime = {}
-        upgraded = beads.upgrade_runtime(runtime, terminals.legacy_context, terminals.legacy_attachment)
-        column = runtime.get("seenColumn") if runtime.get("seenColumn") in COLUMN_IDS else "backlog"
-        t: Dict[str, Any] = {k: runtime.get(k) for k in beads.RUNTIME_KEYS}
-        t.update({k: copy.deepcopy(f[k]) for k in beads.FIELDS})
-        t.update(id=task_id, column=column, createdAt=f["createdAt"], agent=None, git=None)
-        if not isinstance(t["spawn"], dict):
-            t["spawn"] = {"state": "none", "error": None, "log": ""}
-        if t["spawn"].get("state") == "running" and not t.get("intent"):
-            t["intent"] = beads.new_intent("start", {})
-            upgraded = True
-        if not t["repo"]:
-            t.update(self.context)
-            t.update(branchEdited=False, planningMode="auto")
-            t["merge"] = default_merge(t)
-            t["branch"] = self.suggest_branch(t)
-        t["checkout"] = t["checkout"] or t["repo"]
-        t["base"] = t["base"] or default_branch(t["repo"])
-        t["merge"] = t["merge"] if t["merge"] in ("pr", "local") else "pr"
-        t["branchEdited"] = bool(t["branchEdited"])
-        t["planningMode"] = t["planningMode"] if t["planningMode"] in PLANNING_MODES else "plan"
-        t["controlSet"] = t["controlSet"] if isinstance(t.get("controlSet"), str) and CONTROL_SET_ID.fullmatch(t["controlSet"]) else None
-        outcome = t.get("planningOutcome") if t.get("planningOutcome") in ("plan", "fast") else None
-        if outcome is None and t["planningMode"] in ("plan", "fast") and t.get("worktree"):
-            outcome = t["planningMode"]
-        t["planningOutcome"] = outcome
-        if not isinstance(t.get("order"), (int, float)):
-            t["order"] = self.next_order(column)
-        t["updatedAt"] = max(t.get("updatedAt") or "", f["updatedAt"])
-        self.tasks[task_id] = t
-        self.seen[task_id] = {**copy.deepcopy(f), "column": column}
-        self.persisted[task_id] = copy.deepcopy(runtime)
-        if not self.apply(t, f) and not t.get("repo"):
-            self.tasks.pop(task_id, None)
-            self.seen.pop(task_id, None)
-            self.persisted.pop(task_id, None)
-            return False
-        if upgraded:
-            # Once: the record moves onto presentation and execution, keeping its ids, paths and queue position.
-            self.write_record(t)
-        return True
-
-    def apply(self, t: Dict[str, Any], f: Dict[str, Any]) -> bool:
-        """Takes a bead's outside edits into its card, writing back moves that would start or shift started work."""
-        task_id = t["id"]
-        seen = self.seen[task_id]
-        started = has_started(t)
-        kept: Dict[str, Any] = {}
-        moved = False
-        for key in beads.FIELDS:
-            if not beads.differs(key, f[key], seen.get(key)) or not beads.differs(key, f[key], t.get(key)):
-                continue
-            if key == "column":
-                if started or f["column"] in LIVE_COLUMNS:
-                    kept[key] = t[key]
-                    continue
-                t["column"], t["order"] = f["column"], self.next_order(f["column"])
-                moved = True
-            elif key in beads.CONFIG_KEYS and started:
-                kept[key] = t[key]
-            else:
-                t[key] = copy.deepcopy(f[key])
-        plan_changed = beads.differs("plan", f["plan"], seen.get("plan"))
-        if plan_changed:
-            t["planUpdatedAt"] = f["updatedAt"]
-            if spawned(t) and t["planningMode"] == "auto" and t.get("planningOutcome") is None and t["plan"].strip():
-                t["planningOutcome"] = "plan"
-        renamed = f["title"] != seen.get("title") or f["ticket"] != seen.get("ticket")
-        if renamed and not started and not t.get("branchEdited") and f["branch"] == seen.get("branch"):
-            t["branch"] = self.suggest_branch(t)
-        self.seen[task_id] = copy.deepcopy(f)
-        t["updatedAt"] = max(t.get("updatedAt") or "", f["updatedAt"])
-        if kept:
-            titles = dict(COLUMNS)
-            what = ", ".join(f"column ({titles[t['column']]}, Beads says {f['status']})" if k == "column" else k
-                             for k in kept)
-            print(f"orchestrator: {task_id} keeps its board {what}: starting or changing a started task happens on the board",
-                  file=sys.stderr)
-        # A column change waiting to reach Beads is retried by the poller, not written again here.
-        pending_column = (t.get("beadsPending") or {}).get("column") == t["column"]
-        if pending_column:
-            kept.pop("column", None)
-        if not (kept or moved or plan_changed or any(beads.differs(k, t.get(k), f.get(k)) for k in beads.FIELDS
-                                                     if not (pending_column and k == "column"))):
-            return True
-        try:
-            self.save(t)
-        except ApiError as e:
-            t.update(kept)
-            self.synced = None
-            print(f"orchestrator: couldn't write {task_id}'s board values to Beads, retrying: {e.message}", file=sys.stderr)
-            return False
-        return True
+                    self.save(t)
 
     def task_dir(self, task_id: str) -> Path:
         return TASKS_DIR / task_id
 
-    def runtime_path(self, task_id: str) -> Path:
-        return self.task_dir(task_id) / "execution.json"
-
     def save(self, t: Dict[str, Any]) -> None:
-        """Writes the runtime record and the fields the board changed to the bead. A column change Beads doesn't take now
-        stays recorded as beadsPending for the poller to retry; any other failed field reverts and raises."""
-        task_id = t["id"]
-        changes = [k for k in beads.FIELDS if beads.differs(k, t.get(k), self.seen[task_id].get(k))]
+        """Writes a task's record (call under self.lock)."""
         t["updatedAt"] = now_iso()
-        if "column" not in changes:
-            t["beadsPending"] = None
-        elif (t.get("beadsPending") or {}).get("column") == t["column"]:
-            # Already waiting for Beads: the poller retries it, so a slow Beads doesn't hold up every later save.
-            changes.remove("column")
-        else:
-            t["beadsPending"] = {"column": t["column"]}
-            self.write_record(t)
-        if changes:
-            try:
-                self.push(t, changes)
-            except beads.BeadsError as e:
-                if changes != ["column"]:
-                    for key in changes:
-                        if key != "column":
-                            t[key] = copy.deepcopy(self.seen[task_id].get(key))
-                    self.write_record(t)
-                    raise beads_api_error(e)
-                print(f"orchestrator: {task_id}'s column reaches Beads later: {e}", file=sys.stderr)
-                return
-            if "column" in changes:
-                t["beadsPending"] = None
-        self.write_record(t)
-
-    def write_record(self, t: Dict[str, Any]) -> None:
-        record = {**beads.runtime_record(t), "seenColumn": self.seen[t["id"]]["column"]}
-        write_atomic(self.runtime_path(t["id"]), json.dumps(record, indent=2))
-        self.persisted[t["id"]] = copy.deepcopy(record)
-
-    def push(self, t: Dict[str, Any], changes: List[str]) -> None:
-        task_id = t["id"]
-        seen = self.seen[task_id]
-        self.writes += 1
-        fingerprint = self.workspace.fingerprint()
-        if fingerprint is None or fingerprint != self.synced:
-            current = beads.fields(self.workspace.show(task_id))
-            stale = [k for k in changes if beads.differs(k, current[k], seen.get(k))]
-            if stale:
-                raise beads.BeadsConflict(f"{task_id}'s {', '.join(stale)} changed in Beads since the board read it")
-        args: List[str] = []
-        for key, flag in (("title", "--title"), ("description", "--description"), ("plan", "--design"),
-                          ("ticket", "--external-ref"), ("parent", "--parent")):
-            if key in changes:
-                args += [flag, t.get(key) or ""]
-        config = {k: t.get(k) for k in beads.CONFIG_KEYS}
-        if any(k in changes for k in beads.CONFIG_KEYS):
-            args += ["--metadata", json.dumps({beads.METADATA_KEY: config})]
-        status = beads.STATUS_FOR_COLUMN[t["column"]]
-        want = list(t["dependsOn"])
-        # Removals go first: bd refuses a parent that the task still depends on.
-        for dep in [d for d in seen["dependsOn"] if d not in want]:
-            self.workspace.remove_dep(task_id, dep)
-            seen["dependsOn"] = [d for d in seen["dependsOn"] if d != dep]
-        if "column" in changes:
-            args += ["--status", status] + (["--force"] if status == "closed" else [])
-        if args:
-            self.workspace.update(task_id, args, if_status=seen["status"] if "column" in changes else None)
-            for key in changes:
-                if key != "dependsOn":
-                    seen[key] = copy.deepcopy(t.get(key))
-            if "column" in changes:
-                seen["status"] = status
-            if any(k in changes for k in beads.CONFIG_KEYS):
-                seen["metadata"] = {**seen["metadata"], beads.METADATA_KEY: config}
-        for dep in [d for d in want if d not in seen["dependsOn"]]:
-            self.workspace.add_dep(task_id, dep)
-            seen["dependsOn"] = seen["dependsOn"] + [dep]
-        if fingerprint is not None and fingerprint == self.synced:
-            # Only the board's own write changed Beads since the last read: the next sync needn't list it again.
-            self.synced = self.workspace.fingerprint()
-
-    def revert(self, t: Dict[str, Any]) -> None:
-        seen = self.seen[t["id"]]
-        for key in beads.FIELDS:
-            t[key] = copy.deepcopy(seen.get(key))
-        persisted = self.persisted.get(t["id"]) or {}
-        for key in beads.RUNTIME_KEYS:
-            if key in persisted:
-                t[key] = copy.deepcopy(persisted[key])
+        write_atomic(self.task_dir(t["id"]) / RECORD_FILE, json.dumps({k: t.get(k) for k in RECORD_KEYS}, indent=2))
 
     def create(self, t: Dict[str, Any]) -> None:
-        """Creates the bead of a new task; bd assigns its KB-<n> id, or <parent>.<n> for a child (call under self.lock)."""
-        self.writes += 1
-        try:
-            bead = self.workspace.create(t)
-        except beads.BeadsError as e:
-            raise beads_api_error(e)
-        f = beads.fields(bead)
-        t.update({k: copy.deepcopy(f[k]) for k in beads.FIELDS})
-        t.update(id=bead["id"], createdAt=f["createdAt"])
+        """Gives a new task its id, MC-<n>, and writes it (call under self.lock)."""
+        t["id"] = f"MC-{self.next_id}"
+        self.next_id += 1
+        self.save_board()
         self.tasks[t["id"]] = t
-        self.seen[t["id"]] = f
         self.save(t)
-        if t.get("parent"):
-            self.blockers_after_write()
 
     def delete(self, task_id: str) -> None:
-        """Deletes a task's bead (bd drops its dependency links too), then its card (call under self.lock)."""
-        self.writes += 1
-        try:
-            self.workspace.delete(task_id)
-        except beads.BeadsError as e:
-            raise beads_api_error(e)
-        self.forget(task_id)
-
-    def forget(self, task_id: str) -> None:
+        """Deletes a card and its folder; the cards that depended on it or sat under it lose those links (call under
+        self.lock)."""
         self.tasks.pop(task_id, None)
-        self.seen.pop(task_id, None)
-        self.persisted.pop(task_id, None)
         self.activity.pop(task_id, None)
         self.facts.pop(task_id, None)
-        self.native_blocked.pop(task_id, None)
-        for other_id, other in self.tasks.items():
-            if task_id in other["dependsOn"]:
+        for other in self.tasks.values():
+            if task_id in other["dependsOn"] or other.get("parent") == task_id:
                 other["dependsOn"] = [d for d in other["dependsOn"] if d != task_id]
-            seen = self.seen.get(other_id)
-            if seen and task_id in seen["dependsOn"]:
-                seen["dependsOn"] = [d for d in seen["dependsOn"] if d != task_id]
-            # bd orphans a deleted parent's children.
-            if other.get("parent") == task_id:
-                other["parent"] = None
-            if seen and seen.get("parent") == task_id:
-                seen["parent"] = None
+                if other.get("parent") == task_id:
+                    other["parent"] = None
+                self.save(other)
         shutil.rmtree(self.task_dir(task_id), ignore_errors=True)
 
     def save_board(self) -> None:
-        write_atomic(BOARD_FILE, json.dumps({"context": self.context, "flows": self.flows}, indent=2))
-
-    def write_plan(self, t: Dict[str, Any], text: str) -> None:
-        t["plan"] = text
-        t["planUpdatedAt"] = now_iso()
-
-    def read_context(self, task_id: str) -> Dict[str, Any]:
-        """A task's shared context: its bead's notes, read from Beads now (call without self.lock)."""
-        with self.lock:
-            self.get(task_id)
-        try:
-            bead = self.workspace.show(task_id)
-        except beads.BeadsError as e:
-            raise beads_api_error(e)
-        return {"beadId": bead["id"], "notes": bead.get("notes") or "", "updatedAt": bead.get("updated_at")}
-
-    def append_context(self, task_id: str, text: str) -> Dict[str, Any]:
-        """Appends to a task's bead notes in one bd update, never rewriting what's there (call without self.lock)."""
-        with self.lock:
-            self.get(task_id)
-        try:
-            bead = self.workspace.append_notes(task_id, text)
-        except beads.BeadsError as e:
-            raise beads_api_error(e)
-        return {"beadId": bead["id"], "notes": bead.get("notes") or "", "updatedAt": bead.get("updated_at")}
+        write_atomic(BOARD_FILE, json.dumps({"nextId": self.next_id, "projects": self.projects}, indent=2))
 
     # views
 
@@ -750,29 +491,24 @@ class Store:
             "ticket": t.get("ticket"),
             "branch": t.get("branch", ""),
             "repo": t["repo"],
-            "checkout": t.get("checkout"),
             "base": t["base"],
-            "merge": t["merge"],
-            "planningMode": t["planningMode"],
             "controlSet": t.get("controlSet"),
-            "planningOutcome": t.get("planningOutcome"),
+            "tags": list(t["tags"]),
             "dependsOn": list(t["dependsOn"]),
             "parent": t.get("parent"),
             "children": children(t["id"]),
             "blockedBy": blocked_by(t),
             "waitingForSlot": waiting_for_slot(t),
             "paused": paused(t),
+            "held": bool(t.get("held")),
+            "planned": t.get("planned"),
             "moveRequiresConfirmation": move_requires_confirmation(t),
-            "pendingUpdate": pending_update(t),
             "merged": t.get("merged"),
             "number": task_number(t),
             "intent": {k: intent.get(k) for k in ("op", "stage", "at", "attempt", "lastError")} if intent else None,
             "lastOperation": t.get("lastOperation"),
-            "syncPending": bool(t.get("beadsPending")),
             "createdAt": t["createdAt"],
             "updatedAt": t["updatedAt"],
-            "plan": t.get("plan", ""),
-            "planUpdatedAt": t.get("planUpdatedAt"),
             "spawn": {
                 "state": t["spawn"].get("state", "none"),
                 "error": t["spawn"].get("error"),
@@ -787,64 +523,55 @@ class Store:
             "agent": t.get("agent"),
             "git": t.get("git"),
             "pr": t.get("pr"),
-            "flow": flow_id(t["repo"], t["base"]),
+            "land": land(t),
+            "project": project_id(t["repo"]),
             "origin": t.get("origin"),
         }
 
-    def flow_list(self) -> List[Dict[str, Any]]:
-        """Registered flows and flows that have tasks, while their checkout is still a git checkout or an omp session
-        streams for them; the registered checkout wins. A flow whose checkout was deleted drops out, its tasks stay."""
-        flows: Dict[str, Dict[str, Any]] = {}
-
-        def entry(repo: str, base: str, checkout: Optional[str], concurrency_limit: Optional[int] = None,
-                  control_sets: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
-            fid = flow_id(repo, base)
-            if fid not in flows:
-                flows[fid] = {"id": fid, "name": os.path.basename(repo), "repo": repo, "base": base, "checkout": checkout,
-                              "counts": {c: 0 for c in COLUMN_IDS}, "live": hub.flow_live(fid),
-                              "concurrencyLimit": concurrency_limit, "controlSets": control_sets}
-            return flows[fid]
-
-        checked: Dict[Tuple[str, Optional[str]], bool] = {}
-
-        def active(repo: str, base: str, checkout: Optional[str]) -> bool:
-            fid = flow_id(repo, base)
-            if (fid, checkout) not in checked:
-                checked[(fid, checkout)] = checkout_exists(checkout) or hub.flow_live(fid)
-            return checked[(fid, checkout)]
-
-        for f in self.flows:
-            if active(f["repo"], f["base"], f["checkout"]):
-                entry(f["repo"], f["base"], f["checkout"], f.get("concurrencyLimit"), f.get("controlSets"))
-        shown = {flow_id(t["repo"], t["base"]) for t in self.tasks.values()
-                 if active(t["repo"], t["base"], t.get("checkout"))}
+    def project_list(self) -> List[Dict[str, Any]]:
+        """Registered projects and projects that have tasks, while their main checkout exists or an omp session streams for
+        them (call under self.lock)."""
+        registered = {project_id(p["repo"]): p for p in self.projects}
+        repos = {pid: p["repo"] for pid, p in registered.items()}
+        owners = {t["id"]: project_id(t["repo"]) for t in self.tasks.values()}
         for t in self.tasks.values():
-            fid = flow_id(t["repo"], t["base"])
-            if fid in flows or fid in shown:
-                entry(t["repo"], t["base"], t.get("checkout"))["counts"][t["column"]] += 1
+            repos.setdefault(owners[t["id"]], t["repo"])
         try:
             config = read_config()
         except ApiError:
             config = {}
-        for f in flows.values():
+        listed = []
+        for pid, repo in repos.items():
+            live = hub.project_live(pid)
+            if not live and not Path(repo).is_dir():
+                continue
+            own = [t for t in self.tasks.values() if owners[t["id"]] == pid]
+            trees = [w for w in self.worktrees if w["project"] == pid]
+            entry = {"id": pid, "name": os.path.basename(repo), "repo": repo, "defaultBranch": repo_default_branch(repo),
+                     "counts": {c: sum(1 for t in own if t["column"] == c) for c in COLUMN_IDS}, "live": live,
+                     "concurrencyLimit": (registered.get(pid) or {}).get("concurrencyLimit"),
+                     "controlSets": (registered.get(pid) or {}).get("controlSets"),
+                     "hidden": list((registered.get(pid) or {}).get("hidden") or []),
+                     "tagRules": copy.deepcopy((registered.get(pid) or {}).get("tagRules") or []),
+                     "tags": sorted({tag for x in [*own, *trees] for tag in x["tags"]})}
             try:
-                f.update(project_scripts(f["name"], config))
+                entry.update(project_scripts(entry["name"], config))
             except ApiError:
-                f.update(dict.fromkeys(SCRIPT_KEYS, ""))
-        return sorted(flows.values(), key=lambda f: (f["name"], f["base"]))
+                entry.update(dict.fromkeys(SCRIPT_KEYS, ""))
+            listed.append(entry)
+        return sorted(listed, key=lambda p: p["id"])
 
     def board(self) -> Dict[str, Any]:
         with self.lock:
             tasks = sorted(self.tasks.values(),
                            key=lambda t: (COLUMN_IDS.index(t["column"]), t["order"], t["createdAt"]))
             return {
-                "version": 1,
-                "repo": {"path": self.context["checkout"], "name": os.path.basename(self.context["repo"]),
-                         "base": self.context["base"], "flow": flow_id(self.context["repo"], self.context["base"])},
+                "version": 2,
                 "columns": [{"id": c, "title": title} for c, title in COLUMNS],
-                "flows": self.flow_list(),
+                "projects": self.project_list(),
                 "themeVersion": self.theme_version,
                 "tasks": [self.view(t) for t in tasks],
+                "worktrees": sorted(self.worktrees, key=lambda w: (w["project"], w["branch"])),
             }
 
     # access
@@ -871,19 +598,13 @@ def spawned(t: Dict[str, Any]) -> bool:
     return bool(t.get("worktree"))
 
 
-# A card id in prose; one inside a path or name (tasks/KB-1, orch-KB-1) stays as it is.
-TASK_REF = re.compile(r"(?<![\w/-])KB-\d+(?:\.\d+)*\b")
+# A card id in prose; one inside a path or name (tasks/MC-1, mc-MC-1) stays as it is.
+TASK_REF = re.compile(r"(?<![\w/-])(?:MC|KB)-\d+(?:\.\d+)*\b")
 
 
 def task_number(t: Dict[str, Any]) -> str:
-    """The number people know a card by, counted per project: a child's is its parent's with its place under it, a card
-    created since numbering went per project keeps the one it got, an older one the number in its Beads id."""
-    parent = store.tasks.get(t.get("parent") or "")
-    if parent and t["id"].startswith(parent["id"] + "."):
-        return task_number(parent) + t["id"][len(parent["id"]):]
-    if t.get("number"):
-        return str(t["number"])
-    return t["id"][3:] if TASK_REF.fullmatch(t["id"]) else t["id"]
+    """The number people know a card by, counted per project."""
+    return str(t.get("number") or t["id"])
 
 
 def label(task_id: str) -> str:
@@ -891,8 +612,8 @@ def label(task_id: str) -> str:
 
 
 def with_numbers(text: str) -> str:
-    """`text` with each card's Beads id replaced by its number (reads store.tasks without its lock, as errors can be raised
-    under other locks)."""
+    """`text` with each card id replaced by its number (reads store.tasks without its lock, as errors can be raised under
+    other locks)."""
     return TASK_REF.sub(lambda m: label(m[0]), text) if "store" in globals() else text
 
 
@@ -907,7 +628,7 @@ def has_started(t: Dict[str, Any]) -> bool:
 
 
 def paused(t: Dict[str, Any]) -> bool:
-    """A started task in Todo or Backlog: its worktree and omp session stay, but its agent is stopped and holds no slot."""
+    """A started task in Waiting: its worktree and omp session stay, but its agent is stopped or idle and holds no slot."""
     return spawned(t) and t["column"] in PAUSED_COLUMNS and not t.get("merged") \
         and (t.get("intent") or {}).get("op") != "start"
 
@@ -963,23 +684,6 @@ def session_view(t: Dict[str, Any], connected: bool) -> Optional[Dict[str, Any]]
     return {"id": session.get("id"), "file": session.get("file"), "connected": connected}
 
 
-def briefing(t: Dict[str, Any]) -> Dict[str, str]:
-    return {"title": t["title"], "description": t.get("description") or ""}
-
-
-def note_briefing(t: Dict[str, Any]) -> None:
-    """A task started before briefings were recorded: its agent knows the card as it is before this change."""
-    if spawned(t) and not t.get("briefed"):
-        t["briefed"] = briefing(t)
-
-
-def pending_update(t: Dict[str, Any]) -> bool:
-    """Whether a started task's title or description changed since its agent received them."""
-    live = spawned(t) or t["spawn"].get("state") == "running"
-    return (live and bool(t.get("briefed")) and t["column"] != "done" and not t.get("merged")
-            and t["briefed"] != briefing(t))
-
-
 def ancestors(parent: Optional[str]) -> List[str]:
     """`parent` and its own parents up the tree, nearest first (call under store.lock)."""
     chain: List[str] = []
@@ -995,31 +699,39 @@ def children(task_id: str) -> List[str]:
 
 
 def blocked_by(t: Dict[str, Any]) -> List[str]:
-    """Direct open prerequisites plus Beads' effective blockers, including inherited parent blockers."""
-    own = [d for d in t["dependsOn"] if d in store.tasks and store.tasks[d]["column"] != "done"]
-    return own + [b for b in store.native_blocked.get(t["id"], []) if b not in own]
+    """The open dependencies of a task and of each task above it in its parent tree."""
+    found: List[str] = []
+    for owner in [t, *(store.tasks[a] for a in ancestors(t.get("parent")) if a in store.tasks)]:
+        for d in owner["dependsOn"]:
+            if d not in found and d in store.tasks and store.tasks[d]["column"] != "done":
+                found.append(d)
+    return found
 
 
-def flow_concurrency_limit(repo: str, base: str) -> Optional[int]:
-    flow = next((f for f in store.flows if same_dir(f["repo"], repo) and f["base"] == base), None)
-    return flow.get("concurrencyLimit") if flow else None
+def registered_project(repo: str) -> Optional[Dict[str, Any]]:
+    return next((p for p in store.projects if same_dir(p["repo"], repo)), None)
 
 
-def active_task_count(repo: str, base: str) -> int:
-    """The flow's tasks holding a slot: started ones In Progress and any still starting; paused ones don't."""
-    return sum(1 for t in store.tasks.values()
-               if same_dir(t["repo"], repo) and t["base"] == base
-               and ((t["column"] == "doing" and spawned(t)) or t["spawn"]["state"] == "running"))
+def project_concurrency_limit(repo: str) -> Optional[int]:
+    return (registered_project(repo) or {}).get("concurrencyLimit")
+
+
+def active_task_count(repo: str) -> int:
+    """The project's agents holding a slot: In Progress ones that run and any being resumed; planning, waiting, review and
+    pull-request agents hold none (call under store.lock)."""
+    return sum(1 for t in store.tasks.values() if t["column"] == "doing" and same_dir(t["repo"], repo)
+               and ((store.facts.get(t["id"]) or {}).get("agent_running") or hub.task_live(t["id"])
+                    or (t.get("intent") or {}).get("op") == "resume"))
 
 
 def has_task_slot(t: Dict[str, Any]) -> bool:
-    limit = flow_concurrency_limit(t["repo"], t["base"])
-    return limit is None or active_task_count(t["repo"], t["base"]) < limit
+    limit = project_concurrency_limit(t["repo"])
+    return limit is None or active_task_count(t["repo"]) < limit
 
 
 def waiting_for_slot(t: Dict[str, Any]) -> bool:
-    queued = paused(t) or (not spawned(t) and t["spawn"]["state"] == "none")
-    return t["column"] == "todo" and queued and not t.get("intent") and not blocked_by(t) and not has_task_slot(t)
+    return t["column"] == "waiting" and bool(t.get("planned")) and not t.get("held") and not t.get("intent") \
+        and not blocked_by(t) and not has_task_slot(t)
 
 
 def move_requires_confirmation(t: Dict[str, Any]) -> bool:
@@ -1027,21 +739,84 @@ def move_requires_confirmation(t: Dict[str, Any]) -> bool:
     return t["column"] == "doing" or state in MOVE_GUARDED_AGENT_STATES
 
 
-def default_merge(t: Dict[str, Any]) -> str:
-    """How a new task lands: a pull request into the repository's default branch, else a local merge into its base."""
-    return "pr" if t["base"] == default_branch(t["repo"]) else "local"
+def land(t: Dict[str, Any]) -> Dict[str, Any]:
+    """How a task's work lands: merged into its base when that is another task's branch (stacked), and through a pull
+    request unless one is open; nothing once it is done."""
+    pr = (t.get("pr") or {}).get("state")
+    if t.get("merged") or t["column"] == "done" or pr == "merged":
+        return {"mergeInto": None, "pr": False}
+    return {"mergeInto": t["base"] if t["base"] != repo_default_branch(t["repo"]) else None,
+            "pr": pr not in ("open", "draft")}
 
 
-def validate_merge(value: Any) -> str:
-    if value not in ("pr", "local"):
-        raise ApiError(400, "Merge mode must be pr or local")
-    return value
+def valid_limit(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
-def validate_planning_mode(value: Any) -> str:
-    if value not in PLANNING_MODES:
-        raise ApiError(400, "Planning mode must be auto, plan or fast")
-    return value
+TAG = re.compile(r"[a-z0-9][a-z0-9._-]{0,31}")
+TAGS_LIMIT = 8
+TAGS_ERROR = "Tags are up to 8 short words: lowercase letters, digits, . _ -"
+
+
+def validate_tags(value: Any) -> List[str]:
+    """A task's tags: at most TAGS_LIMIT short lowercase words, deduplicated in order."""
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ApiError(400, TAGS_ERROR)
+    tags = list(dict.fromkeys(v.strip().lower() for v in value))
+    if len(tags) > TAGS_LIMIT or not all(TAG.fullmatch(v) for v in tags):
+        raise ApiError(400, TAGS_ERROR)
+    return tags
+
+
+TAG_RULES_LIMIT = 50
+TAG_RULES_ERROR = "Tag rules are up to 50 branch patterns, each followed by 1 to 8 tags"
+
+
+def validate_tag_rules(value: Any) -> List[Dict[str, Any]]:
+    """A project's tag rules: a branch-name pattern and the tags it gives, at most TAG_RULES_LIMIT of them."""
+    if not isinstance(value, list) or len(value) > TAG_RULES_LIMIT:
+        raise ApiError(400, TAG_RULES_ERROR)
+    rules = []
+    for rule in value:
+        pattern = rule["pattern"].strip() if isinstance(rule, dict) and isinstance(rule.get("pattern"), str) else ""
+        if not pattern or len(pattern) > 200 or any(c.isspace() for c in pattern):
+            raise ApiError(400, TAG_RULES_ERROR)
+        tags = validate_tags(rule.get("tags"))
+        if not tags:
+            raise ApiError(400, TAG_RULES_ERROR)
+        rules.append({"pattern": pattern, "tags": tags})
+    return rules
+
+
+def valid_tag_rules(value: Any) -> List[Dict[str, Any]]:
+    try:
+        return validate_tag_rules(value)
+    except ApiError:
+        return []
+
+
+def valid_hidden(value: Any) -> List[str]:
+    return [b for b in value if isinstance(b, str) and b] if isinstance(value, list) else []
+
+
+def rule_tags(repo: str, branch: str, path: Optional[str] = None) -> List[str]:
+    """The tags a project's rules give a branch: those of every rule whose pattern matches the branch's name or its
+    worktree's folder name, ignoring case."""
+    names = [branch.lower()] + ([os.path.basename(path.rstrip("/")).lower()] if path else [])
+    found: List[str] = []
+    for rule in (registered_project(repo) or {}).get("tagRules", []):
+        if any(fnmatch.fnmatchcase(name, rule["pattern"].lower()) for name in names):
+            found += [x for x in rule["tags"] if x not in found]
+    return found
+
+
+def with_rule_tags(tags: List[str], repo: str, branch: str, path: Optional[str] = None) -> List[str]:
+    """`tags`, then the tags the project's rules give `branch` and its worktree, while there are fewer than TAGS_LIMIT."""
+    out = list(tags)
+    for x in rule_tags(repo, branch, path):
+        if x not in out and len(out) < TAGS_LIMIT:
+            out.append(x)
+    return out
 
 
 def validate_control_set(value: Any) -> Optional[str]:
@@ -1053,7 +828,7 @@ def validate_control_set(value: Any) -> Optional[str]:
 
 
 def depends_on(task_id: str, target: str) -> bool:
-    """Whether `task_id` reaches `target` through dependencies or parent links, the graph Beads keeps acyclic (call under
+    """Whether `task_id` reaches `target` through dependencies or parent links, a graph the board keeps acyclic (call under
     store.lock)."""
     seen, stack = set(), [task_id]
     while stack:
@@ -1069,9 +844,9 @@ def depends_on(task_id: str, target: str) -> bool:
     return False
 
 
-def validate_deps(task_id: str, value: Any, repo: str, base: str, parent: Optional[str]) -> List[str]:
-    """A task's dependencies: existing task ids of the same flow, deduplicated, without the task itself, a cycle, or a
-    task above or below it in the parent tree (Beads refuses those)."""
+def validate_deps(task_id: str, value: Any, repo: str, parent: Optional[str]) -> List[str]:
+    """A task's dependencies: existing task ids of the same repository, deduplicated, without the task itself, a cycle,
+    or a task above or below it in the parent tree."""
     if not isinstance(value, list) or not all(isinstance(d, str) for d in value):
         raise ApiError(400, "Dependencies must be a list of task ids")
     deps = list(dict.fromkeys(value))
@@ -1083,10 +858,8 @@ def validate_deps(task_id: str, value: Any, repo: str, base: str, parent: Option
         d = store.tasks[dep]
         if not same_dir(d["repo"], repo):
             raise ApiError(400, f"{dep} belongs to {os.path.basename(d['repo'])}, not {os.path.basename(repo)}")
-        if d["base"] != base:
-            raise ApiError(400, f"{dep} merges into {d['base']}, not {base}")
         if dep in ancestors(parent):
-            raise ApiError(400, f"{dep} is a parent of {task_id or 'this task'}, whose children already inherit its blockers")
+            raise ApiError(400, f"{dep} is a parent of {task_id or 'this task'}, whose children already wait for what it waits for")
         if task_id and task_id in ancestors(d.get("parent")):
             raise ApiError(400, f"{dep} is a child of {task_id}; a task can't depend on its own children")
         if depends_on(dep, task_id):
@@ -1094,9 +867,9 @@ def validate_deps(task_id: str, value: Any, repo: str, base: str, parent: Option
     return deps
 
 
-def validate_parent(task_id: str, value: Any, repo: str, base: str, deps: List[str]) -> Optional[str]:
-    """A task's parent (None clears it): an existing task of the same flow, neither under the task nor depending on it,
-    whose parent tree holds none of the task's dependencies."""
+def validate_parent(task_id: str, value: Any, repo: str, deps: List[str]) -> Optional[str]:
+    """A task's parent (None clears it): an existing task of the same repository, neither under the task nor depending on
+    it, whose parent tree holds none of the task's dependencies."""
     if value is None or value == "":
         return None
     if not isinstance(value, str):
@@ -1108,8 +881,6 @@ def validate_parent(task_id: str, value: Any, repo: str, base: str, deps: List[s
     p = store.tasks[value]
     if not same_dir(p["repo"], repo):
         raise ApiError(400, f"{value} belongs to {os.path.basename(p['repo'])}, not {os.path.basename(repo)}")
-    if p["base"] != base:
-        raise ApiError(400, f"{value} merges into {p['base']}, not {base}")
     if task_id and depends_on(value, task_id):
         raise ApiError(400, f"{value} is under {task_id} or depends on it")
     clash = next((d for d in deps if d in ancestors(value)), None)
@@ -1117,22 +888,6 @@ def validate_parent(task_id: str, value: Any, repo: str, base: str, deps: List[s
         raise ApiError(400, f"{task_id or 'This task'} depends on {clash}, which would be its parent or above it; "
                             "remove that dependency first")
     return value
-
-
-def refuse_split_family(t: Dict[str, Any]) -> None:
-    """A task's parent and children stay in its flow (call under store.lock)."""
-    for other in ([t["parent"]] if t.get("parent") else []) + children(t["id"]):
-        o = store.tasks.get(other)
-        if o and not (same_dir(o["repo"], t["repo"]) and o["base"] == t["base"]):
-            raise ApiError(400, f"{other} stays in {flow_id(o['repo'], o['base'])}; clear the parent link before moving "
-                                f"{t['id']} to {flow_id(t['repo'], t['base'])}")
-
-
-def refuse_task_worktree(info: Dict[str, Any]) -> None:
-    """Tasks branch from a parent checkout, never from another task's worktree (call under store.lock)."""
-    owner = next((t["id"] for t in store.tasks.values() if same_dir(t.get("worktree"), info["checkout"])), None)
-    if owner:
-        raise ApiError(400, f"{owner}'s worktree can't have tasks of its own")
 
 
 def require_spawned(t: Dict[str, Any]) -> str:
@@ -1153,57 +908,71 @@ def validate_branch(branch: str) -> str:
     return branch
 
 
+def free_branch(repo: str, branch: str) -> str:
+    """`branch`, else `branch-2`, `branch-3`… while a branch of that name exists or another task of the repository has it
+    (call under store.lock)."""
+    taken = {o["branch"] for o in store.tasks.values() if same_dir(o["repo"], repo)}
+    candidate, n = branch, 1
+    while candidate in taken or has_ref(repo, f"refs/heads/{candidate}"):
+        n += 1
+        candidate = f"{branch}-{n}"
+    return candidate
+
+
 # --- task mutations ---------------------------------------------------------------
 
 def create_task(body: Dict[str, Any]) -> Dict[str, Any]:
-    title = str(body.get("title") or "").strip()
-    if not title:
-        raise ApiError(400, "A task needs a title")
-    plan = str(body.get("plan") or "")
+    """Creates a task and starts it at once: its worktree branched from `base` (or from the branch of the task it comes
+    `after`, which it then depends on), and its omp planning the prompt."""
+    prompt = str(body.get("prompt") or "").strip()
+    if not prompt:
+        raise ApiError(400, "A task needs a prompt")
+    info = checkout_info(str(Path(str(body.get("repo") or "")).expanduser())) if body.get("repo") else None
+    if not info:
+        raise ApiError(400, f"{body.get('repo') or 'A task'} is not a git repository" if body.get("repo")
+                       else "A task needs the repository it works in")
     origin = validate_origin(body["origin"]) if body.get("origin") is not None else None
-    planning_mode = validate_planning_mode(body.get("planningMode", "auto"))
     control_set = validate_control_set(body.get("controlSet"))
-    info = None
-    if body.get("repo"):
-        info = checkout_info(str(Path(str(body["repo"])).expanduser()))
-        if not info:
-            raise ApiError(400, f"{body['repo']} is not a git repository")
+    tags = validate_tags(body.get("tags") or [])
+    title = str(body.get("title") or "").strip() or prompt_title(prompt)
+    repo = info["repo"]
     with store.lock:
+        deps = body.get("dependsOn") or []
+        if body.get("after"):
+            after = store.get(str(body["after"]))
+            if not same_dir(after["repo"], repo):
+                raise ApiError(400, f"{after['id']} belongs to {os.path.basename(after['repo'])}, not "
+                                    f"{os.path.basename(repo)}")
+            base = after["branch"]
+            deps = [*deps, after["id"]] if isinstance(deps, list) else deps
+        elif body.get("base"):
+            base = validate_branch(str(body["base"]))
+            if not (has_ref(repo, f"refs/heads/{base}") or has_ref(repo, f"refs/remotes/origin/{base}")):
+                raise ApiError(400, f"No branch {base} in {repo}")
+        else:
+            base = info["base"]
         stamp = now_iso()
         t: Dict[str, Any] = {
-            "id": None, "title": title, "description": str(body.get("description") or ""),
-            "column": "backlog", "order": store.next_order("backlog"),
-            "ticket": normalize_ticket(body.get("ticket")), "branch": "", "branchEdited": False,
-            "repo": store.context["repo"], "checkout": store.context["checkout"], "base": store.context["base"],
-            "createdAt": stamp, "updatedAt": stamp, "plan": "", "planUpdatedAt": None,
-            "spawn": {"state": "none", "error": None, "log": ""},
-            "worktree": None, "presentation": None, "execution": None, "agent": None, "git": None, "pr": None,
-            "merge": None, "planningMode": planning_mode, "planningOutcome": None, "controlSet": control_set,
-            "dependsOn": [], "parent": None, "merged": None, "origin": origin,
+            "id": None, "title": title, "description": prompt, "column": "planning", "order": store.next_order("planning"),
+            "held": False, "ticket": normalize_ticket(body.get("ticket")), "tags": tags, "notes": "", "repo": repo,
+            "base": base, "branch": "", "controlSet": control_set, "createdAt": stamp, "updatedAt": stamp,
+            "spawn": {"state": "none", "error": None, "log": ""}, "worktree": None, "presentation": None,
+            "execution": None, "agent": None, "git": None, "pr": None, "merged": None, "origin": origin, "planned": None,
         }
-        if info:
-            t.update(info)
-        elif isinstance(body.get("parent"), str) and body["parent"] in store.tasks:
-            p = store.tasks[body["parent"]]
-            t.update(repo=p["repo"], checkout=p.get("checkout") or p["repo"], base=p["base"])
-        owner = next((o for o in store.tasks.values() if same_dir(o.get("worktree"), t["checkout"])), None)
-        if owner:
-            t.update(repo=owner["repo"], checkout=owner.get("checkout") or owner["repo"], base=owner["base"])
-        t["parent"] = validate_parent("", body.get("parent"), t["repo"], t["base"], [])
-        deps = body.get("dependsOn") if "dependsOn" in body else ([owner["id"]] if owner else [])
-        t["dependsOn"] = validate_deps("", deps or [], t["repo"], t["base"], t["parent"])
-        t["merge"] = validate_merge(body["merge"]) if "merge" in body else default_merge(t)
-        t["branch"] = store.suggest_branch(t)
-        t["number"] = None if t["parent"] else next_number(t["repo"])
-        if plan:
-            store.write_plan(t, plan)
+        t["parent"] = validate_parent("", body.get("parent"), repo, deps if isinstance(deps, list) else [])
+        t["dependsOn"] = validate_deps("", deps, repo, t["parent"])
+        t["branch"] = validate_branch(str(body["branch"])) if body.get("branch") else free_branch(repo, store.suggest_branch(t))
+        t["tags"] = with_rule_tags(tags, repo, t["branch"])
+        t["number"] = next_number(repo)
+        remember_project(repo)
         store.create(t)
+        start_task(t)
         hub.changed()
         return store.view(t)
 
 
 def validate_origin(value: Any) -> Dict[str, Any]:
-    """The omp session a task was planned in, with that session's terminal context."""
+    """The omp session a task was created from, with that session's terminal context."""
     if not isinstance(value, dict) or not isinstance(value.get("session"), str) or not value["session"].strip():
         raise ApiError(400, "origin needs a session")
     try:
@@ -1221,208 +990,122 @@ def validate_concurrency_limit(value: Any) -> Optional[int]:
     return value
 
 
-def register_flow(body: Dict[str, Any]) -> Dict[str, Any]:
-    """Registers the checkout containing `path` as a flow, so it shows up before it has tasks."""
+def remember_project(repo: str) -> Dict[str, Any]:
+    """The registered project of the main checkout `repo`, registering it first (call under store.lock)."""
+    found = registered_project(repo)
+    if not found:
+        found = {"repo": repo, "concurrencyLimit": None, "controlSets": None, "hidden": [], "tagRules": []}
+        store.projects.append(found)
+        store.save_board()
+    return found
+
+
+def listed_project(project: Any) -> Dict[str, Any]:
+    """The project the board lists as `project` (call under store.lock)."""
+    found = next((p for p in store.project_list() if p["id"] == project), None)
+    if not found:
+        raise ApiError(404, f"Unknown project {project}")
+    return found
+
+
+def register_project(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Registers the repository containing `path` as a project, so it shows up before it has tasks."""
     path = str(body.get("path") or "")
     info = checkout_info(str(Path(path).expanduser()))
     if not info:
         raise ApiError(400, f"{path} is not a git repository")
     with store.lock:
-        refuse_task_worktree(info)
-        previous = next((f for f in store.flows
-                         if same_dir(f["repo"], info["repo"]) and f["base"] == info["base"]), None)
-        registered = {**info, "concurrencyLimit": (previous or {}).get("concurrencyLimit"),
-                      "controlSets": (previous or {}).get("controlSets")}
-        store.flows = [f for f in store.flows if Path(f["checkout"]).is_dir()
-                       and not (same_dir(f["repo"], info["repo"]) and f["base"] == info["base"])] + [registered]
-        store.save_board()
-        fid = flow_id(info["repo"], info["base"])
-        flow = next(f for f in store.flow_list() if f["id"] == fid)
+        remember_project(info["repo"])
+        project = listed_project(project_id(info["repo"]))
     hub.changed()
-    return {"ok": True, "flow": flow}
+    return {"ok": True, "project": project}
 
 
-def set_flow_concurrency(body: Dict[str, Any]) -> Dict[str, Any]:
-    flow_id_value = str(body.get("id") or "")
+def set_project_concurrency(body: Dict[str, Any]) -> Dict[str, Any]:
     if "concurrencyLimit" not in body:
         raise ApiError(400, "concurrencyLimit is required")
     limit = validate_concurrency_limit(body["concurrencyLimit"])
     with store.lock:
-        flow = next((f for f in store.flow_list() if f["id"] == flow_id_value), None)
-        if not flow:
-            raise ApiError(404, f"Unknown flow {flow_id_value}")
-        if not flow.get("checkout") or not Path(flow["checkout"]).is_dir():
-            raise ApiError(409, f"{flow_id_value} has no registered checkout")
-        registered = {"repo": flow["repo"], "base": flow["base"], "checkout": flow["checkout"],
-                      "concurrencyLimit": limit, "controlSets": flow.get("controlSets")}
-        store.flows = [f for f in store.flows
-                       if not (same_dir(f["repo"], flow["repo"]) and f["base"] == flow["base"])] + [registered]
+        remember_project(listed_project(body.get("id"))["repo"])["concurrencyLimit"] = limit
         store.save_board()
-        updated = next(f for f in store.flow_list() if f["id"] == flow_id_value)
+        project = listed_project(body.get("id"))
     hub.changed()
     poller.kick()
-    return {"ok": True, "flow": updated}
+    return {"ok": True, "project": project}
 
 
-def set_flow_scripts(body: Dict[str, Any]) -> Dict[str, Any]:
-    """Saves a flow's project scripts in config.json, keeping every other key; a value equal to the default follows it."""
-    flow_id_value = str(body.get("id") or "")
+def set_project_scripts(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Saves a project's scripts in config.json, keeping every other key; a value equal to the default follows it."""
     values = {}
     for key in SCRIPT_KEYS:
         if not isinstance(body.get(key), str):
             raise ApiError(400, f"{key} must be a string; empty means none")
         values[key] = body[key].strip()
     with store.lock:
-        flow = next((f for f in store.flow_list() if f["id"] == flow_id_value), None)
-        if not flow:
-            raise ApiError(404, f"Unknown flow {flow_id_value}")
-        project = flow["name"]
+        name = listed_project(body.get("id"))["name"]
         config = read_config()
-        project_scripts(project, config)  # refuses malformed script settings before rewriting the file
+        project_scripts(name, config)  # refuses malformed script settings before rewriting the file
         defaults = config_object(config, "defaults", "defaults")
         projects = dict(config_object(config, "projects", "projects"))
-        own = dict(config_object(projects, project, f"projects.{project}"))
+        own = dict(config_object(projects, name, f"projects.{name}"))
         for key, value in values.items():
             if value == (defaults.get(key) or "").strip():
                 own.pop(key, None)
             else:
                 own[key] = value
         if own:
-            projects[project] = own
+            projects[name] = own
         else:
-            projects.pop(project, None)
+            projects.pop(name, None)
         if projects or "projects" in config:
             config["projects"] = projects
         write_atomic(CONFIG_FILE, json.dumps(config, indent=2, ensure_ascii=False) + "\n")
-        updated = next(f for f in store.flow_list() if f["id"] == flow_id_value)
+        project = listed_project(body.get("id"))
     hub.changed()
-    return {"ok": True, "flow": updated}
+    return {"ok": True, "project": project}
 
 
-SHORTSTAT = re.compile(r"(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?")
-EXPORTS_DIR = HOME / "exports"
-EXPORT_NAME = re.compile(r"[A-Za-z0-9._-]+\.html")
-OMP_SESSIONS = Path(os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".omp" / "agent") / "sessions"
-IDLE_AFTER = 300
+def set_project_hidden(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Hides a branch's card or worktree from the project's page, or shows it again."""
+    branch, hidden = body.get("branch"), body.get("hidden")
+    if not isinstance(branch, str) or not branch.strip() or not isinstance(hidden, bool):
+        raise ApiError(400, "Hiding needs a branch and hidden: true or false")
+    with store.lock:
+        project = remember_project(listed_project(body.get("id"))["repo"])
+        project["hidden"] = [b for b in project["hidden"] if b != branch] + ([branch] if hidden else [])
+        store.save_board()
+        listed = listed_project(body.get("id"))
+    hub.changed()
+    return {"ok": True, "project": listed}
 
 
-def merge_stats(repo: str, sha: str) -> Optional[Dict[str, int]]:
-    """What a task's merge commit brought into its base: files, lines added and removed, and the task's commits."""
-    code, out, _ = run(["git", "-C", repo, "rev-list", "--parents", "-n", "1", sha], timeout=15)
-    parents = out.split()[1:] if code == 0 else []
-    if len(parents) != 2:
-        return None
-    code, out, _ = run(["git", "-C", repo, "diff", "--shortstat", parents[0], sha], timeout=30)
-    if code != 0:
-        return None
-    m = SHORTSTAT.search(out)
-    code, count, _ = run(["git", "-C", repo, "rev-list", "--count", f"{parents[0]}..{parents[1]}"], timeout=15)
-    return {"files": int(m[1]) if m else 0, "added": int(m[2] or 0) if m else 0, "removed": int(m[3] or 0) if m else 0,
-            "commits": int(count) if code == 0 and count.strip().isdigit() else None}
+def set_project_tag_rules(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Saves a project's tag rules, then gives its open tasks and listed worktrees the tags their branch now matches."""
+    rules = validate_tag_rules(body.get("rules"))
+    with store.lock:
+        project = remember_project(listed_project(body.get("id"))["repo"])
+        project["tagRules"] = rules
+        store.save_board()
+        for t in store.tasks.values():
+            if t["column"] != "done" and t.get("branch") and same_dir(t["repo"], project["repo"]):
+                tags = with_rule_tags(t["tags"], t["repo"], t["branch"], t.get("worktree"))
+                if tags != t["tags"]:
+                    t["tags"] = tags
+                    store.save(t)
+        for w in store.worktrees:
+            w["tags"] = rule_tags(w["repo"], w["branch"], w["path"])
+        listed = listed_project(body.get("id"))
+    hub.changed()
+    return {"ok": True, "project": listed}
 
 
 def epoch(value: str) -> float:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
 
 
-def stamp(seconds: float) -> str:
-    return datetime.fromtimestamp(seconds, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def column_changes(task_id: str, created: Optional[str]) -> List[Dict[str, str]]:
-    """The columns a task moved through with when, oldest first, from its bead's audit events."""
-    changes: List[Dict[str, str]] = []
-    for event in reversed(store.workspace.history(task_id, 500, True) or []):
-        try:
-            old, new = (json.loads(event.get(k) or "null") for k in ("old_value", "new_value"))
-        except ValueError:
-            continue
-        if not isinstance(new, dict) or not new.get("status") or not event.get("created_at"):
-            continue
-        if not changes and created and isinstance(old, dict) and old.get("status"):
-            changes.append({"at": created, "column": beads.column_for(old["status"])})
-        changes.append({"at": event["created_at"], "column": beads.column_for(new["status"])})
-    return changes
-
-
-def agent_activity(branch: str, folders: List[Path], since: float, until: float) -> List[List[str]]:
-    """When an agent worked on `branch`: its omp sessions' messages (omp names a session folder after its directory, which
-    ends with the branch), merged into stretches that end after five minutes without one."""
-    suffix = "-" + branch.replace("/", "-")
-    times: List[float] = []
-    for folder in folders:
-        if not folder.name.rstrip("-").endswith(suffix):
-            continue
-        for path in folder.glob("*.jsonl"):
-            if path.stat().st_mtime < since:
-                continue
-            with path.open(encoding="utf-8", errors="replace") as lines:
-                for line in lines:
-                    if '"type":"message"' not in line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                        at = epoch(entry["timestamp"])
-                    except (ValueError, KeyError, TypeError):
-                        continue
-                    if since <= at <= until and (entry.get("message") or {}).get("role") in ("user", "assistant", "toolResult"):
-                        times.append(at)
-    spans: List[List[float]] = []
-    for at in sorted(times):
-        if spans and at - spans[-1][1] <= IDLE_AFTER:
-            spans[-1][1] = at
-        else:
-            spans.append([at, at])
-    return [[stamp(a), stamp(b)] for a, b in spans]
-
-
-def flow_recap(body: Dict[str, Any]) -> Dict[str, Any]:
-    """Per-task facts for a saved flow page: column changes, times and outcome notes from Beads, merge-commit stats from git,
-    and when agents worked from the tasks' omp sessions."""
-    flow = body.get("flow")
-    with store.lock:
-        tasks = [{"id": t["id"], "repo": t["repo"], "branch": t["branch"], "merged": t.get("merged") or {}}
-                 for t in store.tasks.values() if flow_id(t["repo"], t["base"]) == flow]
-    if not tasks:
-        raise ApiError(404, f"No tasks in flow {flow}")
-    folders = [p for p in OMP_SESSIONS.iterdir() if p.is_dir()] if OMP_SESSIONS.is_dir() else []
-
-    def facts(t: Dict[str, Any], bead: Dict[str, Any], columns: List[Dict[str, str]]) -> Dict[str, Any]:
-        began = next((c["at"] for c in columns if c["column"] in ("todo", "doing")), None) or bead.get("started_at")
-        ended = bead.get("closed_at") or t["merged"].get("at")
-        outcomes = [e["text"] for e in context_entries(bead.get("notes") or "") if e["kind"] == "outcome"]
-        return {"startedAt": bead.get("started_at"), "closedAt": bead.get("closed_at"), "columns": columns,
-                "activity": agent_activity(t["branch"], folders, epoch(began), epoch(ended) if ended else time.time()) if began else [],
-                "outcome": "\n\n".join(outcomes) or None,
-                "merge": merge_stats(t["repo"], t["merged"]["sha"]) if t["merged"].get("sha") else None}
-
-    try:
-        listed = {b["id"]: b for b in store.workspace.list_all() if b.get("id")}
-        # One bd call at a time: concurrent calls only queue on the Beads database, delaying the board's own reads.
-        columns = [column_changes(t["id"], (listed.get(t["id"]) or {}).get("created_at")) for t in tasks]
-    except beads.BeadsError as e:
-        raise beads_api_error(e)
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        found = list(pool.map(lambda t, c: facts(t, listed.get(t["id"]) or {}, c), tasks, columns))
-    return {"tasks": {t["id"]: f for t, f in zip(tasks, found)}}
-
-
-def save_export(body: Dict[str, Any]) -> Dict[str, Any]:
-    """Writes a saved flow page into the exports folder; the board serves it at /exports/<name>."""
-    flow, page = body.get("flow"), body.get("html")
-    if not isinstance(flow, str) or not flow.strip() or not isinstance(page, str) or not page.startswith("<!doctype html>"):
-        raise ApiError(400, "Send the flow and its page")
-    name = re.sub(r"[^A-Za-z0-9._-]+", "-", flow).strip("-.") + time.strftime("-%Y-%m-%d-%H%M") + ".html"
-    path = EXPORTS_DIR / name
-    write_atomic(path, page)
-    home = str(Path.home())
-    shown = "~" + str(path)[len(home):] if str(path).startswith(home + os.sep) else str(path)
-    return {"path": shown, "url": f"/exports/{name}"}
-
-
 def set_theme(body: Dict[str, Any]) -> Dict[str, Any]:
-    """Records the omp theme of a session in `flow` (in memory); the board shows that flow in its colors."""
-    flow, scheme, colors = body.get("flow"), body.get("scheme"), body.get("vars")
+    """Records the omp theme of a session in `project` (in memory); the page shows that project in its colors."""
+    project, scheme, colors = body.get("project"), body.get("scheme"), body.get("vars")
     if scheme not in ("dark", "light"):
         raise ApiError(400, "scheme must be dark or light")
     if not isinstance(colors, dict) or not all(k in THEME_VARS and isinstance(v, str) and THEME_COLOR.fullmatch(v)
@@ -1430,105 +1113,43 @@ def set_theme(body: Dict[str, Any]) -> Dict[str, Any]:
         raise ApiError(400, f"vars must map {', '.join(sorted(THEME_VARS))} to hex colors")
     theme = {"scheme": scheme, "vars": colors}
     with store.lock:
-        if not any(f["id"] == flow for f in store.flow_list()):
-            raise ApiError(404, f"Unknown flow {flow}")
-        if store.themes.get(flow) == theme:
+        listed_project(project)
+        if store.themes.get(project) == theme:
             return {"ok": True}
-        store.themes.pop(flow, None)
-        store.themes[flow] = theme
+        store.themes.pop(project, None)
+        store.themes[project] = theme
         store.theme_version += 1
     hub.changed()
     return {"ok": True}
 
 
-def set_context(body: Dict[str, Any]) -> Dict[str, Any]:
-    """Makes the checkout containing `path` the board's context: new tasks branch from its branch and target it."""
-    info = checkout_info(str(Path(str(body.get("path") or "")).expanduser()))
-    if not info:
-        raise ApiError(400, f"{body.get('path')} is not inside a git checkout")
-    with store.lock:
-        refuse_task_worktree(info)
-        store.context = info
-        store.save_board()
-    hub.changed()
-    return store.board()["repo"]
-
-
 def update_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Changes a card's title, ticket, tags, dependencies or parent; its prompt and control set are fixed once it exists."""
     with store.lock:
         t = store.get(task_id)
-        if (t["column"] == "done" or t.get("merged")) and ("title" in body or "description" in body):
+        if "description" in body:
+            raise ApiError(409, "The prompt is fixed once the task exists: send the agent a message")
+        if "controlSet" in body:
+            raise ApiError(409, "The control set is fixed once the task starts")
+        if (t["column"] == "done" or t.get("merged")) and "title" in body:
             raise ApiError(409, f"{task_id} is done; create a new card")
-        note_briefing(t)
-        renamed = False
-        try:
-            if "title" in body:
-                title = str(body["title"] or "").strip()
-                if not title:
-                    raise ApiError(400, "A task needs a title")
-                renamed = title != t["title"]
-                t["title"] = title
-            if "description" in body:
-                t["description"] = str(body["description"] or "")
-            if "ticket" in body:
-                ticket = normalize_ticket(body["ticket"])
-                renamed = renamed or ticket != t.get("ticket")
-                t["ticket"] = ticket
-            if "branch" in body:
-                if has_started(t):
-                    raise ApiError(409, "The branch is fixed once the task starts")
-                t["branch"] = validate_branch(str(body["branch"] or ""))
-                t["branchEdited"] = t["branch"] != store.suggest_branch(t)
-            if "repo" in body:
-                if has_started(t):
-                    raise ApiError(409, "The repository is fixed once the task starts")
-                info = checkout_info(str(Path(str(body["repo"] or "")).expanduser()))
-                if not info:
-                    raise ApiError(400, f"{body['repo']} is not a git repository")
-                refuse_task_worktree(info)
-                t.update(info)
-                if "merge" not in body:
-                    t["merge"] = default_merge(t)
-            if "base" in body:
-                if has_started(t):
-                    raise ApiError(409, "The base branch is fixed once the task starts")
-                base = validate_branch(str(body["base"] or ""))
-                if not (has_ref(t["repo"], f"refs/heads/{base}") or has_ref(t["repo"], f"refs/remotes/origin/{base}")):
-                    raise ApiError(400, f"No branch {base} in {t['repo']}")
-                t["base"] = base
-            if "merge" in body:
-                if has_started(t):
-                    raise ApiError(409, "The merge mode is fixed once the task starts")
-                t["merge"] = validate_merge(body["merge"])
-            if "planningMode" in body:
-                if has_started(t):
-                    raise ApiError(409, "Planning mode is fixed once the task starts")
-                t["planningMode"] = validate_planning_mode(body["planningMode"])
-                t["planningOutcome"] = None
-            if "controlSet" in body:
-                if has_started(t):
-                    raise ApiError(409, "The control set is fixed once the task starts")
-                t["controlSet"] = validate_control_set(body["controlSet"])
-            wanted = body["dependsOn"] if "dependsOn" in body else t["dependsOn"]
-            parent = validate_parent(task_id, body["parent"], t["repo"], t["base"],
-                                     wanted if isinstance(wanted, list) else []) if "parent" in body else t.get("parent")
-            deps = validate_deps(task_id, wanted, t["repo"], t["base"], parent) if "dependsOn" in body else t["dependsOn"]
-            t["parent"], t["dependsOn"] = parent, deps
-            if "repo" in body or "base" in body:
-                refuse_split_family(t)
-        except ApiError:
-            store.revert(t)
-            raise
-        if renamed and not t.get("branchEdited") and not has_started(t):
-            t["branch"] = store.suggest_branch(t)
-        if "plan" in body:
-            text = str(body["plan"] or "")
-            store.write_plan(t, text)
-            if spawned(t) and text.strip() and t["planningMode"] == "auto" and t.get("planningOutcome") is None:
-                t["planningOutcome"] = "plan"
+        changes: Dict[str, Any] = {}
+        if "title" in body:
+            changes["title"] = str(body["title"] or "").strip()
+            if not changes["title"]:
+                raise ApiError(400, "A task needs a title")
+        if "ticket" in body:
+            changes["ticket"] = normalize_ticket(body["ticket"])
+        if "tags" in body:
+            changes["tags"] = validate_tags(body["tags"])
+        wanted = body["dependsOn"] if "dependsOn" in body else t["dependsOn"]
+        if "parent" in body:
+            changes["parent"] = validate_parent(task_id, body["parent"], t["repo"],
+                                                wanted if isinstance(wanted, list) else [])
+        if "dependsOn" in body:
+            changes["dependsOn"] = validate_deps(task_id, wanted, t["repo"], changes.get("parent", t.get("parent")))
+        t.update(changes)
         store.save(t)
-        if "parent" in body or "dependsOn" in body:
-            store.blockers_after_write()
         hub.changed()
         return store.view(t)
 
@@ -1574,22 +1195,21 @@ def delete_task(task_id: str, body: Dict[str, Any]) -> Any:
 
 
 def start_task(t: Dict[str, Any]) -> None:
-    """Starts a task: it shows as starting in Todo while its start intent sets up its worktree and agent (call under
-    store.lock)."""
-    t["column"] = "todo"
+    """Starts a task: its start intent sets up its worktree and its omp, which plans first (call under store.lock)."""
     t["spawn"] = {"state": "running", "error": None, "log": ""}
-    t["planningOutcome"] = t["planningMode"] if t["planningMode"] in ("plan", "fast") else None
     set_intent(t, "start", {})
 
 
 def move_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Moves a card. Starting it, or bringing a started card In Progress, needs a free task slot. A started card moved to
-    Todo or Backlog pauses: its agent is interrupted and frees its slot; Todo resumes it on its turn, Backlog parks it.
-    In Progress resumes a paused or stopped agent. A card can't change column while an operation on it runs, except a
-    resume that a pause turns into a stop."""
+    """Moves a card where a person may: Waiting pauses its agent (it stays held there until moved back), In Progress
+    resumes a paused or stopped agent (or starts again a task whose start failed) once nothing it depends on is open,
+    Done records it as done. Every other column is reached on its own. A card can't change column while an operation on
+    it runs, except a resume that a pause turns into a stop."""
     column = body.get("column")
     if column not in COLUMN_IDS:
         raise ApiError(400, f"Unknown column {column!r}")
+    if column not in MOVABLE_COLUMNS:
+        raise ApiError(409, f"Cards reach {dict(COLUMNS)[column]} on their own")
     with store.lock:
         before = copy.deepcopy(store.get(task_id))
     facts = observe(before) if spawned(before) else None
@@ -1600,31 +1220,30 @@ def move_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         if pending and column != t["column"] and (pending["op"] in ("start", "merge", "remove", "delete")
                                                   or (pending["op"] == "stop" and column == "doing")):
             raise ApiError(409, f"{label(task_id)} is still {VERB[pending['op']]}")
-        if column in ("todo", "doing") and not body.get("force"):
-            store.fresh_blocked()
-        previous_column = t["column"]
-        if column != previous_column and move_requires_confirmation(t) and body.get("confirmWorking") is not True:
+        previous = t["column"]
+        if column != previous and move_requires_confirmation(t) and body.get("confirmWorking") is not True:
             raise ApiError(409, f"{task_id} may still be working; confirm before moving it to {dict(COLUMNS)[column]}",
                            {"requiresConfirmation": "workingTask"})
+        blockers = blocked_by(t) if column == "doing" else []
+        if blockers and not body.get("force"):
+            raise ApiError(409, f"{task_id} waits for {', '.join(blockers)}: move it with force to resume it now",
+                           {"blockedBy": blockers})
         was_paused = paused(t)
-        if column == "doing" and was_paused and blocked_by(t) and not body.get("force"):
-            column = "todo"
-        entering = column == "doing" and previous_column != "doing" and spawned(t)
-        if entering and not has_task_slot(t):
-            raise ApiError(409, f"{flow_id(t['repo'], t['base'])} is at its concurrent-task limit")
-        running = bool(facts and facts["agent_running"])
-        resume = column == "doing" and spawned(t) and not t.get("merged") and (was_paused or not running)
-        pause = column in PAUSED_COLUMNS and not was_paused and spawned(t) and not t.get("merged")
-        start = column in ("todo", "doing") and not spawned(t) and t["spawn"]["state"] in ("none", "failed")
+        start = column == "doing" and not spawned(t) and t["spawn"]["state"] in ("none", "failed")
+        # A task paused while it planned plans on.
+        target = "planning" if start or (column == "doing" and previous == "waiting" and not t.get("planned")) else column
+        if target == "doing" and previous != "doing" and spawned(t) and not has_task_slot(t):
+            raise ApiError(409, f"{project_id(t['repo'])} is at its concurrent-task limit")
         if start and not Path(t["repo"]).is_dir():
             raise ApiError(400, f"Repository {t['repo']} not found")
+        running = bool(facts and facts["agent_running"])
+        resume = column == "doing" and spawned(t) and not t.get("merged") and (was_paused or not running)
+        pause = column == "waiting" and not was_paused and spawned(t) and not t.get("merged")
         order = body.get("order")
-        t["column"] = column
-        t["order"] = float(order) if isinstance(order, (int, float)) else store.next_order(column)
-        if start and ((blocked_by(t) and not body.get("force")) or not has_task_slot(t)):
-            t["column"] = "todo"
-            t["spawn"] = {"state": "none", "error": None, "log": ""}
-            start = False
+        t["column"] = target
+        t["order"] = float(order) if isinstance(order, (int, float)) else store.next_order(target)
+        if column != "done":
+            t["held"] = column == "waiting"
         try:
             if start:
                 start_task(t)
@@ -1639,6 +1258,8 @@ def move_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
             t.clear()
             t.update(original)
             raise
+        if target == "done" and previous != "done":
+            retarget_stacked(t)
         hub.changed()
         snapshot, view = dict(t), store.view(t)
     if pause:
@@ -1648,20 +1269,19 @@ def move_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def reorder_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Places a task just before or after another card of its column; it never changes column or starts the task."""
+    """Places a waiting task just before or after another waiting card: the queue resumes them in that order."""
     sides = [s for s in ("before", "after") if body.get(s)]
     if len(sides) != 1:
-        raise ApiError(400, "Pass either before or after: the id of a card in the same column")
+        raise ApiError(400, "Pass either before or after: the id of another waiting card")
     side = sides[0]
     with store.lock:
         t = store.get(task_id)
         anchor = store.get(str(body[side]))
         if anchor is t:
             raise ApiError(400, f"{task_id} can't be placed {side} itself")
-        if anchor["column"] != t["column"]:
-            titles = dict(COLUMNS)
-            raise ApiError(409, f"{anchor['id']} is in {titles[anchor['column']]}, not {titles[t['column']]}")
-        column = sorted((o for o in store.tasks.values() if o["column"] == t["column"] and o is not t),
+        if t["column"] != "waiting" or anchor["column"] != "waiting":
+            raise ApiError(409, "Only waiting cards change places: the queue resumes them in that order")
+        column = sorted((o for o in store.tasks.values() if o["column"] == "waiting" and o is not t),
                         key=lambda o: (o["order"], o["createdAt"]))
         i = column.index(anchor)
         j = i - 1 if side == "before" else i + 1
@@ -1672,6 +1292,36 @@ def reorder_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         store.save(t)
         hub.changed()
         return store.view(t)
+
+
+def planned_task(task_id: str) -> Dict[str, Any]:
+    """Records that a task's plan was approved in its omp. A planning task goes In Progress, unless what it depends on is
+    open or its project has no free slot: then it waits, and the reply tells its omp to hold until the board resumes it."""
+    with store.lock:
+        t = store.get(task_id)
+        t["planned"] = now_iso()
+        hold: Optional[List[str]] = None
+        if t["column"] in ("planning", "doing"):
+            blockers = blocked_by(t)
+            if blockers or (t["column"] == "planning" and not has_task_slot(t)):
+                hold = blockers
+                t["column"], t["order"], t["held"] = "waiting", store.next_order("waiting"), False
+            elif t["column"] == "planning":
+                t["column"], t["order"] = "doing", store.next_order("doing")
+        store.save(t)
+        waiting_for = [label(b) for b in hold or []]
+    hub.changed()
+    poller.kick()
+    return {"hold": False} if hold is None else {"hold": True, "waitingFor": waiting_for}
+
+
+def retarget_stacked(t: Dict[str, Any]) -> None:
+    """Moves the unfinished tasks that branch from a task that just became done onto that task's own base, where its work
+    landed (call under store.lock)."""
+    for o in store.tasks.values():
+        if o is not t and o["column"] != "done" and o["base"] == t["branch"] and same_dir(o["repo"], t["repo"]):
+            o["base"] = t["base"]
+            store.save(o)
 
 
 # --- intents ------------------------------------------------------------------------
@@ -1697,7 +1347,7 @@ def set_intent(t: Dict[str, Any], op: str, params: Dict[str, Any]) -> Dict[str, 
             return pending
         if (pending["op"], op) not in REPLACEABLE:
             raise ApiError(409, f"{label(t['id'])} is still {VERB[pending['op']]}")
-    intent = beads.new_intent(op, params)
+    intent = new_intent(op, params)
     t["intent"], t["lastOperation"] = intent, None
     store.save(t)
     hub.changed()
@@ -1721,10 +1371,7 @@ def progress(task_id: str, intent_id: str, stage: Optional[str] = None, log: str
         if params:
             intent["params"].update(params)
         t.update(fields)
-        if fields:
-            store.save(t)
-        else:
-            store.write_record(t)
+        store.save(t)
     hub.changed()
     return True
 
@@ -1772,13 +1419,13 @@ def retry_intent(task_id: str, intent: Dict[str, Any], error: str) -> None:
         if not current or current["id"] != intent["id"]:
             return
         current.update(attempt=attempt, retryAt=time.time() + INTENT_BACKOFF[attempt - 1], lastError=error)
-        store.write_record(t)
-    print(f"orchestrator: {label(task_id)} {VERB[intent['op']]}, retrying: {error}", file=sys.stderr)
+        store.save(t)
+    print(f"mission-control: {label(task_id)} {VERB[intent['op']]}, retrying: {error}", file=sys.stderr)
     hub.changed()
 
 
 def fail_intent(task_id: str, intent: Dict[str, Any], error: str) -> None:
-    """Gives an intent up: a start shows as failed, a resume parks its card in Backlog."""
+    """Gives an intent up: a start shows as failed, a resume holds its card in Waiting."""
     def failed(current: Dict[str, Any]) -> None:
         if intent["op"] == "start":
             current["spawn"] = {"state": "failed", "error": error,
@@ -1786,11 +1433,11 @@ def fail_intent(task_id: str, intent: Dict[str, Any], error: str) -> None:
         elif intent["op"] == "resume":
             current["resumedAt"] = None
             if current["column"] == "doing":
-                current["column"], current["order"] = "backlog", store.next_order("backlog")
+                current["column"], current["order"], current["held"] = "waiting", store.next_order("waiting"), True
     with store.lock:
         log = ((store.tasks.get(task_id) or {}).get("intent") or {}).get("log") or ""
     if finish_intent(task_id, intent["id"], False, output=log, error=error, apply=failed):
-        print(f"orchestrator: {label(task_id)} gave up {VERB[intent['op']]}: {error}", file=sys.stderr)
+        print(f"mission-control: {label(task_id)} gave up {VERB[intent['op']]}: {error}", file=sys.stderr)
 
 
 def run_intent(task_id: str) -> None:
@@ -1833,8 +1480,7 @@ def write_brief(t: Dict[str, Any], name: str, handoffs: List[Dict[str, Any]]) ->
     lines = [f"# Task {task_number(t)}: {t['title']}", ""]
     if t.get("ticket"):
         lines.append(f"Ticket: {t['ticket']}")
-    lands = "locally" if t["merge"] == "local" else "via pull request"
-    lines.append(f"Branch: {t['branch']} (from {t['base']}; merges back {lands})")
+    lines.append(f"Branch: {t['branch']} (from {t['base']})")
     if t["dependsOn"]:
         names = [f"{d} ({store.tasks[d]['title']})" if d in store.tasks else d for d in t["dependsOn"]]
         lines.append("Depends on: " + ", ".join(names))
@@ -1855,15 +1501,13 @@ def write_brief(t: Dict[str, Any], name: str, handoffs: List[Dict[str, Any]]) ->
                 " · parent of this task" if o["id"] == t.get("parent") else \
                 " · child of this task" if o.get("parent") == t["id"] else ""
             lines.append(f"- {o['id']} ({titles[o['column']]}): {o['title']}{relation}")
-        lines += ["", "Read a sibling's description and plan with orchestrator_plan when your work touches it; don't do its part."]
+        lines += ["", "Read a sibling with mission_control_tasks when your work touches it; don't do its part."]
     if handoffs:
         lines += ["", "## Dependency handoffs", "",
-                  "What the tasks this one depends on recorded, at the revision shown. Read the latest with orchestrator_context."]
+                  "What the tasks this one depends on recorded, at the revision shown. Read the latest with mission_control_context."]
         for h in handoffs:
             lines += ["", handoff_text(h)]
-    lines += ["", "## Description", "", t.get("description") or "(none)", ""]
-    if t.get("plan"):
-        lines += ["## Draft plan", "", t["plan"], ""]
+    lines += ["", "## Prompt", "", t.get("description") or "(none)", ""]
     path = store.task_dir(t["id"]) / name
     write_atomic(path, with_numbers("\n".join(lines)))
     return path
@@ -1874,7 +1518,7 @@ def context_revision(notes: str) -> str:
 
 
 def context_entries(notes: str) -> List[Dict[str, Any]]:
-    """The entries in a bead's notes, oldest first; text before the first entry (written outside the board) is a note."""
+    """The entries in a task's notes, oldest first; text before the first entry is a note."""
     matches = list(CONTEXT_HEADER.finditer(notes))
     entries = []
     lead = notes[:matches[0].start()].strip() if matches else notes.strip()
@@ -1887,11 +1531,12 @@ def context_entries(notes: str) -> List[Dict[str, Any]]:
 
 
 def task_context(task_id: str) -> Dict[str, Any]:
-    """A task's shared context, read from its bead's notes now."""
-    ctx = store.read_context(task_id)
-    notes = ctx["notes"] or ""
-    return {"id": task_id, "beadId": ctx["beadId"], "revision": context_revision(notes), "updatedAt": ctx["updatedAt"],
-            "entries": context_entries(notes)}
+    """A task's shared context: the entries of its notes."""
+    with store.lock:
+        notes = store.get(task_id)["notes"]
+    entries = context_entries(notes)
+    return {"id": task_id, "revision": context_revision(notes),
+            "updatedAt": next((e["at"] for e in reversed(entries) if e["at"]), None), "entries": entries}
 
 
 def commit_ref(t: Dict[str, Any]) -> str:
@@ -1910,7 +1555,7 @@ def commit_ref(t: Dict[str, Any]) -> str:
 
 
 def publish_context(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Appends a finding or outcome to a task's bead notes, stamped with its time, source task and branch@commit."""
+    """Appends a finding or outcome to a task's notes, stamped with its time, source task and branch@commit."""
     kind = body.get("kind")
     if kind not in CONTEXT_KINDS:
         raise ApiError(400, "kind must be finding or outcome")
@@ -1926,19 +1571,24 @@ def publish_context(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         raise ApiError(400, "source must be a task id or a single word")
     with store.lock:
         t = dict(store.get(task_id))
-    store.append_context(task_id, f"### {kind} · {now_iso()} · {source} · {commit_ref(t)}\n{text}\n")
+    entry = f"### {kind} · {now_iso()} · {source} · {commit_ref(t)}\n{text}\n"
+    with store.lock:
+        current = store.get(task_id)
+        notes = current["notes"].rstrip("\n")
+        current["notes"] = f"{notes}\n\n{entry}" if notes else entry
+        store.save(current)
+    hub.changed()
     return task_context(task_id)
 
 
 def dependency_handoffs(deps: List[str]) -> List[Dict[str, Any]]:
-    """The shared context of a task's dependencies, for its brief; a dependency Beads can't read now says so."""
+    """The shared context of a task's dependencies, for its brief; one deleted meanwhile is left out."""
     handoffs = []
     for d in deps:
         try:
             handoffs.append(task_context(d))
-        except ApiError as e:
-            if e.status != 404:
-                handoffs.append({"id": d, "error": e.message})
+        except ApiError:
+            continue
     return handoffs
 
 
@@ -1946,8 +1596,6 @@ def handoff_text(h: Dict[str, Any]) -> str:
     """A dependency's handoff: its latest outcome and latest findings, cut to HANDOFF_LIMIT characters."""
     title = store.tasks[h["id"]]["title"] if h["id"] in store.tasks else ""
     head = f"### {h['id']}: {title}" if title else f"### {h['id']}"
-    if "error" in h:
-        return f"{head}\nNot readable when this brief was written ({h['error']}); try orchestrator_context {h['id']}."
     entries = h["entries"]
     if not entries:
         return f"{head} (revision {h['revision']})\nNothing recorded."
@@ -1961,36 +1609,28 @@ def handoff_text(h: Dict[str, Any]) -> str:
         blocks.append(f"**{e['kind'].capitalize()}**{f' ({stamp})' if stamp else ''}\n{e['text']}")
     omitted = len(entries) - len(shown)
     more = f", {omitted} older not shown" if omitted else ""
-    text = f"{head} (bead {h['beadId']}, revision {h['revision']}{more})\n\n" + "\n\n".join(blocks)
+    text = f"{head} (revision {h['revision']}{more})\n\n" + "\n\n".join(blocks)
     if len(text) > HANDOFF_LIMIT:
-        text = text[:HANDOFF_LIMIT].rstrip() + f"\n\n[cut; orchestrator_context {h['id']} has all of it]"
+        text = text[:HANDOFF_LIMIT].rstrip() + f"\n\n[cut; mission_control_context {h['id']} has all of it]"
     return text
 
 
+def finish_text(t: Dict[str, Any]) -> str:
+    """How a task's agent finishes: tell the user when it merges into another task's branch, else open a pull request."""
+    if land(t)["mergeInto"]:
+        return f"When the work is complete and verified, tell me; do not push: /land merges this branch into {t['base']}. "
+    return f"When the work is complete and verified, commit it, push the branch and open a pull request into {t['base']}. "
+
+
 def start_args(t: Dict[str, Any], brief: Path, config: Path) -> List[str]:
-    """omp's arguments for a task's first start: its config, its brief and the prompt for its planning mode."""
-    if t["merge"] == "local":
-        finish = ("When the work is complete and verified, tell me; do not push or open a pull request: "
-                  f"/orchestrator done stages and commits pending changes, then the board merges this branch into {t['base']}. ")
-    else:
-        pr = f" for ticket {t['ticket']}" if t.get("ticket") else ""
-        finish = ("When the work is complete and verified, "
-                  f"commit it, push the branch and open a pull request into {t['base']}{pr}. ")
-    if t["planningMode"] == "plan":
-        approach = (f"Plan the task in the attached brief ({label(t['id'])}) before changing any file: explore the code, then "
-                    "propose the plan with xd://propose for my review; once I approve it, implement it.")
-    elif t["planningMode"] == "fast":
-        approach = (f"Implement the straightforward task in the attached brief ({label(t['id'])}) directly. Read enough to make "
-                    "the change safely, but do not request plan review unless I explicitly ask for one.")
-    else:
-        approach = (f"Briefly triage the task in the attached brief ({label(t['id'])}) before changing any file. Inspect only "
-                    "enough to decide the route: if the implementation and acceptance are clear, implement immediately "
-                    "without plan review; if you find a product decision, unclear acceptance, architectural or migration "
-                    "impact, or meaningful cross-cutting risk, propose a plan with xd://propose and wait for my review. "
-                    "Keep this triage brief; it is not a planning phase.")
-    draft = " The brief has a draft plan: use it as context and update it to the code as it is now." if t.get("plan") else ""
-    prompt = (f"{approach}{draft} You are in a dedicated git worktree on branch {t['branch']}; follow the repository's "
-              f"conventions. {finish}Ask me if anything in the brief is unclear.")
+    """omp's arguments for a task's first start: its config (plan mode), its brief and the prompt to plan it (call under
+    store.lock)."""
+    blockers = blocked_by(t)
+    wait = (f"It builds on {', '.join(label(b) for b in blockers)}, which haven't landed: once I approve your plan the "
+            "board pauses you and resumes you when they have. ") if blockers else ""
+    prompt = (f"Plan the task in the attached brief ({label(t['id'])}) before changing any file: explore the code, then "
+              "propose the plan with xd://propose for my review. You are in a dedicated git worktree on branch "
+              f"{t['branch']}, made from {t['base']}. {wait}{finish_text(t)}Ask me if anything in the brief is unclear.")
     return ["--config", str(config), "@" + str(brief), prompt]
 
 
@@ -2009,18 +1649,17 @@ def resume_args(t: Dict[str, Any]) -> List[str]:
 
 def agent_script(t: Dict[str, Any], name: str, args: List[str], resume: bool = False) -> Path:
     """Writes the script a task's tmux session runs: the task's environment, then omp with `args`. A resumed agent's
-    omp finds the message it continues with in ORCHESTRATOR_RESUME_FILE."""
+    omp finds the message it continues with in MISSION_CONTROL_RESUME_FILE."""
     omp = which("omp")
     if not omp:
         raise RuntimeError("omp isn't on the board's PATH")
     task_dir = store.task_dir(t["id"])
-    env = [("ORCHESTRATOR_TASK", t["id"]), ("ORCHESTRATOR_PORT", str(PORT)), ("ORCHESTRATOR_HOME", str(HOME)),
-           ("ORCHESTRATOR_PLANNING_MODE", t["planningMode"]), ("COLORTERM", "truecolor"),
-           ("OMP_TERMINAL_PRESENTER", str(task_dir / "presenter.json"))]
-    if os.environ.get("ORCHESTRATOR_LEASE_DIR"):
-        env.append(("ORCHESTRATOR_LEASE_DIR", os.environ["ORCHESTRATOR_LEASE_DIR"]))
+    env = [("MISSION_CONTROL_TASK", t["id"]), ("MISSION_CONTROL_PORT", str(PORT)), ("MISSION_CONTROL_HOME", str(HOME)),
+           ("COLORTERM", "truecolor"), ("OMP_TERMINAL_PRESENTER", str(task_dir / "presenter.json"))]
+    if os.environ.get("MISSION_CONTROL_LEASE_DIR"):
+        env.append(("MISSION_CONTROL_LEASE_DIR", os.environ["MISSION_CONTROL_LEASE_DIR"]))
     if resume:
-        env.append(("ORCHESTRATOR_RESUME_FILE", str(task_dir / "resume.json")))
+        env.append(("MISSION_CONTROL_RESUME_FILE", str(task_dir / "resume.json")))
     if t.get("controlSet"):
         env += [("OMP_CONTROL_SET", t["controlSet"]), ("OMP_CONTROL_BASE", t["base"])]
     exports = " ".join(f"{k}={shlex.quote(v)}" for k, v in env)
@@ -2070,10 +1709,10 @@ def worktree_hook(t: Dict[str, Any], ex: Dict[str, Any], command: str, script: P
     launcher = store.task_dir(t["id"]) / "agent.sh"
     detach.write_launcher(launcher, ex, script)
     setup = project_scripts(os.path.basename(t["repo"]))["setupScript"]
-    env = {"ORCHESTRATOR_TASK": t["id"], "ORCHESTRATOR_TITLE": t["title"], "ORCHESTRATOR_REPO": t["repo"],
-           "ORCHESTRATOR_BRANCH": t["branch"], "ORCHESTRATOR_BASE": t["base"],
-           "ORCHESTRATOR_AGENT_COMMAND": f"/bin/sh {shlex.quote(str(launcher))}",
-           "ORCHESTRATOR_SETUP_SCRIPT": os.path.expanduser(setup)}
+    env = {"MISSION_CONTROL_TASK": t["id"], "MISSION_CONTROL_TITLE": t["title"], "MISSION_CONTROL_REPO": t["repo"],
+           "MISSION_CONTROL_BRANCH": t["branch"], "MISSION_CONTROL_BASE": t["base"],
+           "MISSION_CONTROL_AGENT_COMMAND": f"/bin/sh {shlex.quote(str(launcher))}",
+           "MISSION_CONTROL_SETUP_SCRIPT": os.path.expanduser(setup)}
     return run_hook("createWorktree", command, t["repo"], 900, env)
 
 
@@ -2120,16 +1759,16 @@ def step_start(t: Dict[str, Any], intent: Dict[str, Any]) -> Outcome:
     ex = t.get("execution") or {}
     if stage is None:
         handoffs = dependency_handoffs(list(t["dependsOn"]))
+        config = task_dir / "omp.yml"
+        write_atomic(config, "plan:\n  defaultOnStartup: true\n")
         with store.lock:
             current = store.get(task_id)
             brief = write_brief(current, "brief.md", handoffs)
-            briefed = briefing(current)
+            args = start_args(current, brief, config)
             context = presentation_context(current)
-        config = task_dir / "omp.yml"
-        write_atomic(config, f"plan:\n  defaultOnStartup: {'true' if t['planningMode'] == 'plan' else 'false'}\n")
         try:
             validate_branch(branch)
-            agent_script(t, "launch.sh", start_args(t, brief, config))
+            agent_script(t, "launch.sh", args)
             if ex.get("kind") == "tmux" and detach.alive(ex):
                 server = {k: ex.get(k) for k in ("server", "label", "socket")}
             else:
@@ -2138,7 +1777,7 @@ def step_start(t: Dict[str, Any], intent: Dict[str, Any]) -> Outcome:
             return "fail", error_text(e)
         (task_dir / "screen.ans").unlink(missing_ok=True)
         # Recorded before anything can start the agent, so its first stream and reports find their task.
-        progress(task_id, iid, stage="worktree", briefed=briefed,
+        progress(task_id, iid, stage="worktree",
                  execution={"kind": "tmux", **server, "name": detach.session_name(task_id),
                             "script": str(task_dir / "launch.sh"), "session": ex.get("session"), "cleanExit": False,
                             "exitCode": None, "startedAt": now_iso()})
@@ -2159,6 +1798,12 @@ def step_start(t: Dict[str, Any], intent: Dict[str, Any]) -> Outcome:
                 if path:
                     log = f"Reusing the worktree at {path}\n"
                 else:
+                    with store.lock:
+                        # A task made after another branches from that task's branch, which its start creates.
+                        base_starting = any(o["branch"] == base and (o.get("intent") or {}).get("op") == "start"
+                                            and same_dir(o["repo"], repo) for o in store.tasks.values())
+                    if base_starting and not has_ref(repo, f"refs/heads/{base}"):
+                        return "wait", None
                     log = prepare_branch(repo, branch, base)
                     path, more, hooked = checkout(t, ex, task_dir / "launch.sh")
                     log += more
@@ -2198,8 +1843,6 @@ def step_start(t: Dict[str, Any], intent: Dict[str, Any]) -> Outcome:
     def started(current: Dict[str, Any]) -> None:
         current["presentation"] = presentation
         current["spawn"] = {"state": "done", "error": None, "log": tail(intent["log"] + note, SPAWN_LOG_LIMIT)}
-        if current["column"] == "todo":
-            current["column"], current["order"] = "doing", store.next_order("doing")
     finish_intent(task_id, iid, True, output=intent["log"] + note, apply=started)
     return "finished", None
 
@@ -2340,7 +1983,7 @@ def replied_or_close(task_id: str, path: Optional[str], requester: Optional[Dict
         intent = (t or {}).get("intent")
         if intent and intent["op"] in ("stop", "remove", "delete"):
             intent["params"]["replied"] = True
-            store.write_record(t)
+            store.save(t)
             return
     terminals.close_terminals(path, [requester])
 
@@ -2372,15 +2015,14 @@ def note_session(task_id: str, session_id: Optional[str], session_file: Optional
 
 def presentation_context(t: Dict[str, Any]) -> Dict[str, Any]:
     """Where a task's agent terminal opens: its origin session's terminal (live, else as recorded), else the terminal of
-    its flow's latest session; plain without one (call under store.lock)."""
+    its project's latest session; plain without one (call under store.lock)."""
     origin = t.get("origin") or {}
     live = hub.session_terminal(origin["session"]) if origin.get("session") else None
     if live:
         return live
     if origin.get("terminal"):
         return origin["terminal"]
-    flow = hub.flow_session(flow_id(t["repo"], t["base"]), None)
-    return (flow or {}).get("terminal") or {"kind": "plain"}
+    return hub.project_terminal(project_id(t["repo"])) or {"kind": "plain"}
 
 
 def open_presentation(context: Dict[str, Any], name: str, cwd: str,
@@ -2511,70 +2153,6 @@ def open_worktree(task_id: str) -> Dict[str, Any]:
             "opened": terminal["kind"] != "plain"}
 
 
-def prompt_task(body: Dict[str, Any]) -> Dict[str, Any]:
-    text = body.get("text")
-    if not isinstance(text, str) or not text.strip():
-        raise ApiError(400, "Enter a task prompt")
-    column = body.get("column", "backlog")
-    if column not in COLUMN_IDS:
-        raise ApiError(400, "Unknown column")
-    relation = body.get("relation")
-    if relation not in (None, "after", "before"):
-        raise ApiError(400, "Unknown dependency direction")
-    if relation and not isinstance(body.get("task"), str):
-        raise ApiError(400, "Select a connected task")
-    with store.lock:
-        flow = next((f for f in store.flow_list() if f["id"] == body.get("flow")), None)
-        if not flow:
-            raise ApiError(400, "Select a flow")
-        context = [f"Task request from Orchestrator for {flow['name']} ({flow['base']}).",
-                   f"Requested column: {dict(COLUMNS)[column]}. This is placement intent, not evidence of completed work."]
-        if relation:
-            anchor = store.get(body.get("task"))
-            if flow_id(anchor["repo"], anchor["base"]) != flow["id"]:
-                raise ApiError(400, "The connected task belongs to another flow")
-            context.append(f"The new task must depend on {anchor['id']}." if relation == "after" else
-                           f"Create a prerequisite for {anchor['id']} and make {anchor['id']} depend on the new task.")
-    target = hub.flow_session(flow["id"], None)
-    if not target:
-        raise ApiError(409, f"No main omp session is connected: run /orchestrator in {flow['checkout'] or flow['repo']}")
-    cid = uuid.uuid4().hex
-    answer: Dict[str, Any] = {"done": threading.Event()}
-    with hub.lock:
-        hub.answers[cid] = answer
-    try:
-        if not hub.publish("task_prompt", {"id": cid, "text": "\n".join(context) + "\n\n" + text.strip()},
-                           session=target["session"]):
-            raise ApiError(409, "The main omp session disconnected")
-        if not answer["done"].wait(CONTROL_TIMEOUT):
-            raise ApiError(504, "The main omp session did not acknowledge the prompt; reload its Orchestrator plugin")
-        if not answer["ok"]:
-            raise ApiError(409, answer["message"])
-        return {"ok": True, "message": answer["message"]}
-    finally:
-        with hub.lock:
-            hub.answers.pop(cid, None)
-
-
-def discuss_task(task_id: str) -> Dict[str, Any]:
-    """Brings the flow's orchestrator omp session to the front to discuss a not-started task."""
-    with store.lock:
-        t = store.get(task_id)
-        if spawned(t):
-            raise ApiError(409, f"{task_id} has started: talk to its omp in its terminal")
-        flow = flow_id(t["repo"], t["base"])
-        checkout_path = t.get("checkout") or t["repo"]
-        origin = t.get("origin")
-    target = hub.flow_session(flow, origin["session"] if origin else None)
-    if not target:
-        raise ApiError(409, f"No omp session has orchestrator mode on in {flow}: run /orchestrator in {checkout_path}")
-    hub.publish("discuss", {"id": task_id}, session=target["session"])
-    context = target.get("terminal")
-    if context and terminals.capabilities(context)["focus"]:
-        terminals.focus(context)
-    return {"ok": True}
-
-
 def require_agent(t: Dict[str, Any]) -> None:
     """Refuses a message for a started task's agent unless it can take one now (call under store.lock)."""
     task_id = t["id"]
@@ -2601,26 +2179,6 @@ def message_agent(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": True, "message": answer}
 
 
-def review_plan(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Answers a started task's open plan review: approve runs the plan, refine sends feedback for another planning pass."""
-    decision = body.get("decision")
-    if decision not in ("approve", "refine"):
-        raise ApiError(400, "Decision must be approve or refine")
-    feedback = str(body.get("feedback") or "").strip()
-    if decision == "refine" and not feedback:
-        raise ApiError(400, "Refining needs feedback")
-    with store.lock:
-        t = store.get(task_id)
-        require_spawned(t)
-        if paused(t):
-            raise ApiError(409, f"{task_id} is paused: move it to In Progress to resume it")
-        if not hub.task_live(task_id):
-            raise ApiError(409, f"{task_id}'s omp session isn't connected to the board")
-    answer = hub.control(task_id, "review", {"decision": decision, "feedback": feedback})
-    poller.kick()
-    return {"ok": True, "message": answer}
-
-
 def valid_set_summaries(sets: Any) -> bool:
     return isinstance(sets, list) and len(sets) <= 100 and len(json.dumps(sets)) <= CONTROL_SETS_LIMIT and all(
         isinstance(s, dict) and isinstance(s.get("id"), str) and CONTROL_SET_ID.fullmatch(s["id"]) is not None
@@ -2630,23 +2188,13 @@ def valid_set_summaries(sets: Any) -> bool:
         for s in sets)
 
 
-def set_flow_control_sets(body: Dict[str, Any]) -> Dict[str, Any]:
-    """Records the Control sets a flow's omp offers, so cards in that flow can pick one; null clears them."""
-    flow_id_value = str(body.get("id") or "")
+def set_project_control_sets(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Records the Control sets a project's omp offers, so its new tasks can pick one; null clears them."""
     sets = body.get("sets")
     if sets is not None and not valid_set_summaries(sets):
         raise ApiError(400, "sets must be null or at most 100 control set summaries (id, name, description, controls, approval)")
     with store.lock:
-        flow = next((f for f in store.flow_list() if f["id"] == flow_id_value), None)
-        if not flow:
-            raise ApiError(404, f"Unknown flow {flow_id_value}")
-        registered = next((f for f in store.flows
-                           if same_dir(f["repo"], flow["repo"]) and f["base"] == flow["base"]), None)
-        if registered:
-            registered["controlSets"] = sets
-        else:
-            store.flows.append({"repo": flow["repo"], "base": flow["base"], "checkout": flow["checkout"],
-                                "concurrencyLimit": None, "controlSets": sets})
+        remember_project(listed_project(body.get("id"))["repo"])["controlSets"] = sets
         store.save_board()
     hub.changed()
     return {"ok": True}
@@ -2663,9 +2211,9 @@ def pause_agent(t: Dict[str, Any]) -> str:
 
 
 def step_resume(t: Dict[str, Any], intent: Dict[str, Any]) -> Outcome:
-    """Puts a resumed task's agent back to work with the card's edits made while it was paused: a running agent gets the
-    resume message now; a stopped one restarts in tmux (continuing its omp session) and its omp sends the message
-    itself from ORCHESTRATOR_RESUME_FILE, then posts /resumed. An agent that can't restart parks the card in Backlog."""
+    """Puts a resumed task's agent back to work: a running agent gets the resume message now; a stopped one restarts in
+    tmux (continuing its omp session) and its omp sends the message itself from MISSION_CONTROL_RESUME_FILE, then posts
+    /resumed. An agent that can't restart holds the card in Waiting."""
     task_id, iid, params = t["id"], intent["id"], intent["params"]
     stage = intent["stage"] or "launch"
     if stage == "launch":
@@ -2674,14 +2222,9 @@ def step_resume(t: Dict[str, Any], intent: Dict[str, Any]) -> Outcome:
             return "fail", f"{label(task_id)} has no worktree"
         with store.lock:
             current = store.get(task_id)
-            note_briefing(current)
-            update = briefing(current) if pending_update(current) else None
-            text = RESUME_TEXT.format(id=label(task_id))
-            if update:
-                text += "\n\n" + update_message(task_id, current["briefed"], update)
-            store.write_record(current)
+            text = (LANDED_TEXT if params.get("landed") else RESUME_TEXT).format(id=label(task_id), base=current["base"])
             snapshot = copy.deepcopy(current)
-        write_atomic(store.task_dir(task_id) / "resume.json", json.dumps({"text": text, "update": update}))
+        write_atomic(store.task_dir(task_id) / "resume.json", json.dumps({"text": text}))
         # From the process, not a stream that can outlive it; remembered so a retry presents what a failed launch started.
         restarted = bool(params.get("restarted")) or not facts["agent_running"]
         if restarted and not facts["agent_running"]:
@@ -2718,19 +2261,10 @@ def step_resume(t: Dict[str, Any], intent: Dict[str, Any]) -> Outcome:
 
 
 def resumed_task(task_id: str) -> Dict[str, Any]:
-    """A resumed task's omp delivered its resume message: its agent knows the card as it is now."""
-    path = store.task_dir(task_id) / "resume.json"
+    """A resumed task's omp delivered its resume message."""
     with store.lock:
-        t = store.get(task_id)
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {"ok": True, "consumed": False}
-        path.unlink(missing_ok=True)
-        if isinstance(data, dict) and isinstance(data.get("update"), dict):
-            t["briefed"] = data["update"]
-            store.save(t)
-    hub.changed()
+        store.get(task_id)
+        (store.task_dir(task_id) / "resume.json").unlink(missing_ok=True)
     return {"ok": True}
 
 
@@ -2832,17 +2366,17 @@ def step_stop(t: Dict[str, Any], intent: Dict[str, Any]) -> Outcome:
 
 
 def stop_task(task_id: str) -> Dict[str, Any]:
-    """Ends a started task's agent and closes its terminal, keeping its worktree, branch and omp session; the card parks
-    in Backlog (a Review card stays). Moving it back to Todo or In Progress resumes it."""
+    """Ends a started task's agent and closes its terminal, keeping its worktree, branch and omp session; a planning or
+    In Progress card is held in Waiting (Review and Pull Request cards stay). Moving it to In Progress resumes it."""
     with store.lock:
         t = store.get(task_id)
         require_spawned(t)
         if t["column"] == "done" or t.get("merged"):
             raise ApiError(409, f"{task_id} is done")
         intent = set_intent(t, "stop", {})
-        # Parked first: while omp exits, an idle In Progress card would otherwise read as ready for Review.
-        if t["column"] in ("todo", "doing"):
-            t["column"], t["order"] = "backlog", store.next_order("backlog")
+        # Held first: while omp exits, an idle In Progress card would otherwise read as ready for Review.
+        if t["column"] in ("planning", "doing"):
+            t["column"], t["order"], t["held"] = "waiting", store.next_order("waiting"), True
             store.save(t)
     hub.changed()
     await_intent(task_id, intent["id"], INTENT_WAIT)
@@ -2861,94 +2395,6 @@ def answer_control(cid: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if not hub.answer(cid, body.get("ok") is True, str(body.get("message") or "")):
         raise ApiError(404, "No command waits for this answer")
     return {"ok": True}
-
-
-def amended_description(description: str, text: str) -> str:
-    return f"{description.rstrip()}\n\nAdded: {text}" if description.strip() else text
-
-
-def amend_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Adds same-subject work to a card; a started task's running agent also receives it as a message."""
-    text = str(body.get("text") or "").strip()
-    if not text:
-        raise ApiError(400, "The addition is empty")
-    with store.lock:
-        t = store.get(task_id)
-        if t["column"] == "done" or t.get("merged"):
-            raise ApiError(409, f"{task_id} is done; create a new card")
-        note_briefing(t)
-        state = (t.get("agent") or {}).get("state")
-        held = "paused" if paused(t) else state if has_started(t) and state in HELD_STATES else None
-        if not has_started(t) or held:
-            t["description"] = amended_description(t["description"], text)
-            store.save(t)
-            hub.changed()
-            return {"id": task_id, "delivered": False, "held": held, "reopened": False}
-        if t["spawn"]["state"] == "running":
-            raise ApiError(409, f"{task_id} is still starting; add this once its agent is running")
-    message_agent(task_id, {"text": f"Addition to {task_id} from the Orchestrator flow session: {text}"})
-    with store.lock:
-        t = store.get(task_id)
-        t["description"] = amended_description(t["description"], text)
-        t["briefed"]["description"] = amended_description(t["briefed"]["description"], text)
-        reopened = resume_agent(t)
-        store.save(t)
-    hub.changed()
-    return {"id": task_id, "delivered": True, "held": None, "reopened": reopened}
-
-
-def resume_agent(t: Dict[str, Any]) -> bool:
-    """A started task's agent was given more work: a Review card returns to In Progress and the agent shows thinking."""
-    reopened = t["column"] == "review"
-    if reopened:
-        t["column"], t["order"] = "doing", store.next_order("doing")
-    if (t.get("agent") or {}).get("state") not in ACTIVE_STATES:
-        since = now_iso()
-        store.activity[t["id"]] = {"state": "thinking", "step": None, "since": since}
-        t["agent"] = {**(t.get("agent") or {}), "state": "thinking", "step": None, "since": since}
-    return reopened
-
-
-def update_message(task_id: str, briefed: Dict[str, str], current: Dict[str, str]) -> str:
-    changed = [k for k in ("title", "description") if current[k] != briefed[k]]
-    parts = [f"{label(task_id)} was edited on the board; this replaces the {' and '.join(changed)} in your brief."]
-    if "title" in changed:
-        parts.append(f"Title: {current['title']}")
-    if "description" in changed:
-        parts.append("Description:\n" + (current["description"].strip() or "(none)"))
-    parts.append("Adjust your work to the updated task, and ask me if anything is unclear.")
-    return "\n\n".join(parts)
-
-
-def send_update(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Sends a started task's agent the card's edited title and description; with dismiss, only marks them as known."""
-    with store.lock:
-        t = store.get(task_id)
-        if not pending_update(t):
-            raise ApiError(409, f"{task_id}'s agent already has its current title and description")
-        current = briefing(t)
-        if body.get("dismiss") is True:
-            t["briefed"] = current
-            store.save(t)
-            hub.changed()
-            return {"id": task_id, "delivered": False, "reopened": False}
-        if t["spawn"]["state"] == "running":
-            raise ApiError(409, f"{task_id} is still starting; send this once its agent is running")
-        if paused(t):
-            raise ApiError(409, f"{task_id} is paused; its agent gets the update when it resumes")
-        state = (t.get("agent") or {}).get("state")
-        if state in HELD_STATES:
-            waits = "plan review" if state == "plan_ready" else "your answer"
-            raise ApiError(409, f"{task_id}'s agent is waiting for {waits} in its workspace; send this once it resumes")
-        text = update_message(task_id, t["briefed"], current)
-    message_agent(task_id, {"text": text})
-    with store.lock:
-        t = store.get(task_id)
-        t["briefed"] = current
-        reopened = resume_agent(t)
-        store.save(t)
-    hub.changed()
-    return {"id": task_id, "delivered": True, "reopened": reopened}
 
 
 def read_screen(task_id: str) -> Dict[str, Any]:
@@ -3026,8 +2472,8 @@ def remove_checkout(t: Dict[str, Any]) -> Outcome:
     except ApiError as e:
         return "fail", e.message
     if command:
-        env = {"ORCHESTRATOR_TASK": task_id, "ORCHESTRATOR_REPO": repo, "ORCHESTRATOR_BRANCH": branch, "ORCHESTRATOR_WORKTREE": path,
-               "ORCHESTRATOR_TEARDOWN_SCRIPT": os.path.expanduser(teardown)}
+        env = {"MISSION_CONTROL_TASK": task_id, "MISSION_CONTROL_REPO": repo, "MISSION_CONTROL_BRANCH": branch,
+               "MISSION_CONTROL_WORKTREE": path, "MISSION_CONTROL_TEARDOWN_SCRIPT": os.path.expanduser(teardown)}
         code, output, error = run_hook("removeWorktree", command, path, 300, env)
         if code != 0:
             return "retry", error
@@ -3045,8 +2491,8 @@ def remove_checkout(t: Dict[str, Any]) -> Outcome:
 
 def removing(t: Dict[str, Any], intent: Dict[str, Any], delete: bool) -> Outcome:
     """Removes a started task's worktree: stops its agent first so nothing works in a deleted tree, removes the worktree,
-    then closes every terminal left in it (the requester's own once replied) and ends its tmux session. The card then
-    forgets the worktree, so an unfinished task can start again, or with `delete` is deleted."""
+    then closes every terminal left in it (the requester's own once replied) and ends its tmux session. A done card then
+    forgets the worktree; an unfinished one, or with `delete` any, is deleted."""
     task_id, iid, params = t["id"], intent["id"], intent["params"]
     stage = intent["stage"] or "stop:ask"
     if stage.startswith("stop:"):
@@ -3071,9 +2517,12 @@ def removing(t: Dict[str, Any], intent: Dict[str, Any], delete: bool) -> Outcome
         detach.kill(ex)
     elif ex.get("kind") == "external" and ex.get("dir"):
         shutil.rmtree(ex["dir"], ignore_errors=True)
-    if not delete:
+    with store.lock:
+        current = store.tasks.get(task_id)
+        finished = bool(current) and (bool(current.get("merged")) or current["column"] == "done")
+    if finished and not delete:
         def forgotten(current: Dict[str, Any]) -> None:
-            forget_worktree(current, park=("todo", "doing"))
+            forget_worktree(current)
         return finish_closing(task_id, intent, path, requester, forgotten)
     with store.lock:
         current = store.tasks.get(task_id)
@@ -3097,7 +2546,8 @@ def step_delete(t: Dict[str, Any], intent: Dict[str, Any]) -> Outcome:
 
 
 def cleanup_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Removes a started task's worktree and branch as a remove intent; the reply says whether it is still pending."""
+    """Removes a started task's worktree and branch as a remove intent, deleting the card unless it is done; the reply
+    says whether it is still pending."""
     requester = request_terminal(body)
     with store.lock:
         path = require_spawned(store.get(task_id))
@@ -3106,25 +2556,22 @@ def cleanup_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         intent = set_intent(store.get(task_id), "remove", {"requester": requester})
     await_intent(task_id, intent["id"], INTENT_WAIT)
     with store.lock:
-        t = store.get(task_id)
-        pending = (t.get("intent") or {}).get("id") == intent["id"]
-        last = {} if pending else (t.get("lastOperation") or {})
+        t = store.tasks.get(task_id)
+        pending = t is not None and (t.get("intent") or {}).get("id") == intent["id"]
+        last = {} if pending or t is None else (t.get("lastOperation") or {})
     if last and not last.get("ok"):
         raise ApiError(409, last.get("error") or f"{label(task_id)}'s worktree wasn't removed",
                        {"output": last.get("output") or ""})
     after_reply(lambda: replied_or_close(task_id, path, requester))
+    if t is None:
+        return {"ok": True, "output": DELETED_OUTPUT.pop(intent["id"], "").strip(), "pending": False, "deleted": True}
     return {"ok": True, "output": (last.get("output") or "").strip(), "pending": pending}
 
 
-def forget_worktree(t: Dict[str, Any], park: Tuple[str, ...]) -> None:
-    """Drops a task's worktree, agent and terminal records and its live state (call under store.lock). An unfinished
-    task is no longer started, so starting it checks its branch out anew; a card in `park` moves to Backlog."""
+def forget_worktree(t: Dict[str, Any]) -> None:
+    """Drops a done task's worktree, agent and terminal records and its live state (call under store.lock)."""
     task_id = t["id"]
     t.update(worktree=None, presentation=None, execution=None, agent=None, git=None)
-    if not t.get("merged") and t["column"] != "done":
-        t["spawn"] = {"state": "none", "error": None, "log": ""}
-        if t["column"] in park:
-            t["column"], t["order"] = "backlog", store.next_order("backlog")
     store.save(t)
     store.activity.pop(task_id, None)
     store.facts.pop(task_id, None)
@@ -3143,8 +2590,8 @@ def merged_leftover(t: Dict[str, Any]) -> bool:
 
 
 def recoverable(t: Dict[str, Any]) -> None:
-    """Refuses to return a task to Backlog unless it is unfinished and its recorded worktree is gone (call under
-    store.lock)."""
+    """Refuses to remove a card for its missing worktree unless it is unfinished and its recorded worktree is gone (call
+    under store.lock)."""
     task_id = t["id"]
     path = require_spawned(t)
     if t["column"] == "done" or t.get("merged"):
@@ -3156,9 +2603,8 @@ def recoverable(t: Dict[str, Any]) -> None:
 
 
 def recover_task(task_id: str) -> Dict[str, Any]:
-    """Returns a started task whose worktree was deleted outside the board to a restartable Backlog card: forgets its
-    worktree, agent and terminal records and any operation left on it, keeping the card, its notes and its branch. It
-    never stops, starts or resumes an agent, so one that still runs is refused."""
+    """Removes the card of a started task whose worktree was deleted outside the board. It never stops, starts or resumes
+    an agent, so one that still runs is refused."""
     with store.lock:
         t = store.get(task_id)
         recoverable(t)
@@ -3176,14 +2622,12 @@ def recover_task(task_id: str) -> Dict[str, Any]:
         recoverable(t)
         if t.get("execution") != snapshot.get("execution"):
             raise ApiError(409, f"{label(task_id)}'s agent changed meanwhile; try again")
-        t["intent"] = None
-        forget_worktree(t, park=("todo", "doing", "review"))
-        view = store.view(t)
+        store.delete(task_id)
     if ex.get("kind") == "external" and ex.get("dir"):
         shutil.rmtree(ex["dir"], ignore_errors=True)
     hub.changed()
     poller.kick()
-    return view
+    return {"ok": True, "deleted": True}
 
 
 def commit_task_changes(path: str, branch: str, task_id: str, title: str) -> Optional[str]:
@@ -3208,7 +2652,7 @@ def commit_task_changes(path: str, branch: str, task_id: str, title: str) -> Opt
         raise ApiError(409, "The worktree has changes Git cannot commit", {"output": status})
     if code != 1:
         raise ApiError(409, "Could not inspect the staged task changes", {"output": (out + error).strip()})
-    subject = f"Task {task_number(store.tasks[task_id])}: {' '.join(plain(title).splitlines()).strip() or 'Orchestrator task'}"
+    subject = f"Task {task_number(store.tasks[task_id])}: {' '.join(plain(title).splitlines()).strip() or 'Mission Control task'}"
     code, out, error = run(["git", "-C", path, "commit", "-m", subject], timeout=120)
     if code != 0:
         raise ApiError(409, "Could not commit the task changes", {"output": (out + error).strip()})
@@ -3222,12 +2666,15 @@ MERGE_LOCK = threading.Lock()
 
 
 def merge_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Merges a local task into its base as a merge intent, then (as the intent it chains into) removes its worktree with
-    `cleanup`, else stops its agent and closes its worktree's terminals. Replies once the merge itself is over."""
+    """Merges a stacked task into its base (another task's branch) as a merge intent, then (as the intent it chains into)
+    removes its worktree with `cleanup`, else stops its agent and closes its worktree's terminals. Replies once the merge
+    itself is over. A task from the default branch lands through a pull request instead."""
     requester = request_terminal(body)
     with store.lock:
         t = store.get(task_id)
         path = require_spawned(t)
+        if not t.get("merged") and t["base"] == repo_default_branch(t["repo"]):
+            raise ApiError(409, f"{task_id} branches from {t['base']}, the default branch: it lands through a pull request")
         intent = set_intent(t, "merge", {"cleanup": bool(body.get("cleanup")), "commit": body.get("commit") is True,
                                          "requester": requester})
     await_intent(task_id, intent["id"], MERGE_WAIT)
@@ -3260,8 +2707,9 @@ def step_merge(t: Dict[str, Any], intent: Dict[str, Any]) -> Outcome:
         current["keptWorktree"] = not params.get("cleanup")
         if current["column"] != "done":
             current["column"], current["order"] = "done", store.next_order("done")
-    after = beads.new_intent("remove" if params.get("cleanup") else "stop",
-                             {"requester": params.get("requester"), "terminals": True})
+            retarget_stacked(current)
+    after = new_intent("remove" if params.get("cleanup") else "stop",
+                       {"requester": params.get("requester"), "terminals": True})
     after["log"] = output
     finish_intent(task_id, intent["id"], True, output=output, next_intent=after, apply=recorded)
     poller.kick(full=True)
@@ -3273,11 +2721,11 @@ def merge_branch(t: Dict[str, Any], body: Dict[str, Any]) -> Tuple[str, Dict[str
     returns the output and the merge record. A merge that landed without being recorded is recorded again."""
     task_id = t["id"]
     path = require_spawned(t)
-    repo, branch, base, checkout, title = t["repo"], t["branch"], t["base"], t["checkout"], t["title"]
+    repo, branch, base, title = t["repo"], t["branch"], t["base"], t["title"]
     commit_sha = None
     rebased = False
     with MERGE_LOCK:
-        target = checkout if Path(checkout).is_dir() and git_toplevel(checkout) else find_worktree(repo, base)
+        target = find_worktree(repo, base)
         if not target:
             raise ApiError(409, f"No checkout of {base} to merge into")
         _, head, _ = run(["git", "-C", target, "symbolic-ref", "-q", "--short", "HEAD"], timeout=10)
@@ -3294,7 +2742,7 @@ def merge_branch(t: Dict[str, Any], body: Dict[str, Any]) -> Tuple[str, Dict[str
         _, ahead, _ = run(["git", "-C", target, "rev-list", "--count", f"{base}..{branch}"], timeout=15)
         already = None
         if not ahead.strip().isdigit() or int(ahead) == 0:
-            # A merge that landed without being recorded (an interrupted /orchestrator done) finishes the task instead of failing.
+            # A merge that landed without being recorded (an interrupted /land) finishes the task instead of failing.
             _, already, _ = run(["git", "-C", target, "log", "-1", "--format=%H", "--fixed-strings",
                                  f"--grep=Merge {branch} (", base], timeout=15)
             if not already.strip():
@@ -3330,7 +2778,7 @@ def merge_branch(t: Dict[str, Any], body: Dict[str, Any]) -> Tuple[str, Dict[str
                     )
                 names = ", ".join(rebase_conflicts)
                 instruction = (
-                    f"`/orchestrator done` found a merge conflict and started `git rebase {base}`. "
+                    f"`/land` found a merge conflict and started `git rebase {base}`. "
                     f"The rebase is paused on {names}. Resolve every conflict in this task worktree, "
                     "stage the resolved files, and continue the rebase until it completes. "
                     "Do not merge the base branch; report when the rebased task is ready."
@@ -3345,7 +2793,7 @@ def merge_branch(t: Dict[str, Any], body: Dict[str, Any]) -> Tuple[str, Dict[str
                 if notified:
                     message += "; the task agent was asked to resolve them"
                 else:
-                    message += "; resolve them in the task worktree, then retry /orchestrator done"
+                    message += "; resolve them in the task worktree, then retry /land"
                 details = "\n".join(
                     part for part in ((out + err).strip(), (rebase_out + rebase_err).strip()) if part
                 )
@@ -3389,6 +2837,152 @@ def merge_branch(t: Dict[str, Any], body: Dict[str, Any]) -> Tuple[str, Dict[str
     return "\n".join(lines), merged
 
 
+def failure(output: str, fallback: str) -> str:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return lines[-1] if lines else fallback
+
+
+def create_pr(task_id: str) -> Dict[str, Any]:
+    """Opens a task's pull request into its base: its live agent is asked to (it commits and pushes what it has), else the
+    board pushes the committed branch and runs gh pr create."""
+    with store.lock:
+        t = copy.deepcopy(store.get(task_id))
+    path = require_spawned(t)
+    pr = t.get("pr") or {}
+    if pr.get("state") in ("open", "draft"):
+        raise ApiError(409, f"{task_id} already has pull request #{pr['number']}")
+    if not which("gh"):
+        raise ApiError(409, "gh isn't installed")
+    branch, base = t["branch"], t["base"]
+    if hub.task_live(task_id) and not paused(t) and (t.get("agent") or {}).get("state") not in HELD_STATES:
+        message_agent(task_id, {"text": PR_TEXT.format(branch=branch, base=base)})
+        return {"ok": True, "via": "agent"}
+    if not Path(path).is_dir():
+        raise ApiError(409, f"The worktree {path} no longer exists")
+    _, status, _ = run(["git", "-C", path, "status", "--porcelain"], timeout=30)
+    if status.strip():
+        raise ApiError(409, "Commit the uncommitted changes first", {"output": status})
+    _, mb = merge_base(path, base)
+    _, ahead, _ = run(["git", "-C", path, "rev-list", "--count", f"{mb}..HEAD"], timeout=15)
+    if not ahead.strip().isdigit() or int(ahead) == 0:
+        raise ApiError(409, "Nothing to open a pull request for")
+    if run(["git", "-C", path, "ls-remote", "--exit-code", "--heads", "origin", base], timeout=30)[0] != 0:
+        raise ApiError(409, f"Push {base} first: it isn't on origin")
+    code, out, err = run(["git", "-C", path, "push", "-u", "origin", branch], timeout=120)
+    if code != 0:
+        raise ApiError(409, failure(out + err, "git push failed"), {"output": tail(out + err, SPAWN_LOG_LIMIT)})
+    code, out, err = run(["gh", "pr", "create", "--base", base, "--head", branch, "--fill"], cwd=path, timeout=60)
+    if code != 0:
+        raise ApiError(409, failure(out + err, "gh pr create failed"), {"output": tail(out + err, SPAWN_LOG_LIMIT)})
+    poller.kick(full=True)
+    return {"ok": True, "via": "gh", "url": failure(out, "")}
+
+
+PR_FIELDS = "number,state,url,title,isDraft,headRefName,baseRefName"
+CHECK_FAILED = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}
+
+
+def checks_state(rollup: Any) -> Optional[str]:
+    """A pull request's checks in one word, from gh's statusCheckRollup: failing, pending, passing, or None without any."""
+    items = [i for i in rollup if isinstance(i, dict)] if isinstance(rollup, list) else []
+    if any(i.get("conclusion") in CHECK_FAILED or i.get("state") in ("FAILURE", "ERROR") for i in items):
+        return "failing"
+    if any(i.get("status") not in (None, "COMPLETED") or i.get("state") in ("PENDING", "EXPECTED") for i in items):
+        return "pending"
+    return "passing" if items else None
+
+
+def pr_record(found: Dict[str, Any], detailed: bool) -> Dict[str, Any]:
+    state = str(found["state"]).lower()
+    if state == "open" and found.get("isDraft"):
+        state = "draft"
+    record = {"number": found["number"], "state": state, "url": found["url"], "title": found["title"],
+              "base": found.get("baseRefName"), "review": None, "checks": None, "conflicts": False}
+    if detailed:
+        record.update(review=str(found.get("reviewDecision") or "").lower() or None,
+                      checks=checks_state(found.get("statusCheckRollup")), conflicts=found.get("mergeable") == "CONFLICTING")
+    return record
+
+
+def fetch_prs(repo: str) -> Optional[Dict[str, Dict[str, Any]]]:
+    """The pull requests of `repo` by head branch: open ones with their review, checks and conflicts, then the latest of
+    any state for the other branches; None when gh can't list them."""
+    lists = []
+    for state, limit, fields in (("open", "100", PR_FIELDS + ",reviewDecision,mergeable,statusCheckRollup"),
+                                 ("all", "200", PR_FIELDS)):
+        code, out, _ = run(["gh", "pr", "list", "--state", state, "--limit", limit, "--json", fields], cwd=repo, timeout=45)
+        if code != 0:
+            return None
+        try:
+            lists.append(json.loads(out))
+        except ValueError:
+            return None
+    prs: Dict[str, Dict[str, Any]] = {}
+    for detailed, found in ((True, lists[0]), (False, lists[1])):
+        for pr in found if isinstance(found, list) else []:
+            try:
+                prs.setdefault(pr["headRefName"], pr_record(pr, detailed))
+            except (KeyError, TypeError):
+                continue
+    return prs
+
+
+def pr_column(column: str, pr: Optional[Dict[str, Any]]) -> str:
+    """Where a task belongs by its pull request: Done once merged, Pull Request while open, back In Progress when it was
+    closed or is gone."""
+    state = (pr or {}).get("state")
+    if state == "merged":
+        return "done"
+    if state in ("open", "draft") and column in ("planning", "waiting", "doing", "review"):
+        return "pr"
+    if column == "pr" and state not in ("open", "draft"):
+        return "doing"
+    return column
+
+
+def worktree_column(pr: Optional[Dict[str, Any]]) -> str:
+    """The column of a worktree no task owns: Done once its pull request merged, Pull Request while one is open."""
+    state = (pr or {}).get("state")
+    return "done" if state == "merged" else "pr" if state in ("open", "draft") else "doing"
+
+
+def adopt_worktree(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Tracks a linked worktree as a task: the task that owns it, else a new card for it, planned already. An omp running
+    there attaches to the card on its own; without one, moving the card In Progress starts omp --continue there."""
+    path = str(body.get("path") or "")
+    top = git_toplevel(str(Path(path).expanduser())) if path else None
+    info = checkout_info(top) if top else None
+    code, branch, _ = run(["git", "-C", top, "symbolic-ref", "-q", "--short", "HEAD"], timeout=10) if top else (1, "", "")
+    branch = branch.strip()
+    if not info or same_dir(info["repo"], top) or code != 0 or not branch:
+        raise ApiError(400, f"{path} is not a linked worktree on a branch")
+    title = str(body.get("title") or "").strip() or branch
+    tags = validate_tags(body.get("tags") or [])
+    repo = info["repo"]
+    base = branch_base(repo, branch, repo_default_branch(repo))
+    pr = (poller.prs.get(repo) or {}).get(branch)
+    with store.lock:
+        owner = next((t for t in store.tasks.values() if same_dir(t.get("worktree"), top)), None)
+        if owner:
+            return store.view(owner)
+        remember_project(repo)
+        stamp, column = now_iso(), worktree_column(pr)
+        t: Dict[str, Any] = {
+            "id": None, "title": title, "description": "", "column": column, "order": store.next_order(column),
+            "held": False, "ticket": None, "tags": with_rule_tags(tags, repo, branch, top), "notes": "", "repo": repo,
+            "base": base, "branch": branch,
+            "controlSet": None, "createdAt": stamp, "updatedAt": stamp, "spawn": {"state": "done", "error": None, "log": ""},
+            "worktree": top, "presentation": None, "execution": None, "agent": None, "git": None, "pr": pr,
+            "merged": None, "origin": None, "planned": stamp, "dependsOn": [], "parent": None, "number": next_number(repo),
+        }
+        store.create(t)
+        store.worktrees = [w for w in store.worktrees if not same_dir(w["path"], top)]
+        view = store.view(t)
+    hub.changed()
+    poller.kick(full=True)
+    return view
+
+
 STEPS: Dict[str, Callable[[Dict[str, Any], Dict[str, Any]], Outcome]] = {
     "start": step_start, "resume": step_resume, "stop": step_stop, "merge": step_merge, "remove": step_remove,
     "delete": step_delete}
@@ -3401,9 +2995,29 @@ def recently_failed_removal(t: Dict[str, Any]) -> bool:
     return last.get("op") == "remove" and not last.get("ok") and time.time() - epoch(last["at"]) < 3600
 
 
+def git_stats(path: str, base: str) -> Optional[Dict[str, int]]:
+    """A worktree's work since it left `base`: lines added and removed, files, commits and uncommitted files; None once
+    the worktree is gone."""
+    if not Path(path).is_dir():
+        return None
+    _, mb = merge_base(path, base)
+    added = removed = files = 0
+    code, out, _ = run(["git", "-C", path, "diff", "--numstat", mb], timeout=30)
+    for line in out.splitlines() if code == 0 else []:
+        a, r, _name = (line.split("\t", 2) + ["", ""])[:3]
+        files += 1
+        added += int(a) if a.isdigit() else 0
+        removed += int(r) if r.isdigit() else 0
+    _, commits, _ = run(["git", "-C", path, "rev-list", "--count", f"{mb}..HEAD"], timeout=15)
+    _, status, _ = run(["git", "-C", path, "status", "--porcelain"], timeout=30)
+    return {"added": added, "removed": removed, "files": files,
+            "commits": int(commits.strip()) if commits.strip().isdigit() else 0,
+            "dirty": len([l for l in status.splitlines() if l.strip()])}
+
+
 class Poller:
-    """Keeps spawned tasks' agent, git and PR status current, moves cards on PR open/merge and local readiness, starts or
-    resumes the Todo tasks whose dependencies are done, and runs a worker for each pending intent."""
+    """Keeps spawned tasks' agent, git and PR status current, moves cards on approval, local readiness and PR state,
+    resumes the waiting tasks whose dependencies are done, and runs a worker for each pending intent."""
 
     def __init__(self) -> None:
         self.wake = threading.Event()
@@ -3412,7 +3026,8 @@ class Poller:
         self.last_pr = 0.0
         self.last_presentation = 0.0
         self.last_sweep = 0.0
-        self.beads_retry: Dict[str, Tuple[int, float]] = {}
+        self.last_worktrees = 0.0
+        self.prs: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
     def kick(self, full: bool = False) -> None:
         self.forced = self.forced or full
@@ -3428,10 +3043,10 @@ class Poller:
             try:
                 self.tick(forced)
             except Exception as e:  # keep polling through transient failures
-                print(f"orchestrator: poll failed: {e!r}", file=sys.stderr)
+                print(f"mission-control: poll failed: {e!r}", file=sys.stderr)
 
     def tick(self, forced: bool) -> None:
-        changed = self.check_beads()
+        changed = False
         with store.lock:
             tracked = [dict(t) for t in store.tasks.values() if spawned(t)]
         now = time.time()
@@ -3441,15 +3056,17 @@ class Poller:
                 self.last_git = now
                 changed |= self.check_git([t for t in tracked if t["column"] != "done"])
             changed |= self.check_ready(tracked)
-            if forced or now - self.last_pr >= 60:
-                self.last_pr = now
-                changed |= self.check_prs([t for t in tracked if t["column"] != "done" or not t.get("pr")])
+        if forced or now - self.last_pr >= 60:
+            self.last_pr = now
+            changed |= self.check_prs([t for t in tracked if t["column"] != "done" or not t.get("pr")])
+        if forced or now - self.last_worktrees >= WORKTREES_INTERVAL:
+            self.last_worktrees = now
+            changed |= self.check_worktrees()
         changed |= self.check_queue()
         sweep = forced or now - self.last_sweep >= SWEEP_INTERVAL
         if sweep:
             self.last_sweep = now
             self.sweep_leftovers()
-        changed |= self.retry_beads(now)
         self.check_intents(now)
         if changed:
             hub.changed()
@@ -3478,64 +3095,21 @@ class Poller:
                 if current and not current.get("intent"):
                     set_intent(current, "remove", {})
 
-    def retry_beads(self, now: float) -> bool:
-        """Writes the column changes Beads didn't take, backing off after each failure."""
-        changed = False
-        with store.lock:
-            for t in list(store.tasks.values()):
-                task_id = t["id"]
-                if not t.get("beadsPending"):
-                    self.beads_retry.pop(task_id, None)
-                    continue
-                attempts, due = self.beads_retry.setdefault(task_id, (0, now + BEADS_BACKOFF[0]))
-                if now < due or task_id in RUNNING_INTENTS:
-                    continue
-                if beads.differs("column", t["column"], store.seen[task_id].get("column")):
-                    try:
-                        store.push(t, ["column"])
-                    except beads.BeadsError as e:
-                        self.beads_retry[task_id] = (attempts + 1, now + BEADS_BACKOFF[min(attempts + 1, len(BEADS_BACKOFF) - 1)])
-                        print(f"orchestrator: {task_id}'s column still doesn't reach Beads: {e}", file=sys.stderr)
-                        continue
-                t["beadsPending"] = None
-                store.write_record(t)
-                self.beads_retry.pop(task_id, None)
-                changed = True
-        return changed
-
-    def check_beads(self) -> bool:
-        """Takes in task edits made with bd outside the board."""
-        try:
-            return store.sync()
-        except ApiError as e:
-            print(f"orchestrator: reading Beads failed: {e.message}", file=sys.stderr)
-            return False
-
     def check_queue(self) -> bool:
-        """Starts Todo tasks, and resumes paused ones, whose dependencies are done and whose flow has capacity."""
+        """Resumes the waiting tasks whose plan is approved, that no person holds and whose dependencies are done, in queue
+        order, while their project has a free slot."""
         with store.lock:
-            refreshed = False
-            if any(t["column"] == "todo" for t in store.tasks.values()):
-                try:
-                    refreshed = store.fresh_blocked()
-                except ApiError as e:
-                    print(f"orchestrator: reading Beads blockers failed, starting nothing: {e.message}", file=sys.stderr)
-                    return False
-            queued = sorted((t for t in store.tasks.values() if t["column"] == "todo" and not t.get("intent")
-                             and not blocked_by(t) and (paused(t) or (not spawned(t) and t["spawn"]["state"] == "none"
-                                                                      and Path(t["repo"]).is_dir()))),
+            queued = sorted((t for t in store.tasks.values() if t["column"] == "waiting" and not t.get("intent")
+                             and not t.get("held") and t.get("planned") and spawned(t) and not blocked_by(t)),
                             key=lambda t: (t["order"], t["createdAt"]))
             moved = False
             for t in queued:
                 if not has_task_slot(t):
                     continue
-                if paused(t):
-                    t["column"], t["order"] = "doing", store.next_order("doing")
-                    set_intent(t, "resume", {})
-                else:
-                    start_task(t)
+                t["column"], t["order"] = "doing", store.next_order("doing")
+                set_intent(t, "resume", {"landed": True})
                 moved = True
-        return moved or refreshed
+        return moved
 
     def check_agents(self, tracked: List[Dict[str, Any]]) -> bool:
         """Agent state from what runs (observe: the omp session lease, the tmux pane) and from each task's own omp session
@@ -3598,58 +3172,39 @@ class Poller:
         return changed
 
     def check_git(self, tracked: List[Dict[str, Any]]) -> bool:
-        results = {}
-        for t in tracked:
-            path = t["worktree"]
-            if not Path(path).is_dir():
-                results[t["id"]] = None
-                continue
-            _, mb = merge_base(path, t["base"])
-            added = removed = files = 0
-            code, out, _ = run(["git", "-C", path, "diff", "--numstat", mb], timeout=30)
-            for line in out.splitlines() if code == 0 else []:
-                a, r, _name = (line.split("\t", 2) + ["", ""])[:3]
-                files += 1
-                added += int(a) if a.isdigit() else 0
-                removed += int(r) if r.isdigit() else 0
-            _, commits, _ = run(["git", "-C", path, "rev-list", "--count", f"{mb}..HEAD"], timeout=15)
-            _, status, _ = run(["git", "-C", path, "status", "--porcelain"], timeout=30)
-            results[t["id"]] = {"added": added, "removed": removed, "files": files,
-                                "commits": int(commits.strip() or 0) if commits.strip().isdigit() else 0,
-                                "dirty": len([l for l in status.splitlines() if l.strip()])}
+        """Each worktree's work; a planning task with no open dependency that already commits or edits files moves In
+        Progress (its plan mode was left in its omp)."""
+        results = {t["id"]: git_stats(t["worktree"], t["base"]) for t in tracked}
         changed = False
         with store.lock:
             for task_id, git in results.items():
                 t = store.tasks.get(task_id)
                 if not t:
                     continue
-                persist = False
-                if t["planningMode"] == "auto" and t.get("planningOutcome") is None and git \
-                        and (git["dirty"] > 0 or git["commits"] > 0):
-                    t["planningOutcome"] = "fast"
-                    persist = True
                 if t.get("git") != git:
                     t["git"] = git
                     changed = True
-                if persist:
+                if t["column"] == "planning" and git and (git["dirty"] or git["commits"]) and not t.get("intent") \
+                        and not blocked_by(t):
+                    t["column"], t["order"] = "doing", store.next_order("doing")
                     store.save(t)
                     changed = True
         return changed
 
     def check_ready(self, tracked: List[Dict[str, Any]]) -> bool:
-        """Moves local-merge tasks to Review once their agent stopped with committed work and a clean worktree."""
+        """Moves In Progress tasks to Review once their agent stopped with committed work and a clean worktree."""
         changed = False
         with store.lock:
             for snapshot in tracked:
                 t = store.tasks.get(snapshot["id"])
-                if not t or t["merge"] != "local" or t["column"] != "doing" or t.get("pr") or t.get("intent"):
+                if not t or t["column"] != "doing" or t.get("intent") or (t.get("pr") or {}).get("state") in ("open", "draft"):
                     continue
                 if t.get("resumedAt"):
                     # A resumed agent reads idle or closed until it picks up its resume message.
                     active = (t.get("agent") or {}).get("state") in ACTIVE_STATES
                     if active or time.time() - epoch(t["resumedAt"]) >= RESUME_GRACE:
                         t["resumedAt"] = None
-                        store.write_record(t)
+                        store.save(t)
                     continue
                 agent, git = t.get("agent") or {}, t.get("git") or {}
                 # Only the agent's own connected session saying idle counts: a lost terminal or connection never does.
@@ -3661,49 +3216,58 @@ class Poller:
         return changed
 
     def check_prs(self, tracked: List[Dict[str, Any]]) -> bool:
-        if not tracked or not which("gh"):
+        """The pull requests of every project, then each task's, and the column it puts the task in."""
+        with store.lock:
+            repos = {p["repo"] for p in store.project_list()}
+        if not repos or not which("gh"):
             return False
-        by_repo: Dict[str, Dict[str, Dict[str, Any]]] = {}
-        for repo in {t["repo"] for t in tracked}:
-            code, out, _ = run(["gh", "pr", "list", "--state", "all", "--limit", "100", "--json",
-                                "number,state,url,title,isDraft,headRefName"], cwd=repo, timeout=45)
-            if code != 0:
-                continue
-            prs: Dict[str, Dict[str, Any]] = {}
-            try:
-                for pr in json.loads(out):
-                    prs.setdefault(pr["headRefName"], pr)
-            except (ValueError, KeyError, TypeError):
-                continue
-            by_repo[repo] = prs
+        for repo in repos:
+            prs = fetch_prs(repo)
+            if prs is not None:
+                self.prs[repo] = prs
         changed = False
         with store.lock:
             for snapshot in tracked:
                 t = store.tasks.get(snapshot["id"])
-                prs = by_repo.get(snapshot["repo"])
+                prs = self.prs.get(snapshot["repo"])
                 if not t or prs is None:
                     continue
-                found = prs.get(t["branch"])
-                pr = None
-                if found:
-                    state = found["state"].lower()
-                    if state == "open" and found.get("isDraft"):
-                        state = "draft"
-                    pr = {"number": found["number"], "state": state, "url": found["url"], "title": found["title"]}
-                column = t["column"]
-                if pr and pr["state"] == "merged" and column != "done":
-                    column = "done"
-                elif pr and pr["state"] in ("open", "draft") and column in ("todo", "doing"):
-                    column = "review"
-                if pr != t.get("pr") or column != t["column"]:
-                    merged = column == "done" and t["column"] != "done"
-                    if column != t["column"]:
-                        t["column"], t["order"] = column, store.next_order(column)
-                    t["pr"] = pr
-                    store.save(t)
-                    if merged and spawned(t) and not t.get("intent"):
+                pr = prs.get(t["branch"])
+                column = pr_column(t["column"], pr)
+                if pr == t.get("pr") and column == t["column"]:
+                    continue
+                done = column == "done" and t["column"] != "done"
+                if column != t["column"]:
+                    t["column"], t["order"] = column, store.next_order(column)
+                t["pr"] = pr
+                store.save(t)
+                if done:
+                    retarget_stacked(t)
+                    if spawned(t) and not t.get("intent"):
                         set_intent(t, "stop", {})
-                    changed = True
+                changed = True
+        return changed
+
+    def check_worktrees(self) -> bool:
+        """The linked worktrees on a branch that no task owns, of every project, with their work and pull request."""
+        with store.lock:
+            repos = [p["repo"] for p in store.project_list()]
+            owned = [t["worktree"] for t in store.tasks.values() if t.get("worktree")]
+        found = []
+        for repo in repos:
+            default = repo_default_branch(repo)
+            for path, branch in registered_worktrees(repo)[1:]:
+                if not branch or not os.path.isdir(path) or any(same_dir(path, o) for o in owned):
+                    continue
+                base = branch_base(repo, branch, default)
+                pr = (self.prs.get(repo) or {}).get(branch)
+                found.append({"path": path, "project": project_id(repo), "repo": repo, "branch": branch, "base": base,
+                              "git": git_stats(path, base), "pr": pr, "column": worktree_column(pr)})
+        with store.lock:
+            for w in found:
+                w["tags"] = rule_tags(w["repo"], w["branch"], w["path"])
+            changed = found != store.worktrees
+            store.worktrees = found
         return changed
 
 
@@ -3729,11 +3293,12 @@ def appearance() -> Dict[str, Any]:
     return appearance_cache
 
 
-def appearance_css(flow: str) -> str:
-    """The terminal's colors and font under `flow`'s omp theme (else the latest sent); the theme's background only when its scheme differs."""
+def appearance_css(project: str) -> str:
+    """The terminal's colors and font under `project`'s omp theme (else the latest sent); the theme's background only when
+    its scheme differs."""
     base = appearance()
     with store.lock:
-        theme = store.themes.get(flow) or next(reversed(store.themes.values()), None)
+        theme = store.themes.get(project) or next(reversed(store.themes.values()), None)
     if not theme:
         return base["css"]
     own_bg = base["scheme"] != theme["scheme"] and "--bg" in theme["vars"]
@@ -3744,179 +3309,13 @@ def appearance_css(flow: str) -> str:
 
 # --- HTTP ---------------------------------------------------------------------------------
 
-NATIVE_TEXT_KEYS = ("description", "design", "notes", "acceptance_criteria", "metadata")
-READINESS_DISCLAIMER = (
-    "Beads ready means a bead in an open-category status (open, or todo here) with no open blocker; it starts nothing. "
-    "The board starts a task only from Todo, once its dependencies are done and Beads no longer blocks its parent, and "
-    "only while its flow has a free slot: a ready Backlog task waits for a move to Todo, and a paused task resumes from "
-    "Todo the same way.")
-
-
-def task_history(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    """A task's native Beads history: its bead's commit snapshots, or with events its audit events, newest first."""
-    limit = body.get("limit", 10)
-    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
-        raise ApiError(400, "limit must be a whole number from 1 to 50")
-    events = body.get("events", False)
-    if not isinstance(events, bool):
-        raise ApiError(400, "events must be true or false")
-    with store.lock:
-        store.get(task_id)
-    try:
-        history = store.workspace.history(task_id, limit, events)
-    except beads.BeadsError as e:
-        raise beads_api_error(e)
-    return {"id": task_id, "history": history or [], "events": events}
-
-
-def board_readiness(t: Dict[str, Any]) -> Tuple[bool, str]:
-    """Whether the board's queue would start or resume `t` now, and why or why not (call under store.lock)."""
-    column = dict(COLUMNS)[t["column"]]
-    blockers = blocked_by(t)
-    startable = paused(t) or (not spawned(t) and t["spawn"]["state"] == "none" and Path(t["repo"]).is_dir())
-    if t["column"] == "done":
-        return False, "Done"
-    if t["spawn"]["state"] == "running":
-        return False, f"{column}: starting, its worktree and agent are being set up"
-    if t.get("intent"):
-        return False, f"{column}: {VERB[t['intent']['op']]}"
-    if t["column"] in ("doing", "review"):
-        return False, f"{column}: started, the queue no longer applies"
-    if t["column"] == "backlog":
-        return False, ("Backlog: paused; moving it to Todo queues its resume" if paused(t)
-                       else "Backlog: never started automatically; moving it to Todo queues it")
-    if blockers:
-        own = [b for b in blockers if b in t["dependsOn"]]
-        inherited = [b for b in blockers if b not in own]
-        parts = ([f"waits for {', '.join(own)} to be done"] if own else []) + \
-            ([f"inherits the block on its parent tree ({', '.join(inherited)})"] if inherited else [])
-        return False, "Todo: " + " and ".join(parts)
-    if not startable:
-        if not Path(t["repo"]).is_dir():
-            return False, f"Todo: its repository {t['repo']} is missing"
-        error = t["spawn"].get("error")
-        return False, f"Todo: its last start {t['spawn']['state']}" + (f" ({error})" if error else "") + \
-            "; move it to start again"
-    if not has_task_slot(t):
-        limit = flow_concurrency_limit(t["repo"], t["base"])
-        return True, f"Todo: waits for a free slot in {flow_id(t['repo'], t['base'])} " \
-                     f"({active_task_count(t['repo'], t['base'])} of {limit} in use)"
-    return True, "Todo: " + ("resumes" if paused(t) else "starts") + " on the board's next tick"
-
-
-def readiness(body: Dict[str, Any]) -> Dict[str, Any]:
-    """Beads' native ready/blocked explanation for the board's tasks in scope (one task, one flow, or the board), beside
-    the board's own queue state; starts nothing."""
-    flow, task_id = body.get("flow"), body.get("id")
-    if any(v is not None and not isinstance(v, str) for v in (flow, task_id)):
-        raise ApiError(400, "flow and id must be strings")
-    with store.lock:
-        if task_id:
-            t = store.get(task_id)
-            if flow and flow != flow_id(t["repo"], t["base"]):
-                raise ApiError(400, f"{task_id} belongs to {flow_id(t['repo'], t['base'])}, not {flow}")
-        elif flow and flow not in {f["id"] for f in store.flow_list()}:
-            raise ApiError(404, f"No flow {flow}")
-    try:
-        native = store.workspace.ready_explained()
-    except beads.BeadsError as e:
-        raise beads_api_error(e)
-    with store.lock:
-        store.fresh_blocked()
-        if task_id:
-            t = store.get(task_id)
-            scope, flow = [t], flow_id(t["repo"], t["base"])
-        else:
-            scope = [t for t in store.tasks.values() if t["column"] != "done"
-                     and (not flow or flow_id(t["repo"], t["base"]) == flow)]
-        ids = {t["id"] for t in scope}
-
-        def rows(key: str) -> List[Dict[str, Any]]:
-            return [{k: v for k, v in r.items() if k not in NATIVE_TEXT_KEYS} for r in native.get(key) or []
-                    if isinstance(r, dict) and r.get("id") in ids]
-
-        ready, blocked = rows("ready"), rows("blocked")
-        listed = {r["id"]: ("ready", r) for r in ready}
-        listed.update({r["id"]: ("blocked", r) for r in blocked})
-        tasks = []
-        for t in sorted(scope, key=lambda t: (COLUMN_IDS.index(t["column"]), t["order"], t["createdAt"])):
-            state, row = listed.get(t["id"], (None, {}))
-            status = row.get("status") or store.seen[t["id"]]["status"]
-            native_blockers = [b["id"] for b in row.get("blocked_by") or [] if isinstance(b, dict) and b.get("id")]
-            queued, why = board_readiness(t)
-            if state == "ready":
-                said = f"Beads: ready (status {status}, no open blocker)"
-            elif state == "blocked":
-                said = f"Beads: blocked by {', '.join(native_blockers)} (status {status})"
-            else:
-                said = f"Beads: neither ready nor blocked (status {status} isn't open work)"
-            tasks.append({"id": t["id"], "title": t["title"], "column": t["column"], "status": status,
-                          "queued": queued, "blockedBy": blocked_by(t), "waitingForSlot": waiting_for_slot(t),
-                          "paused": paused(t), "native": state, "nativeBlockedBy": native_blockers,
-                          "reason": with_numbers(f"{why}. {said}")})
-    summary = {"total_ready": len(ready), "total_blocked": len(blocked),
-               "cycle_count": (native.get("summary") or {}).get("cycle_count", 0)}
-    return {"flow": flow or None, "native": {"ready": ready, "blocked": blocked, "summary": summary},
-            "tasks": tasks, "disclaimer": READINESS_DISCLAIMER}
+STATIC_ASSETS = {"/design-system.css", "/markdown.js", "/graph-layout.js", "/pipeline.js", "/pipeline.css", "/workbench.js",
+                 "/workbench.css", "/links.js", "/links.css"}
 
 
 def refresh() -> Dict[str, Any]:
     poller.kick(full=True)
     return {"ok": True}
-
-
-def project_memories(body: Dict[str, Any]) -> Dict[str, Any]:
-    action = body.get("action")
-    if action not in ("search", "read", "remember", "forget"):
-        raise ApiError(400, "Memory action must be search, read, remember or forget")
-    repo = body.get("repo")
-    if not isinstance(repo, str) or not repo.strip():
-        raise ApiError(400, "A memory needs a repository path")
-    info = checkout_info(str(Path(repo).expanduser()))
-    if not info:
-        raise ApiError(400, f"{repo} is not a git repository")
-    scope = os.path.realpath(info["repo"])
-    prefix = f"{beads.MEMORY_PREFIX}{hashlib.sha256(scope.encode()).hexdigest()[:16]}."
-    key = body.get("key")
-    if action != "search" and (not isinstance(key, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}", key)):
-        raise ApiError(400, "Memory key must be 1–80 letters, digits, dots, underscores or hyphens, starting with a letter or digit")
-    query = body.get("query", "")
-    if not isinstance(query, str) or len(query) > 200:
-        raise ApiError(400, "Memory query must be at most 200 characters")
-    text = body.get("text")
-    if action == "remember" and (not isinstance(text, str) or not text.strip() or len(text) > 4000):
-        raise ApiError(400, "Memory text must be nonempty and at most 4000 characters")
-    try:
-        if action == "search":
-            data = store.workspace.call(["memories", *(["--", query] if query else [])])
-            entries = [{"key": k[len(prefix):], "text": v} for k, v in sorted(data.items())
-                       if k.startswith(prefix) and isinstance(v, str)]
-        elif action == "remember":
-            store.workspace.call(["remember", "--key", prefix + key, "--", text.strip()])
-            entries = [{"key": key, "text": text.strip()}]
-        else:
-            data = store.workspace.call(["memories", "--", prefix + key])
-            if prefix + key not in data:
-                raise ApiError(404, f"No shared memory {key} in {scope}")
-            if action == "read":
-                entries = [{"key": key, "text": data[prefix + key]}]
-            else:
-                store.workspace.call(["forget", prefix + key])
-                entries = []
-    except beads.BeadsError as e:
-        raise beads_api_error(e)
-    limit = 60000 if action == "read" else 16000
-    result = []
-    truncated = False
-    for entry in entries:
-        if len(result) == 20 or limit <= 0:
-            truncated = True
-            break
-        value = entry["text"][:limit]
-        truncated |= len(value) < len(entry["text"])
-        result.append({"key": entry["key"], "text": value})
-        limit -= len(value)
-    return {"scope": scope, "memories": result, "truncated": truncated}
 
 
 SERVER: Optional["Server"] = None
@@ -3938,41 +3337,35 @@ def restart() -> Dict[str, Any]:
 
 
 ROUTES = [
-    ("POST", r"/api/memories", lambda m, b: project_memories(b)),
     ("POST", r"/api/tasks", lambda m, b: create_task(b)),
     ("PATCH", r"/api/tasks/([\w.-]+)", lambda m, b: update_task(m[1], b)),
     ("DELETE", r"/api/tasks/([\w.-]+)", lambda m, b: delete_task(m[1], b)),
     ("POST", r"/api/tasks/([\w.-]+)/move", lambda m, b: move_task(m[1], b)),
     ("POST", r"/api/tasks/([\w.-]+)/reorder", lambda m, b: reorder_task(m[1], b)),
+    ("POST", r"/api/tasks/([\w.-]+)/planned", lambda m, b: planned_task(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/open", lambda m, b: open_task(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/worktree/open", lambda m, b: open_worktree(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/message", lambda m, b: message_agent(m[1], b)),
-    ("POST", r"/api/tasks/([\w.-]+)/review", lambda m, b: review_plan(m[1], b)),
     ("POST", r"/api/tasks/([\w.-]+)/stop", lambda m, b: stop_task(m[1])),
-    ("POST", r"/api/tasks/([\w.-]+)/amend", lambda m, b: amend_task(m[1], b)),
-    ("POST", r"/api/tasks/([\w.-]+)/update", lambda m, b: send_update(m[1], b)),
     ("GET", r"/api/tasks/([\w.-]+)/screen", lambda m, b: read_screen(m[1])),
     ("GET", r"/api/tasks/([\w.-]+)/diff", lambda m, b: task_diff(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/diff/open", lambda m, b: present_diff(m[1])),
     ("GET", r"/api/tasks/([\w.-]+)/context", lambda m, b: task_context(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/context", lambda m, b: publish_context(m[1], b)),
     ("POST", r"/api/tasks/([\w.-]+)/merge", lambda m, b: merge_task(m[1], b)),
-    ("POST", r"/api/tasks/([\w.-]+)/discuss", lambda m, b: discuss_task(m[1])),
+    ("POST", r"/api/tasks/([\w.-]+)/pr", lambda m, b: create_pr(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/cleanup", lambda m, b: cleanup_task(m[1], b)),
     ("POST", r"/api/tasks/([\w.-]+)/resumed", lambda m, b: resumed_task(m[1])),
     ("POST", r"/api/tasks/([\w.-]+)/recover", lambda m, b: recover_task(m[1])),
-    ("POST", r"/api/tasks/([\w.-]+)/history", lambda m, b: task_history(m[1], b)),
-    ("POST", r"/api/readiness", lambda m, b: readiness(b)),
     ("POST", r"/api/refresh", lambda m, b: refresh()),
+    ("POST", r"/api/worktrees/adopt", lambda m, b: adopt_worktree(b)),
     ("POST", r"/api/restart", lambda m, b: restart()),
-    ("POST", r"/api/context", lambda m, b: set_context(b)),
-    ("POST", r"/api/flows", lambda m, b: register_flow(b)),
-    ("POST", r"/api/flows/prompt", lambda m, b: prompt_task(b)),
-    ("POST", r"/api/flows/recap", lambda m, b: flow_recap(b)),
-    ("POST", r"/api/exports", lambda m, b: save_export(b)),
-    ("PATCH", r"/api/flows", lambda m, b: set_flow_concurrency(b)),
-    ("PATCH", r"/api/flows/scripts", lambda m, b: set_flow_scripts(b)),
-    ("PATCH", r"/api/flows/control-sets", lambda m, b: set_flow_control_sets(b)),
+    ("POST", r"/api/projects", lambda m, b: register_project(b)),
+    ("PATCH", r"/api/projects", lambda m, b: set_project_concurrency(b)),
+    ("PATCH", r"/api/projects/scripts", lambda m, b: set_project_scripts(b)),
+    ("PATCH", r"/api/projects/hidden", lambda m, b: set_project_hidden(b)),
+    ("PATCH", r"/api/projects/tag-rules", lambda m, b: set_project_tag_rules(b)),
+    ("PATCH", r"/api/projects/control-sets", lambda m, b: set_project_control_sets(b)),
     ("POST", r"/api/agent", lambda m, b: report_agent(b)),
     ("POST", r"/api/control/([\w-]+)", lambda m, b: answer_control(m[1], b)),
     ("POST", r"/api/appearance", lambda m, b: set_theme(b)),
@@ -3982,7 +3375,7 @@ ROUTES = [
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "orchestrator"
+    server_version = "mission-control"
 
     def log_message(self, format: str, *args: Any) -> None:
         pass
@@ -4035,21 +3428,13 @@ class Handler(BaseHTTPRequestHandler):
                 if not page.exists():
                     raise ApiError(404, "index.html is missing")
                 return self.serve_bytes(page.read_bytes(), "text/html; charset=utf-8")
-            if self.command == "GET" and path in ("/design-system.css", "/markdown.js", "/graph-layout.js", "/pipeline.js", "/pipeline.css", "/workbench.js", "/workbench.css", "/native.js", "/native.css", "/flow-export.js", "/flow-export.css"):
+            if self.command == "GET" and path in STATIC_ASSETS:
                 asset = ROOT / path.lstrip("/")
                 content_type = "text/javascript" if path.endswith(".js") else "text/css"
                 return self.serve_bytes(asset.read_bytes(), content_type + "; charset=utf-8")
             if self.command == "GET" and path == "/appearance.css":
-                flow = parse_qs(urlparse(self.path).query).get("flow", [""])[0]
-                return self.serve_bytes(appearance_css(flow).encode(), "text/css; charset=utf-8")
-            if self.command == "GET" and path.startswith("/exports/"):
-                name = path[len("/exports/"):]
-                page = EXPORTS_DIR / name
-                if not EXPORT_NAME.fullmatch(name) or not page.is_file():
-                    raise ApiError(404, "No saved flow page with that name")
-                # Saved pages run in an opaque origin: their script can't reach the board's API.
-                return self.serve_bytes(page.read_bytes(), "text/html; charset=utf-8",
-                                        {"Content-Security-Policy": "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox"})
+                project = parse_qs(urlparse(self.path).query).get("project", [""])[0]
+                return self.serve_bytes(appearance_css(project).encode(), "text/css; charset=utf-8")
             if self.command == "GET" and path == "/api/events":
                 return self.serve_events()
             for method, pattern, handler in ROUTES:
@@ -4071,7 +3456,7 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as e:
-            print(f"orchestrator: {self.command} {self.path} failed: {e!r}", file=sys.stderr)
+            print(f"mission-control: {self.command} {self.path} failed: {e!r}", file=sys.stderr)
             try:
                 self.send_json(500, {"error": f"Internal error: {e}"})
             except OSError:
@@ -4083,23 +3468,21 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 action()
             except Exception as e:
-                print(f"orchestrator: after {self.command} {self.path}: {e!r}", file=sys.stderr)
+                print(f"mission-control: after {self.command} {self.path}: {e!r}", file=sys.stderr)
 
     do_GET = do_POST = do_PATCH = do_DELETE = handle_any
 
-    def serve_bytes(self, body: bytes, content_type: str, headers: Optional[Dict[str, str]] = None) -> None:
+    def serve_bytes(self, body: bytes, content_type: str) -> None:
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        for key, value in (headers or {}).items():
-            self.send_header(key, value)
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
     def serve_events(self) -> None:
         query = parse_qs(urlparse(self.path).query)
-        meta: Dict[str, Any] = {k: (query.get(k) or [None])[0] or None for k in ("session", "flow", "task")}
+        meta: Dict[str, Any] = {k: (query.get(k) or [None])[0] or None for k in ("session", "project", "task")}
         meta["terminal"] = terminal_context((query.get("terminal") or [None])[0])
         session, task = meta["session"], meta["task"]
         self.send_response(200)
@@ -4137,61 +3520,18 @@ class Handler(BaseHTTPRequestHandler):
 class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    request_queue_size = 128  # a page load opens a dozen connections at once; the default backlog is 5
 
     def handle_error(self, request: Any, client_address: Any) -> None:
         if not isinstance(sys.exc_info()[1], (ConnectionResetError, BrokenPipeError)):
             super().handle_error(request, client_address)
 
 
-OLD_HOME = Path("~/.kanboard").expanduser()
-
-
-def adopt_old_home() -> None:
-    """Moves the board's data from its folder before the rename from Kanboard into HOME, once, with the paths and hook
-    variable names recorded in it; worktrees the board created there are reconnected to their repositories. A HOME
-    that exists without a Beads workspace (e.g. a config.json an installer wrote there first) takes the old entries
-    over its own."""
-    if "ORCHESTRATOR_HOME" in os.environ or (HOME / "beads").exists() or not OLD_HOME.is_dir():
-        return
-    if HOME.exists():
-        for entry in OLD_HOME.iterdir():
-            target = HOME / entry.name
-            if target.is_dir() and not target.is_symlink():
-                shutil.rmtree(target)
-            elif target.exists() or target.is_symlink():
-                target.unlink()
-            os.rename(entry, target)
-        OLD_HOME.rmdir()
-    else:
-        os.rename(OLD_HOME, HOME)
-    old, new = str(OLD_HOME) + os.sep, str(HOME) + os.sep
-    for path in [CONFIG_FILE, BOARD_FILE, *TASKS_DIR.glob("*/execution.json")]:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        moved = text.replace(old, new).replace("KANBOARD_", "ORCHESTRATOR_")
-        if moved != text:
-            write_atomic(path, moved)
-    for record in TASKS_DIR.glob("*/execution.json"):
-        try:
-            worktree = json.loads(record.read_text(encoding="utf-8")).get("worktree")
-        except (OSError, ValueError, AttributeError):
-            continue
-        if isinstance(worktree, str) and worktree.startswith(new) and Path(worktree).is_dir():
-            run(["git", "-C", worktree, "worktree", "repair"], timeout=30)
-    print(f"orchestrator: moved {OLD_HOME} to {HOME}", file=sys.stderr, flush=True)
-
-
 def prepare() -> None:
-    """`server.py --prepare`: readies the Beads workspace and imports legacy JSON tasks once."""
-    adopt_old_home()
+    """`server.py --prepare`: readies the board's folder, importing the previous board's started cards once."""
     HOME.mkdir(parents=True, exist_ok=True)
-    try:
-        beads.prepare(HOME, child_env(), default_branch, lambda line: print(line, file=sys.stderr, flush=True))
-    except beads.BeadsError as e:
-        print(f"orchestrator: {e}", file=sys.stderr, flush=True)
-        sys.exit(1)
+    if import_orchestrator.wanted(HOME):
+        import_orchestrator.run(HOME)
 
 
 def main() -> None:
@@ -4202,17 +3542,12 @@ def main() -> None:
     # them (git included) once that worktree is removed on merge.
     HOME.mkdir(parents=True, exist_ok=True)
     os.chdir(HOME)
-    try:
-        store.load()
-    except (beads.BeadsError, ApiError) as e:
-        print(f"orchestrator: {e.message if isinstance(e, ApiError) else e}", file=sys.stderr, flush=True)
-        sys.exit(1)
+    store.load()
     threading.Thread(target=hub.run_snapshots, daemon=True).start()
     threading.Thread(target=poller.run, daemon=True).start()
     global SERVER
     SERVER = Server((HOST, PORT), Handler)
-    print(f"orchestrator: http://{HOST}:{PORT} (data in {HOME}; new tasks branch from "
-          f"{store.context['base']} in {store.context['checkout']})", file=sys.stderr, flush=True)
+    print(f"mission-control: http://{HOST}:{PORT} (data in {HOME})", file=sys.stderr, flush=True)
     signal.signal(signal.SIGTERM, lambda *_: drain())
     try:
         SERVER.serve_forever()

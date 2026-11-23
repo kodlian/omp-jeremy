@@ -15,16 +15,33 @@ function pipelineTransform() {
   pipeline.world.style.transform = `translate(${pipeline.x}px,${pipeline.y}px) scale(${pipeline.zoom})`;
 }
 const PIPELINE_COL = 400, PIPELINE_ROW = 210;
+const PIPELINE_SPAWN_MIN = 24;
+const pipelineSignature = t => [...t.dependsOn].sort().join(",");
+// A line let go on empty canvas (not over a task or the toolbar) creates a task there.
+function pipelineEmptyAt(e) {
+  const hit = document.elementFromPoint(e.clientX, e.clientY);
+  return !!hit && pipeline.root.contains(hit) && !hit.closest(".pipeline-node,.pipeline-controls");
+}
+// The outline of the task a released line would create, with its input port under the pointer.
+function pipelineGhost(from, point) {
+  if (!point) { pipeline.ghost?.remove(); pipeline.ghost = null; return; }
+  if (!pipeline.ghost) { pipeline.ghost = h("div", { class: "pipeline-ghost" }, "New task after " + taskNumber(from)); pipeline.world.append(pipeline.ghost); }
+  pipeline.ghost.style.transform = `translate(${point.x - 15}px,${point.y - 65}px)`;
+}
+// Places a task created on the canvas with its top-left corner at `at`.
+function pipelineDrop(t, at) {
+  pipeline.positions.set(t.id, at);
+  pipeline.deps.set(t.id, pipelineSignature(t));
+}
 // An empty canvas gets the full layout; after that only new tasks and tasks whose prerequisites changed are placed,
 // beside the tasks they connect to, so nodes you arranged stay where they are.
 function pipelineLayout(tasks) {
-  const signature = t => [...t.dependsOn].sort().join(",");
   if (!tasks.some(t => pipeline.positions.has(t.id))) {
     const positions = layoutTaskGraph(tasks);
-    for (const t of tasks) { pipeline.positions.set(t.id, positions.get(t.id)); pipeline.deps.set(t.id, signature(t)); }
+    for (const t of tasks) { pipeline.positions.set(t.id, positions.get(t.id)); pipeline.deps.set(t.id, pipelineSignature(t)); }
     return;
   }
-  const pending = tasks.filter(t => !pipeline.positions.has(t.id) || pipeline.deps.get(t.id) !== signature(t));
+  const pending = tasks.filter(t => !pipeline.positions.has(t.id) || pipeline.deps.get(t.id) !== pipelineSignature(t));
   for (const t of pending) pipeline.positions.delete(t.id);
   // Prerequisites first, so a dependent lands beside a prerequisite placed in the same pass.
   const ids = new Set(pending.map(t => t.id));
@@ -47,7 +64,7 @@ function pipelineLayout(tasks) {
     while ([...pipeline.positions.values()].some(other =>
       Math.abs(other.x - p.x) < 340 && Math.abs(other.y - p.y) < PIPELINE_ROW)) p.y += PIPELINE_ROW;
     pipeline.positions.set(t.id, p);
-    pipeline.deps.set(t.id, signature(t));
+    pipeline.deps.set(t.id, pipelineSignature(t));
   }
 }
 function pipelineCurve(a, b) {
@@ -60,11 +77,11 @@ function pipelineHalfDash(path) {
   return `${length / 2} 7` + " 8 7".repeat(Math.ceil(length / 2 / 15));
 }
 function pipelineEdgeState(source) {
-  return { complete: source.column === "done", started: source.column === "doing" || source.column === "review", active: source.column === "doing" && !!source.agent && !!AGENT_LABEL[source.agent.state] };
+  return { complete: source.column === "done", started: ["doing", "review", "pr"].includes(source.column), active: source.column === "doing" && !!source.agent && !!AGENT_LABEL[source.agent.state] };
 }
 function pipelineNodeParts(t) {
   const info = statusOf(t);
-  return [h("div", { class: "pipeline-node-head" }, taskNumber(t.id), h("span", {}, colTitle(t.column))), h("strong", { class: "pipeline-title" }, t.title), info ? stateEl(info) : h("span", {}, colTitle(t.column))];
+  return [h("div", { class: "pipeline-node-head" }, taskNumber(t.id), tagRow(t), h("span", {}, colTitle(t.column))), h("strong", { class: "pipeline-title" }, t.title), info ? stateEl(info) : h("span", {}, colTitle(t.column))];
 }
 function pipelineDrawEdges() {
   for (const edge of pipeline.edges.values()) {
@@ -102,7 +119,7 @@ async function pipelineChange(from, to, previous = null) {
   const deps = task.dependsOn.filter(id => !previous || id !== previous.from);
   if (from) deps.push(from);
   const removedBlocker = previous && task.blockedBy.includes(previous.from) && !deps.some(id => findTask(id)?.column !== "done");
-  const warning = removedBlocker && task.column === "todo" ? "This may start or resume the queued task immediately. " : "";
+  const warning = removedBlocker && task.column === "waiting" ? "This may resume the waiting task immediately. " : "";
   const running = task.column === "doing" ? "Changing dependencies does not pause an already running task. " : "";
   if ((warning || running) && !confirm(warning + running + "Change this dependency?")) return;
   try {
@@ -133,16 +150,19 @@ function pipelineInit() {
   } }, "Focus task"));
   const done = h("input", { type: "checkbox" });
   done.onchange = () => renderPipeline(); pipeline.hideDone = done;
-  controls.append(h("label", {}, done, " Hide done"), h("span", { class: "pipeline-help" }, "Drag background to pan · scroll to zoom · drag handles to connect"));
+  controls.append(h("label", {}, done, " Hide done"), h("span", { class: "pipeline-help" }, "Drag background to pan · scroll to zoom · double-click empty space to add a task · drag a handle onto a task to connect, onto empty space to add one"));
   const remove = h("button", { class: "btn sm danger", hidden: true, onclick: () => { const edge = pipeline.edges.get(pipeline.selected); if (edge) pipelineChange(null, edge.to, edge); } }, "Remove connection");
   pipeline.remove = remove; controls.append(remove); root.append(controls);
-  pipeline.empty = h("div", { class: "pipeline-empty" }, "No matching tasks. Create a task or change the filter.");
+  pipeline.empty = h("div", { class: "pipeline-empty" }, "No matching tasks. Double-click to create one, or change the filter.");
   root.append(pipeline.empty);
   root.addEventListener("dblclick", e => {
     const hit = document.elementFromPoint(e.clientX, e.clientY);
     const node = hit?.closest(".pipeline-node");
     if (node && !hit.closest("button,[data-port]")) openPanel(node.dataset.id, true);
-    else if (!hit?.closest(".pipeline-node,.pipeline-controls,.pipeline-edge")) openTaskPrompt();
+    else if (pipelineEmptyAt(e) && !hit.closest(".pipeline-edge")) {
+      const point = pipelinePoint(e);
+      openComposer({ onCreated: t => pipelineDrop(t, { x: point.x - 130, y: point.y - 65 }) });
+    }
   });
   root.addEventListener("wheel", e => {
     e.preventDefault(); const p = pipelinePoint(e);
@@ -180,11 +200,12 @@ function pipelineInit() {
     if (g.kind === "connect") {
       const pos = pipeline.positions.get(g.to || g.from), input = g.port === "in";
       pipeline.preview.setAttribute("d", pipelineCurve(input ? p : { x: pos.x + 245, y: pos.y + 65 }, input ? { x: pos.x + 15, y: pos.y + 65 } : p));
+      if (g.port === "out" && !g.previous) pipelineGhost(g.from, Math.hypot(e.clientX - g.cx, e.clientY - g.cy) > PIPELINE_SPAWN_MIN && pipelineEmptyAt(e) ? p : null);
     }
   });
   const finish = (e, cancel = false) => {
     const g = pipeline.gesture; if (!g) return;
-    pipeline.gesture = null; pipeline.preview?.remove();
+    pipeline.gesture = null; pipeline.preview?.remove(); pipelineGhost(null, null);
     if (root.hasPointerCapture(e.pointerId)) root.releasePointerCapture(e.pointerId);
     if (!cancel && g.kind === "node" && !g.moved) openPanel(g.id);
     if (!cancel && g.kind === "pan" && !g.moved) { pipeline.selected = null; closePanel(); }
@@ -192,9 +213,9 @@ function pipelineInit() {
       const hit = document.elementFromPoint(e.clientX, e.clientY);
       const target = hit?.closest(".pipeline-node");
       if (target) pipelineChange(g.port === "in" ? target.dataset.id : g.from, g.port === "in" ? (g.to || g.from) : target.dataset.id, g.previous);
-      else if (!g.previous && hit && root.contains(hit) && !hit.closest(".pipeline-controls,.pipeline-edge") &&
-        Math.hypot(e.clientX - g.cx, e.clientY - g.cy) > 5) {
-        openTaskPrompt({ task: findTask(g.from), relation: g.port === "in" ? "before" : "after" });
+      else if (g.port === "out" && !g.previous && Math.hypot(e.clientX - g.cx, e.clientY - g.cy) > PIPELINE_SPAWN_MIN && pipelineEmptyAt(e)) {
+        const point = pipelinePoint(e);
+        openComposer({ after: g.from, onCreated: t => pipelineDrop(t, { x: point.x - 15, y: point.y - 65 }) });
       }
     }
     renderPipeline();
@@ -208,9 +229,9 @@ function renderPipeline() {
   const host = $("#board");
   if (pipeline.root.parentNode !== host) host.replaceChildren(pipeline.root);
   if (pipeline.gesture) return;
-  const scope = flowSel;
+  const scope = projectSel;
   if (pipeline.scope !== scope) { pipeline.positions.clear(); pipeline.scope = scope; pipeline.fit = true; }
-  const all = board.tasks.filter(inFlow);
+  const all = board.tasks.filter(inProject);
   const tasks = all.filter(t => matches(t) && (!pipeline.hideDone.checked || t.column !== "done"));
   pipelineLayout(tasks);
   const ids = new Set(tasks.map(t => t.id));
@@ -223,7 +244,7 @@ function renderPipeline() {
       node = h("article", { class: "pipeline-node", "data-id": t.id, tabindex: "0", onkeydown: e => { if (e.key === "Enter") openPanel(t.id); } });
       pipeline.nodes.set(t.id, node); pipeline.world.append(node);
     }
-    const content = JSON.stringify([t.title, t.column, t.agent, t.spawn, t.blockedBy, t.waitingForSlot, t.paused, t.plan, t.merged, t.base]);
+    const content = JSON.stringify([t.title, t.column, t.agent, t.spawn, t.blockedBy, t.waitingForSlot, t.paused, t.held, t.pr, t.land, t.tags, t.merged, t.base]);
     if (node.dataset.content !== content) {
       node.dataset.content = content;
       const line = cardLine(t);
@@ -236,7 +257,7 @@ function renderPipeline() {
     node.querySelector(".pipeline-port.out").classList.toggle("connected", prerequisites.has(t.id));
     node.classList.toggle("busy", t.column === "doing" && !!t.agent && !!AGENT_LABEL[t.agent.state]);
     node.classList.toggle("done", t.column === "done");
-    node.classList.toggle("blocked", t.blockedBy.length > 0 && t.column === "todo");
+    node.classList.toggle("blocked", t.blockedBy.length > 0 && t.column === "waiting");
     node.classList.toggle("needs", needsAttention(t));
     node.classList.toggle("sel", t.id === openId);
     node.classList.toggle("dep-highlight", t.id === highlightedDependency);

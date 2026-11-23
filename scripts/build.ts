@@ -3,10 +3,10 @@ import { dirname, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
 const designSystem = resolve(root, "packages/web-design-system/design-system.css");
-for (const target of ["plugins/orchestrator/design-system.css", "plugins/git-diff-review/web/design-system.css", "plugins/plan-review/web/design-system.css"]) {
+for (const target of ["plugins/mission-control/design-system.css", "plugins/git-diff-review/web/design-system.css", "plugins/plan-review/web/design-system.css"]) {
   await copyFile(designSystem, resolve(root, target));
 }
-for (const [name, entry] of [["orchestrator", "omp/orchestrator.ts"], ["git-diff-review", "src/extension.ts"], ["control", "src/extension.ts"], ["plan-review", "src/extension.ts"]]) {
+for (const [name, entry] of [["mission-control", "omp/mission-control.ts"], ["git-diff-review", "src/extension.ts"], ["control", "src/extension.ts"], ["plan-review", "src/extension.ts"]]) {
   const dir = resolve(root, "plugins", name);
   const result = await Bun.build({
     entrypoints: [resolve(dir, entry)],
@@ -22,16 +22,16 @@ for (const [name, entry] of [["orchestrator", "omp/orchestrator.ts"], ["git-diff
   }
 }
 const graph = await Bun.build({
-  entrypoints: [resolve(root, "plugins/orchestrator/graph-layout.ts")],
-  outdir: resolve(root, "plugins/orchestrator"),
+  entrypoints: [resolve(root, "plugins/mission-control/graph-layout.ts")],
+  outdir: resolve(root, "plugins/mission-control"),
   target: "browser",
   format: "iife",
   minify: true,
 });
 if (!graph.success) throw new AggregateError(graph.logs, "Could not build task graph layout");
-const dagre = Bun.resolveSync("@dagrejs/dagre", resolve(root, "plugins/orchestrator"));
+const dagre = Bun.resolveSync("@dagrejs/dagre", resolve(root, "plugins/mission-control"));
 const graphlib = Bun.resolveSync("@dagrejs/graphlib", dirname(dagre));
-const licenses = resolve(root, "plugins/orchestrator/licenses");
+const licenses = resolve(root, "plugins/mission-control/licenses");
 await mkdir(licenses, { recursive: true });
 for (const [name, entry] of [["dagre", dagre], ["graphlib", graphlib]]) {
   await copyFile(resolve(dirname(entry), "../LICENSE"), resolve(licenses, `${name}.LICENSE`));

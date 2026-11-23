@@ -9,7 +9,7 @@ omp plugin marketplace add kodlian/omp-jeremy
 omp plugin install control@omp-jeremy
 ```
 
-Restart omp. Controls need a git repository. They check everything since the branch left its default branch (`origin`'s default, else `main` or `master`), committed or not; on the default branch itself they check what isn't pushed yet. A task session started by the Orchestrator checks the change since its base branch.
+Restart omp. Controls need a git repository. They check everything since the branch left its default branch (`origin`'s default, else `main` or `master`), committed or not; on the default branch itself they check what isn't pushed yet. A task session started by Mission Control checks the change since its base branch.
 
 ## Use
 
@@ -67,9 +67,9 @@ Header keys: `name`, `kind` (`check` or `review`), `description`, `command` and 
 
 A set is a JSON file: `{ "name": "Docs", "description": "Docs and quality", "controls": ["docs-reviewer", "quality-reviewer"], "approval": "ask" }`. `controls` lists 1 to 12 control ids; `approval` is `apply` (the default) or `ask`. A set that names a missing control is skipped, and `/control` lists the files that don't load.
 
-## With the Orchestrator
+## With Mission Control
 
-When both plugins are installed, the board's composer and card panel get a **Controls** picker listing the sets (fixed once the card starts). The card's task session starts with that set in auto mode, checking the change since the card's base branch. When the last run passed and the set's approval is `apply`, a task that merges locally auto-merges once the agent stops.
+When both plugins are installed, the board's composer and task panel get a **Controls** picker listing the sets (fixed once the task starts). The task's session starts with that set in auto mode, checking the change since the task's base branch. When the last run passed and the set's approval is `apply`, a task that merges into its parent branch auto-merges once the agent stops.
 
 ## Local development
 
