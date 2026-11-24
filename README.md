@@ -14,9 +14,9 @@ Open a browser-based diff viewer from omp with `/review`. Browse changed files, 
 
 Pick checks and reviewers with `/control` and run them on the session's change, once or after every change: the agent runs the shell checks, spawns read-only reviewer subagents, fixes what they find (or asks you first), then runs a second pass to confirm. Controls and the sets that group them live in `.omp/control` (project) and `~/.omp/control` (user). See [plugins/control](plugins/control/README.md).
 
-## Plan Review
+## Plan Review Better Comments
 
-When omp shows a plan for review, select any of its lines with a click, a drag, or `a` and the arrow keys, then press `c` or Enter to comment. The comment becomes one of omp's own plan comments: omp shows it under the line and sends it when you pick Refine. See [plugins/plan-review](plugins/plan-review/README.md).
+When omp shows a plan for review, select any of its lines with a click, a drag, or `a` and the arrow keys, then press `c` or Enter to comment. The comment becomes one of omp's own plan comments: omp shows it under the line and sends it when you pick Refine. See [plugins/plan-review-better-comments](plugins/plan-review-better-comments/README.md).
 
 ## Install from the marketplace
 
@@ -27,7 +27,7 @@ omp plugin marketplace add kodlian/omp-jeremy
 omp plugin install mission-control@omp-jeremy
 omp plugin install git-diff-review@omp-jeremy
 omp plugin install control@omp-jeremy
-omp plugin install plan-review@omp-jeremy
+omp plugin install plan-review-better-comments@omp-jeremy
 ```
 
 Install each plugin independently. Restart omp after installing extensions.
@@ -35,6 +35,8 @@ Install each plugin independently. Restart omp after installing extensions.
 omp only picks up a new release when its version in `.omp-plugin/marketplace.json` goes up. To have omp install new releases when it starts, run `omp config set marketplace.autoUpdate auto`; the default, `notify`, only writes to omp's debug log. To update by hand, run `omp plugin marketplace update omp-jeremy`, then `omp plugin upgrade`, and restart omp.
 
 Mission Control needs Python 3 and Git; `gh` adds pull requests, and cmux lets it bring a terminal forward. It replaces the Orchestrator plugin: uninstall that one (`omp plugin uninstall orchestrator@omp-jeremy`) before installing it.
+
+Plan Review Better Comments replaces the Plan Review plugin: uninstall that one (`omp plugin uninstall plan-review@omp-jeremy`) before installing it.
 
 ## Local development
 

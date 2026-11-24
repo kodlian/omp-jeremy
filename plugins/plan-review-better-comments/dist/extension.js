@@ -1,14 +1,15 @@
 // @bun
-// plugins/plan-review/src/extension.ts
+// plugins/plan-review-better-comments/src/extension.ts
 import { isNativeRendering } from "@oh-my-pi/pi-tui";
 
 // packages/integrations/src/text.ts
 var errorText = (e) => e instanceof Error ? e.message : String(e);
 
-// plugins/plan-review/src/layer.ts
+// plugins/plan-review-better-comments/src/layer.ts
+import { formatKeyHint, formatKeyHints } from "@oh-my-pi/pi-coding-agent";
 import { getKeybindings, Input, matchesKey, sliceByColumn, theme, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 
-// plugins/plan-review/src/anchor.ts
+// plugins/plan-review-better-comments/src/anchor.ts
 var MIN_PROBE = 8;
 var WORD = /[\p{L}\p{N}]/u;
 var NOTE_BAR = "\u258E";
@@ -139,11 +140,22 @@ function titleLine(text) {
   return shallowest.length === 1 && shallowest[0] === first ? { start: first.start, length: first.length } : null;
 }
 
-// plugins/plan-review/src/layer.ts
+// plugins/plan-review-better-comments/src/layer.ts
 var ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[PX^_][^\x1b]*\x1b\\|\x1b[@-Z\\-_]/g;
 var MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
-var SELECTION_HINT = "\u2191/\u2193 move \xB7 shift+\u2191/\u2193 extend \xB7 alt+\u2191/\u2193 scroll \xB7 a, c or enter comment \xB7 esc clear";
-var UNPLACED = "This line isn't text from the plan, so it can't take a comment \xB7 esc clear the selection";
+function selectionHint() {
+  return [
+    `${formatKeyHints(["up", "down"])} move`,
+    `${formatKeyHints(["shift+up", "shift+down"])} extend`,
+    `${formatKeyHints(["alt+up", "alt+down"])} scroll`,
+    `${formatKeyHints(["super+up", "super+down"])} first/last line`,
+    `${formatKeyHints(["a", "c", "enter"])} comment`,
+    `${formatKeyHint("escape")} clear`
+  ].join(" \xB7 ");
+}
+function unplacedNotice() {
+  return `This line isn't text from the plan, so it can't take a comment \xB7 ${formatKeyHint("escape")} clear`;
+}
 var OMP_EDITING = /^(?:Annotate|Edit annotation)\b/;
 var MAX_SCROLLS = 500;
 function isReview(component) {
@@ -210,9 +222,9 @@ class ReviewLayer {
       const more = quote.length > 1 ? ` and ${quote.length - 1} more line${quote.length > 2 ? "s" : ""}` : "";
       lines[count - 3] = boxRule(theme.boxRound.teeRight, theme.boxRound.teeLeft, theme.fg("accent", `Comment on \u201C${quote[0]}\u201D${more}`), width);
       lines[count - 2] = boxRow(box.input.render(width - 4)[0] ?? "", width);
-      lines[count - 1] = boxRule(theme.boxRound.bottomLeft, theme.boxRound.bottomRight, theme.fg("dim", "enter save \xB7 esc cancel"), width);
+      lines[count - 1] = boxRule(theme.boxRound.bottomLeft, theme.boxRound.bottomRight, theme.fg("dim", `${formatKeyHint("enter")} save \xB7 ${formatKeyHint("escape")} cancel`), width);
     } else if (this.#selection) {
-      lines[count - 2] = boxRow(this.#notice ? theme.fg("warning", this.#notice) : theme.fg("dim", SELECTION_HINT), width);
+      lines[count - 2] = boxRow(this.#notice ? theme.fg("warning", this.#notice) : theme.fg("dim", selectionHint()), width);
     }
     return lines;
   }
@@ -236,8 +248,8 @@ class ReviewLayer {
     const reports = data.startsWith("\x1B[<") ? [...data.matchAll(MOUSE)] : [];
     if (reports.length > 0) {
       for (const [report, button, col, row, kind] of reports) {
-        if (!this.#mouse(Number(button), Number(col) - 1, Number(row) - 1, kind === "m"))
-          this.review.handleInput(report);
+        this.#mouse(Number(button), Number(col) - 1, Number(row) - 1, kind === "m");
+        this.review.handleInput(report);
       }
       this.tui.requestRender();
       return;
@@ -252,9 +264,17 @@ class ReviewLayer {
       this.tui.requestRender();
       return;
     }
+    const end = matchesKey(data, "super+up") ? "top" : matchesKey(data, "super+down") ? "bottom" : null;
+    if (end && this.#frame) {
+      this.#scrollToEnd(end);
+      if (this.#selection)
+        this.#selectEdge(end);
+      this.tui.requestRender();
+      return;
+    }
     const selection = this.#selection;
     if (!selection) {
-      if (matchesKey(data, "a") && this.#selectTop())
+      if (matchesKey(data, "a") && this.#selectEdge("top"))
         this.tui.requestRender();
       else
         this.review.handleInput(data);
@@ -298,36 +318,39 @@ class ReviewLayer {
   #mouse(button, col, row, release) {
     const frame = this.#frame;
     if (!frame || frame.editing)
-      return false;
+      return;
     const left = (button & 3) === 0 && (button & 64) === 0;
     const drag = left && (button & 32) !== 0;
     if (left && !drag && !release && row >= frame.first && row <= frame.last && col >= frame.start && col < frame.end) {
       this.#notice = null;
       this.#anchor = isPlanText(this.#rows[row] ?? "") ? row : null;
       this.#selection = this.#anchor === null ? null : this.#select(row, row);
-      return true;
-    }
-    if (drag && this.#anchor !== null) {
+    } else if (drag && this.#anchor !== null) {
       this.#selection = this.#select(this.#anchor, Math.max(frame.first, Math.min(frame.last, row)));
-      return true;
-    }
-    if (release && this.#anchor !== null) {
+    } else if (release) {
       this.#anchor = null;
-      return true;
     }
-    return false;
   }
   #select(from, to) {
     const [first, last] = from <= to ? [from, to] : [to, from];
     return { lines: this.#rows.slice(first, last + 1), row: first, target: this.#source.target(this.#rows, first, last), moving: from <= to ? "last" : "first" };
   }
-  #selectTop() {
+  #scrollToEnd(end) {
+    for (let scrolls = 0;scrolls < MAX_SCROLLS; scrolls++) {
+      if (!this.#scroll(end === "top" ? -1 : 1))
+        return;
+    }
+  }
+  #selectEdge(end) {
     const frame = this.#frame;
     if (!frame)
       return false;
-    for (let row = frame.first;row <= frame.last; row++) {
+    for (let i = 0;i <= frame.last - frame.first; i++) {
+      const row = end === "top" ? frame.first + i : frame.last - i;
       if (isPlanText(this.#rows[row] ?? "")) {
+        this.#notice = null;
         this.#selection = this.#select(row, row);
+        this.review.handleInput(`\x1B[<0;${frame.start + 1};${row + 1}M`);
         return true;
       }
     }
@@ -460,7 +483,7 @@ class ReviewLayer {
       input.focused = true;
       this.#box = { input, target: selection.target };
     } else {
-      this.#notice = UNPLACED;
+      this.#notice = unplacedNotice();
     }
     this.tui.requestRender();
   }
@@ -489,7 +512,7 @@ function boxRule(left, right, label, width) {
   return `${theme.fg("border", left + theme.boxRound.horizontal)}${text}${theme.fg("border", theme.boxRound.horizontal.repeat(fill) + right)}`;
 }
 
-// plugins/plan-review/src/extension.ts
+// plugins/plan-review-better-comments/src/extension.ts
 var FULLSCREEN = { anchor: "bottom-center", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true };
 function planReview(pi) {
   let open = null;

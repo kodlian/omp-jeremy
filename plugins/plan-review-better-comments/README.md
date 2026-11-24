@@ -1,4 +1,4 @@
-# omp-plan-review
+# omp-plan-review-better-comments
 
 Comment on any line of omp's own plan review. When omp shows a plan for review, select lines with a click or a drag, or press `a` and move with the arrow keys; then press `a`, `c` or Enter and type a note. The note becomes one of omp's own plan comments: omp shows it under the line, marks its section in the sidebar, and sends it when you pick **Refine plan**.
 
@@ -8,19 +8,19 @@ Requires [Bun](https://bun.sh) and omp. Once the repository is pushed, install f
 
 ```sh
 omp plugin marketplace add kodlian/omp-jeremy
-omp plugin install plan-review@omp-jeremy
+omp plugin install plan-review-better-comments@omp-jeremy
 ```
 
-Restart omp. Nothing else to set up: it works in each plan review omp shows.
+Restart omp. Nothing else to set up: it works in each plan review omp shows. It replaces the `plan-review` plugin: uninstall that one first (`omp plugin uninstall plan-review@omp-jeremy`).
 
 ### Local development
 
-The plugin lives in `plugins/plan-review` and shares `packages/integrations` through a Bun workspace:
+The plugin lives in `plugins/plan-review-better-comments` and shares `packages/integrations` through a Bun workspace:
 
 ```sh
 bun install --ignore-scripts
 bun run build
-omp plugin link plugins/plan-review
+omp plugin link plugins/plan-review-better-comments
 ```
 
 `bun run build` bundles `dist/extension.js`; commit it, since marketplace installs don't build.
@@ -37,11 +37,12 @@ The review looks and works as omp draws it: its keys, its sidebar and its answer
 | `↑` / `↓` | move the selection to the previous / next line; the review scrolls when that line is off screen |
 | `Shift+↑` / `Shift+↓` | grow the selection by a line, or shrink it back |
 | `Alt+↑` / `Alt+↓` | scroll the plan; the selection stays on its line |
+| `Cmd+↑` / `Cmd+↓` | move the selection to the plan's first / last line; with nothing selected, scroll to the top / bottom |
 | `a`, `c` or `Enter` | opens a comment box on the selection |
 | `Enter` in the box | saves the comment |
 | `Esc` | closes the box, then clears the selection, then (with nothing selected) closes the review as omp does |
 
-While a selection is shown, any other key goes to omp's review and clears the selection; the mouse wheel and `PgUp` / `PgDn` scroll and keep it, and `↑` / `↓` first scroll back to a selection that went off screen. With nothing selected, keys work as in omp's review except `a`: omp's own `a` comments on the top line at once, while here it selects that line so you can move it first.
+While a selection is shown, any other key goes to omp's review and clears the selection; the mouse wheel and `PgUp` / `PgDn` scroll and keep it, and `↑` / `↓` first scroll back to a selection that went off screen. With nothing selected, keys work as in omp's review except `a`: omp's own `a` comments on the top line at once, while here it selects that line so you can move it first. A click on the plan, like `a`, also moves omp's keyboard focus into the plan, as a click does in omp's own review.
 
 omp keeps these comments with its own: Refine sends them all, each quoting its lines, and after Tab moves into the plan, `u` undoes the last one. omp shows a comment under the first line of the selection.
 

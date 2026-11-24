@@ -1,15 +1,30 @@
-// A layer over omp's own plan review: it draws the review exactly as omp renders it and passes keys and clicks
-// through, except that a click, a drag or `a` selects plan lines, the arrows move or extend the selection, Alt+↑/↓
-// scroll the plan, and a, c or Enter comments on the selection. The comment goes into omp's review through the event
-// omp takes Tern's native comments with, so omp shows it under the line and sends it with Refine.
+// A layer over omp's own plan review: it draws the review exactly as omp renders it and passes it every click, and
+// every key but those that select plan lines, move or extend the selection, scroll the plan and comment on it. The
+// comment goes into omp's review through the event omp takes Tern's native comments with, so omp shows it under the
+// line and sends it with Refine.
+import { formatKeyHint, formatKeyHints } from "@oh-my-pi/pi-coding-agent";
 import type { Component, TUI } from "@oh-my-pi/pi-tui";
 import { getKeybindings, Input, matchesKey, sliceByColumn, theme, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { type CommentTarget, isPlanText, PlanSource, quoteOf } from "./anchor";
 
 const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[PX^_][^\x1b]*\x1b\\|\x1b[@-Z\\-_]/g;
 const MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
-const SELECTION_HINT = "↑/↓ move · shift+↑/↓ extend · alt+↑/↓ scroll · a, c or enter comment · esc clear";
-const UNPLACED = "This line isn't text from the plan, so it can't take a comment · esc clear the selection";
+/** The layer's key hints, in omp's own key symbols as its review's help line draws them. */
+function selectionHint(): string {
+	return [
+		`${formatKeyHints(["up", "down"])} move`,
+		`${formatKeyHints(["shift+up", "shift+down"])} extend`,
+		`${formatKeyHints(["alt+up", "alt+down"])} scroll`,
+		`${formatKeyHints(["super+up", "super+down"])} first/last line`,
+		`${formatKeyHints(["a", "c", "enter"])} comment`,
+		`${formatKeyHint("escape")} clear`,
+	].join(" · ");
+}
+
+function unplacedNotice(): string {
+	return `This line isn't text from the plan, so it can't take a comment · ${formatKeyHint("escape")} clear`;
+}
+
 /** First footer line of omp's own note editor and note chooser, while they have the keyboard. */
 const OMP_EDITING = /^(?:Annotate|Edit annotation)\b/;
 /** Wheel steps the layer scrolls omp's review for one key at most: more than any plan needs, a stop should it never settle. */
@@ -122,9 +137,9 @@ export class ReviewLayer implements Component {
 			const more = quote.length > 1 ? ` and ${quote.length - 1} more line${quote.length > 2 ? "s" : ""}` : "";
 			lines[count - 3] = boxRule(theme.boxRound.teeRight, theme.boxRound.teeLeft, theme.fg("accent", `Comment on “${quote[0]}”${more}`), width);
 			lines[count - 2] = boxRow(box.input.render(width - 4)[0] ?? "", width);
-			lines[count - 1] = boxRule(theme.boxRound.bottomLeft, theme.boxRound.bottomRight, theme.fg("dim", "enter save · esc cancel"), width);
+			lines[count - 1] = boxRule(theme.boxRound.bottomLeft, theme.boxRound.bottomRight, theme.fg("dim", `${formatKeyHint("enter")} save · ${formatKeyHint("escape")} cancel`), width);
 		} else if (this.#selection) {
-			lines[count - 2] = boxRow(this.#notice ? theme.fg("warning", this.#notice) : theme.fg("dim", SELECTION_HINT), width);
+			lines[count - 2] = boxRow(this.#notice ? theme.fg("warning", this.#notice) : theme.fg("dim", selectionHint()), width);
 		}
 		return lines;
 	}
@@ -144,7 +159,8 @@ export class ReviewLayer implements Component {
 		const reports = data.startsWith("\x1b[<") ? [...data.matchAll(MOUSE)] : [];
 		if (reports.length > 0) {
 			for (const [report, button, col, row, kind] of reports) {
-				if (!this.#mouse(Number(button), Number(col) - 1, Number(row) - 1, kind === "m")) this.review.handleInput(report);
+				this.#mouse(Number(button), Number(col) - 1, Number(row) - 1, kind === "m");
+				this.review.handleInput(report);
 			}
 			this.tui.requestRender();
 			return;
@@ -160,9 +176,16 @@ export class ReviewLayer implements Component {
 			this.tui.requestRender();
 			return;
 		}
+		const end = matchesKey(data, "super+up") ? "top" : matchesKey(data, "super+down") ? "bottom" : null;
+		if (end && this.#frame) {
+			this.#scrollToEnd(end);
+			if (this.#selection) this.#selectEdge(end);
+			this.tui.requestRender();
+			return;
+		}
 		const selection = this.#selection;
 		if (!selection) {
-			if (matchesKey(data, "a") && this.#selectTop()) this.tui.requestRender();
+			if (matchesKey(data, "a") && this.#selectEdge("top")) this.tui.requestRender();
 			else this.review.handleInput(data);
 			return;
 		}
@@ -206,27 +229,21 @@ export class ReviewLayer implements Component {
 			: [];
 	}
 
-	/** A press or drag on the plan's text selects it; false leaves the report to omp (sidebar, answers, wheel). */
-	#mouse(button: number, col: number, row: number, release: boolean): boolean {
+	/** A press or drag on the plan's text selects it; omp gets every report too, so that click also gives omp's plan the focus. */
+	#mouse(button: number, col: number, row: number, release: boolean): void {
 		const frame = this.#frame;
-		if (!frame || frame.editing) return false;
+		if (!frame || frame.editing) return;
 		const left = (button & 0b11) === 0 && (button & 64) === 0;
 		const drag = left && (button & 32) !== 0;
 		if (left && !drag && !release && row >= frame.first && row <= frame.last && col >= frame.start && col < frame.end) {
 			this.#notice = null;
 			this.#anchor = isPlanText(this.#rows[row] ?? "") ? row : null;
 			this.#selection = this.#anchor === null ? null : this.#select(row, row);
-			return true;
-		}
-		if (drag && this.#anchor !== null) {
+		} else if (drag && this.#anchor !== null) {
 			this.#selection = this.#select(this.#anchor, Math.max(frame.first, Math.min(frame.last, row)));
-			return true;
-		}
-		if (release && this.#anchor !== null) {
+		} else if (release) {
 			this.#anchor = null;
-			return true;
 		}
-		return false;
 	}
 
 	/** Screen rows `from` to `to` of this frame as the selection; Shift+↑/↓ then move the `to` end. */
@@ -235,13 +252,23 @@ export class ReviewLayer implements Component {
 		return { lines: this.#rows.slice(first, last + 1), row: first, target: this.#source.target(this.#rows, first, last), moving: from <= to ? "last" : "first" };
 	}
 
-	/** `a` with nothing selected: the first plan line at the top of the plan body, the one omp's own `a` would comment. */
-	#selectTop(): boolean {
+	/** Cmd+↑/↓: omp's review scrolled to the plan's top or bottom. */
+	#scrollToEnd(end: "top" | "bottom"): void {
+		for (let scrolls = 0; scrolls < MAX_SCROLLS; scrolls++) {
+			if (!this.#scroll(end === "top" ? -1 : 1)) return;
+		}
+	}
+
+	/** The plan line nearest the top or bottom of the plan on screen becomes the selection, and omp's plan gets the focus as a click there gives it. */
+	#selectEdge(end: "top" | "bottom"): boolean {
 		const frame = this.#frame;
 		if (!frame) return false;
-		for (let row = frame.first; row <= frame.last; row++) {
+		for (let i = 0; i <= frame.last - frame.first; i++) {
+			const row = end === "top" ? frame.first + i : frame.last - i;
 			if (isPlanText(this.#rows[row] ?? "")) {
+				this.#notice = null;
 				this.#selection = this.#select(row, row);
+				this.review.handleInput(`\x1b[<0;${frame.start + 1};${row + 1}M`);
 				return true;
 			}
 		}
@@ -372,7 +399,7 @@ export class ReviewLayer implements Component {
 			input.focused = true;
 			this.#box = { input, target: selection.target };
 		} else {
-			this.#notice = UNPLACED;
+			this.#notice = unplacedNotice();
 		}
 		this.tui.requestRender();
 	}

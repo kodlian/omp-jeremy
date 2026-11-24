@@ -25,7 +25,7 @@
     },
     "plugins/control": {
       "name": "omp-control",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "devDependencies": {
         "@types/bun": "latest",
         "omp-integrations": "workspace:*",
@@ -33,7 +33,7 @@
     },
     "plugins/git-diff-review": {
       "name": "omp-git-diff-review",
-      "version": "1.3.2",
+      "version": "1.3.3",
       "devDependencies": {
         "@types/bun": "latest",
         "lucide": "^1.55.0",
@@ -44,13 +44,13 @@
     },
     "plugins/mission-control": {
       "name": "omp-mission-control",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "devDependencies": {
         "omp-integrations": "workspace:*",
       },
     },
-    "plugins/plan-review": {
-      "name": "omp-plan-review",
+    "plugins/plan-review-better-comments": {
+      "name": "omp-plan-review-better-comments",
       "version": "0.4.0",
       "devDependencies": {
         "@types/bun": "latest",
@@ -129,7 +129,7 @@
 
     "omp-mission-control": ["omp-mission-control@workspace:plugins/mission-control"],
 
-    "omp-plan-review": ["omp-plan-review@workspace:plugins/plan-review"],
+    "omp-plan-review-better-comments": ["omp-plan-review-better-comments@workspace:plugins/plan-review-better-comments"],
 
     "omp-web-client": ["omp-web-client@workspace:packages/web-client"],
 
@@ -179,12 +179,12 @@
 
     "omp-git-diff-review/@types/bun": ["@types/bun@1.4.5", "", { "dependencies": { "bun-types": "1.4.5" } }, "sha512-DpgwNI9z0L1S0gtb45QLCWgwCUcMLnsHYMJHQvpNj7erGiCGBvpggltAIeARrtobNMKMuy0UP7i56tKKgwFs/Q=="],
 
-    "omp-plan-review/@types/bun": ["@types/bun@1.4.5", "", { "dependencies": { "bun-types": "1.4.5" } }, "sha512-DpgwNI9z0L1S0gtb45QLCWgwCUcMLnsHYMJHQvpNj7erGiCGBvpggltAIeARrtobNMKMuy0UP7i56tKKgwFs/Q=="],
+    "omp-plan-review-better-comments/@types/bun": ["@types/bun@1.4.5", "", { "dependencies": { "bun-types": "1.4.5" } }, "sha512-DpgwNI9z0L1S0gtb45QLCWgwCUcMLnsHYMJHQvpNj7erGiCGBvpggltAIeARrtobNMKMuy0UP7i56tKKgwFs/Q=="],
 
     "omp-control/@types/bun/bun-types": ["bun-types@1.4.5", "", { "dependencies": { "@types/node": "*", "undici-types": "*" } }, "sha512-ECHn+9dhL3wv0G6u0+7dQvrnaimXiRDxxerYBmhTaLyJEEuvTPWk2Fye3XIf5Y++JIIiHKfQw4Z7V5D8KuiXbg=="],
 
     "omp-git-diff-review/@types/bun/bun-types": ["bun-types@1.4.5", "", { "dependencies": { "@types/node": "*", "undici-types": "*" } }, "sha512-ECHn+9dhL3wv0G6u0+7dQvrnaimXiRDxxerYBmhTaLyJEEuvTPWk2Fye3XIf5Y++JIIiHKfQw4Z7V5D8KuiXbg=="],
 
-    "omp-plan-review/@types/bun/bun-types": ["bun-types@1.4.5", "", { "dependencies": { "@types/node": "*", "undici-types": "*" } }, "sha512-ECHn+9dhL3wv0G6u0+7dQvrnaimXiRDxxerYBmhTaLyJEEuvTPWk2Fye3XIf5Y++JIIiHKfQw4Z7V5D8KuiXbg=="],
+    "omp-plan-review-better-comments/@types/bun/bun-types": ["bun-types@1.4.5", "", { "dependencies": { "@types/node": "*", "undici-types": "*" } }, "sha512-ECHn+9dhL3wv0G6u0+7dQvrnaimXiRDxxerYBmhTaLyJEEuvTPWk2Fye3XIf5Y++JIIiHKfQw4Z7V5D8KuiXbg=="],
   }
 }
