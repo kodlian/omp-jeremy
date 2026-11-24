@@ -1,5 +1,4 @@
-import type { ControlApproval } from "omp-integrations/control";
-import type { ControlDefinition } from "./library";
+import type { ControlApproval, ControlDefinition } from "./library";
 
 export const RUN_HEAD = "Control run:";
 export const MAX_PASSES = 3;

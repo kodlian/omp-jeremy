@@ -9,10 +9,8 @@
     "./theme": "./src/theme.ts",
     "./appearance": "./src/appearance.ts",
     "./fonts": "./src/fonts.ts",
-    "./control": "./src/control.ts",
     "./server": "./src/server.ts",
     "./page": "./src/page.ts",
-    "./bus": "./src/bus.ts",
     "./plan": "./src/plan.ts",
     "./text": "./src/text.ts",
     "./python/terminals": "./python/omp_terminals.py"

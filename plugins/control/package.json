@@ -1,6 +1,6 @@
 {
   "name": "omp-control",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "Controls for omp: pick reviewers and checks that audit a change, once or after every change",

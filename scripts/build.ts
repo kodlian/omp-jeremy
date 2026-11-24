@@ -1,5 +1,5 @@
 import { copyFile, mkdir, rm } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
 const designSystem = resolve(root, "packages/web-design-system/design-system.css");
@@ -20,21 +20,6 @@ for (const [name, entry] of [["mission-control", "omp/mission-control.ts"], ["gi
     await mkdir(resolve(dir, "python"), { recursive: true });
     await copyFile(resolve(root, "packages/integrations/python/omp_terminals.py"), resolve(dir, "python/omp_terminals.py"));
   }
-}
-const graph = await Bun.build({
-  entrypoints: [resolve(root, "plugins/mission-control/graph-layout.ts")],
-  outdir: resolve(root, "plugins/mission-control"),
-  target: "browser",
-  format: "iife",
-  minify: true,
-});
-if (!graph.success) throw new AggregateError(graph.logs, "Could not build task graph layout");
-const dagre = Bun.resolveSync("@dagrejs/dagre", resolve(root, "plugins/mission-control"));
-const graphlib = Bun.resolveSync("@dagrejs/graphlib", dirname(dagre));
-const licenses = resolve(root, "plugins/mission-control/licenses");
-await mkdir(licenses, { recursive: true });
-for (const [name, entry] of [["dagre", dagre], ["graphlib", graphlib]]) {
-  await copyFile(resolve(dirname(entry), "../LICENSE"), resolve(licenses, `${name}.LICENSE`));
 }
 await rm(resolve(root, "plugins/git-diff-review/web/dist"), { recursive: true, force: true });
 const web = Bun.spawn([process.execPath, "run", "build"], { cwd: resolve(root, "plugins/git-diff-review"), stdout: "inherit", stderr: "inherit" });

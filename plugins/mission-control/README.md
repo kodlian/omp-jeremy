@@ -1,6 +1,6 @@
 # Mission Control
 
-Mission Control is a local board for omp, installed as an omp plugin. For one repository it shows every git worktree, the ones it started and the ones you made yourself, with each worktree's agent, what it waits for, its tags and its pull request. A task is a worktree with its own omp: creating one checks a branch out, starts omp in plan mode on your prompt, and you review that plan in its omp. A task can build on another one: it branches from that task's branch, waits for it after its plan is approved, and resumes on its own once it has landed. Work lands by merging into its parent branch when it was stacked on another task, or through a pull request. Every step works from any omp session as well as from the page.
+Mission Control is a local page for omp, installed as an omp plugin. For each repository you register it shows every checkout, the main checkout and every linked worktree, with every omp running in it: what each is doing, its run clock, its to-do progress, the question it asks you. It also shows each checkout's changes, newest commit and pull request. It only watches: it never starts an agent, and never opens, attaches or closes a terminal on its own.
 
 ## Install
 
@@ -9,7 +9,7 @@ omp plugin marketplace add kodlian/omp-jeremy
 omp plugin install mission-control@omp-jeremy
 ```
 
-Restart omp. Requires `omp`, `bun`, `python3`, `git` and `tmux` (`brew install tmux`); `cmux` is an optional terminal presentation, and `gh` adds pull requests: their state on the cards and **Create pull request**. The plugin starts the server the first time it needs it (output in `~/.mission-control/server.log`) and restarts it when the plugin's server code is newer than the running one. A session that used a Mission Control command or tool brings the server back when it resumes, so pages left open reconnect; task sessions never start it.
+Restart omp. Requires `omp`, `bun`, `python3` and `git`; `gh` adds pull requests, and `cmux` lets the page bring a terminal forward. `/mission` starts the server when it isn't running (output in `~/.mission-control/server.log`), restarts it when the plugin's server code is newer than the running one, registers the repository you are in and opens the page on it.
 
 ### Local development
 
@@ -20,131 +20,95 @@ bun run build
 omp plugin link plugins/mission-control
 ```
 
-`bun run test` includes lifecycle tests (`tests/lifecycle.test.ts`) that run a real server in a temporary home against a fake `omp` (`tests/fake_omp.py`), a fake `cmux` CLI (`tests/fake_cmux.py`), a stubbed `gh` and fake `createWorktree`/`removeWorktree` commands. They need tmux and are skipped without it. `tests/import.test.ts` covers the import below and needs Beads.
+`bun run test` includes `tests/worktrees.test.ts`, which runs a real server in a temporary home against a temporary repository, a fake `cmux` CLI (`tests/fake_cmux.py`), a stubbed `gh` and `omp`, and `createWorktree`/`removeWorktree` hooks like the kit's.
 
-## Import from the Orchestrator
+## Checkouts
 
-The first time the server prepares a new home (no `board.json` yet) while `~/.orchestrator/beads` exists, it imports the Orchestrator's started cards once:
+Every checkout of a registered repository is a card: the main checkout (marked **main checkout**), each linked worktree on a branch, and each worktree on a detached HEAD (**detached &lt;commit&gt;**, named by its folder). A card is named as the cmux kit's sidebar names its row: a worktree by its branch's last segment, with the other segments as a folder chip (`feature`), the main checkout by its branch. A card shows:
 
-- Uninstall the Orchestrator plugin (`omp plugin uninstall orchestrator@omp-jeremy`) and stop its board (`orchestrator stop`) first: both serve port 4747, and the import refuses while the old board answers there.
-- It reads the cards with Beads (`bd`), needed only for this. `MISSION_CONTROL_IMPORT=skip` starts empty instead.
-- Every open card whose worktree still exists comes over with its `KB-<n>` id and number, title, description (its prompt), ticket, shared context, dependencies and parent among the imported cards, repository, base, branch, Control set, agent and terminal records, and pull request. Backlog and Todo cards land in Waiting, held; In Progress stays In Progress; Review goes to Pull Request when its pull request is open, else Review. Each card's files under `tasks/<id>/` are copied.
-- Open cards without a worktree aren't imported: `not-imported.md` in the new home lists their numbers, titles and descriptions. Stored plans are dropped.
-- Projects keep their Control sets, `config.json` comes over with `ORCHESTRATOR_` renamed `MISSION_CONTROL_` (unless the new home already has one), and new cards continue the old numbering as `MC-<n>`.
-- The import only reads `~/.orchestrator`: its cards, settings and files stay as they were (Beads updates its own bookkeeping files in `beads/` when it reads). An agent the Orchestrator started keeps running in its tmux session; stop it and resume it from the page so it restarts with this plugin.
+- **Its omp:** every omp running there (one holds the lease of one of its sessions): its state (Planning, Thinking, Working, Needs you, Plan ready, Idle) with its run clock since your prompt, its to-do progress (3/7), and what it is on: the question it asks, the to-do in progress, the latest sentence it thought or wrote, the step it takes, your latest prompt. Without a running omp, **Asleep** with when its latest session was last active and that session's title, else **No omp session**. Sessions come from omp's files under `~/.omp/agent/sessions`.
+- **Its work:** lines added and removed since the branch it was made from (its `branch.<name>.nestUnder` setting, else the branch its creation record names, else the default branch), uncommitted files, and its newest commit.
+- **Its pull request:** number, state, failing or pending checks, the review decision, conflicts and unresolved review comments.
 
-## Terminals
+Columns follow from that, first match wins:
 
-Each task's omp runs in a tmux session: cmux's `local-tmux` server when the task's terminal is cmux, otherwise a board-owned `tmux -L mission-control` server (`detach: auto|tmux|cmux` in `config.json` picks one; `auto` is the default). The session outlives the server and every terminal showing it, and its screen feeds the **Agent** tab and `mission_control_screen`. Terminals only present it, according to where the omp session that created the task runs, else the latest omp session that uses the project:
-
-| Session runs in | A new task opens | The page opens in |
-|---|---|---|
-| cmux | a new background workspace in that cmux window | a browser split of the session's cmux workspace |
-| tmux, including tmux inside cmux | a new background window in that tmux session | cmux's browser when cmux surrounds tmux, else the default browser |
-| any other terminal | nothing: the card shows the attach command to run in any terminal | the default browser |
-
-Each omp session reports its own terminal when it connects, so sessions in different terminals share one server without sending work to each other's terminals. `MISSION_CONTROL_TERMINAL` (or the shared `OMP_TERMINAL`) set to `cmux`, `tmux` or `plain` forces the presentation for sessions started with it; `auto`, the default, detects it. A forced terminal that isn't available is an error, never a fallback to another one.
-
-The attach command is the card's `tmux … attach-session -t =mc-<id>`; **Ctrl-b d** detaches and omp keeps running. Closing a terminal, a cmux workspace or a tmux window only detaches it. When nothing is attached to its session, resuming the task attaches it, into the task's existing cmux workspace for a session on cmux's `local-tmux` server, else in a new terminal; no terminal is ever closed to do so. Opening a task (**Open terminal**, **Connect terminal**, **Review plan**, **Answer in terminal**), its worktree, or a checkout without a task only brings forward a terminal already there: the one showing the agent, else any in the worktree. It never opens, attaches, closes or starts anything; with no terminal there it shows the attach command or the `cd` to run. A page the task's omp opens (Plan Review, `/review`) goes to the cmux workspace named in the agent's `OMP_TERMINAL_PRESENTER`. Whether the agent runs comes from omp's session lease and the tmux pane, never from terminals: a running omp that isn't connected to the server reads as **omp disconnected**, and an agent that exited or was stopped as **stopped**. Resuming an agent that exited cleanly uses `omp --resume`; one that was killed uses `omp --restore`.
-
-## Columns
-
-| Column | What happens |
+| Column | A checkout is here when |
 |---|---|
-| Planning | A new task: its worktree is created and its omp starts in plan mode on the prompt. Review the plan in that omp (Plan Review opens it in the browser); **Review plan** on the card opens its terminal. Approving the plan moves the card In Progress, or to Waiting while a task it depends on hasn't landed. A planning task that commits or edits files while nothing it depends on is open moves In Progress. |
-| Waiting | Tasks that wait for what they depend on, or because you paused them. A planned task resumes on its own once everything it depends on is Done. A paused one (**held**) waits until you move it In Progress. Dragging a card here pauses its agent. |
-| In Progress | Agents implementing. Dragging a card here resumes its agent (a card that still waits asks before resuming it anyway), and a task whose start failed starts again. |
-| Review | Work committed in the worktree, its agent idle on its own session, nothing open as a pull request. A task stacked on another one offers **Merge into &lt;base&gt;**; every task offers **Create pull request**. |
-| Pull Request | The branch has an open or draft pull request, shown with its number and marks for failing or pending checks, the review decision and conflicts. A merged pull request moves the card to Done; a closed one sends it back In Progress. |
-| Done | The work landed: merged into its parent branch, or its pull request merged. Dragging a card here only records it as done. **Remove worktree** stops its agent, closes its terminal and deletes the worktree and the branch. |
+| Done | its pull request merged, or its branch moved since it was created and its tip is in the default branch, with nothing uncommitted and no omp running |
+| Pull Request | its pull request is open or a draft |
+| Waiting | its omp holds an approved plan until what it depends on lands, or it depends on a checkout that isn't Done and no omp there is planning, working or asking you something |
+| Planning | an omp there is in plan mode, or its plan waits for your review |
+| In Progress | an omp there is working, thinking or asking you something |
+| Review | it has commits of its own and nothing is at work there: ready for a pull request |
+| Idle | anything else: a fresh, stale or abandoned worktree, and the main checkout when nothing works there |
 
-People drag cards only to Waiting, In Progress and Done; the other columns are reached on their own. Cards are numbered per project (`#1`, `#2`…) and people and agents use these numbers everywhere: the page, commands, tools, briefs, messages, errors and `Task <n>: <title>` commit subjects. Underneath, new cards have `MC-<n>` ids.
+The board shows them in the order Planning, Waiting, In Progress, Review, Pull Request, Idle, Done.
+
+Every card, in every view, has the same buttons, in this order:
+
+- **Open worktree** brings forward a terminal already there: the one an omp there reported, else any terminal in the checkout. It never opens, attaches or closes one; with none, it shows the `cd` to run.
+- **Open PR #n** when the branch has a pull request, else **Create PR** when it has commits of its own: `git push -u origin <branch>`, then `gh pr create --base <base> --head <branch> --fill`.
+- **Resume** when an asleep session is there: a new terminal in the checkout runs `omp --resume` on exactly that session, never continuing an interrupted turn on its own. Nothing resumes by itself.
+- **⋯**: **Hide from the board** (or **Show on the board**), and **Remove worktree…**, offered except on the main checkout and while an omp runs there. A worktree with uncommitted files asks again before they are lost.
+
+**New worktree** (`N`, or double-click empty space) takes a prompt, a branch and **After**, each optional but a prompt or a branch is needed:
+
+- **Branch:** given, else `feature/<the prompt's first words>` (`-2`, `-3`… when taken). It is created from the default branch, or from **After**'s branch, after fetching `origin`.
+- **After** another checkout: the new branch is made from that checkout's branch (recorded as `branch.<name>.nestUnder`, so the cmux kit nests it there), and the new worktree depends on it.
+- **Prompt:** its omp starts in plan mode on it, told which branch it works on and what it builds on. Approve the plan in that omp; if what it depends on hasn't landed yet, the omp holds the plan (the card shows **Waiting**), and once it has landed the omp tells its agent to rebase and implement the approved plan. Without a prompt, your usual agent starts.
+- It is checked out through the `createWorktree` hook when you have one (the cmux kit's `wt` opens its own workspace running the agent), else in `~/.mission-control/worktrees/<repo>/<branch>` with the project's setup script, and, with a prompt, a new terminal there.
+
+When a branch lands, the worktrees made from it move onto its base, where its work went.
+
+**Hide from the board** leaves a branch's checkout out of Board, Graph and Live: for long-standing worktrees you keep. The project remembers hidden branches by name. **N hidden** at the end of the tag bar shows them, dimmed, with **Show on the board**.
+
+**Dependencies:** a worktree depends on the worktree whose branch it was made from (the branch the cmux kit nests it under); that link comes from git, so it can't be removed by hand. It can depend on others too, for work that builds on another branch: draw them on the Graph, use **Depends on…** in a card's ⋯ menu or its panel, or `/link` in omp. A card lists the prerequisites that haven't landed as **Waits for &lt;name&gt;**, and once all are Done shows **Builds on &lt;name&gt; ✓**. A cycle is refused, and removing a worktree drops its dependencies.
+
+**Tags:** a worktree has its own tags (the panel, `/tag`, `mission_control_edit`) and those its project's tag rules give it, up to eight. The tag bar filters every view by them.
+
+**The panel:** clicking a card opens everything about its worktree on the right: its omps with what each is on, its work and newest commit, its pull request, what it depends on and what depends on it, and its tags. Selecting a card highlights its dependency path in every view: Done prerequisites green, open ones red.
+
+## Views
+
+The three icons at the top left switch between **Board** (the columns), **Graph** and **Live**; the choice is remembered in this browser. Search and tags apply to every view.
+
+- **Graph:** an infinite canvas of the project's checkouts. Drag a node anywhere; its place is kept for the project. A new canvas, or **Auto-layout** (which forgets every place), lists the checkouts that depend on nothing top to bottom in the sidebar's order, grouped by folder, and puts each dependent to the right of what it depends on, one column per level. Drag a node's output port onto another node to make that one depend on it, or its input port onto the node it depends on. Let an output port go on empty canvas to create a worktree there that depends on it. A line is dashed while its prerequisite is In Progress, solid for its first half while it has an open pull request, and solid once it is Done. Click a drawn line to select it, then remove it. Drag the background to pan and scroll to zoom; **Fit all**, **Auto-layout** and **Hide done** arrange the canvas.
+- **Live:** the checkouts where an omp runs, main checkout first, each with one block per omp and an **Open terminal** button that brings that omp's own terminal forward. The other checkouts are listed below, the most recently active first. The summary counts the omps that need you, that work, the asleep sessions and the done checkouts.
 
 ## Projects
 
-One server serves every session, and each page shows one project: one repository, all its base branches together. `/mission` (or the launcher) registers the repository it runs in and opens the page on it (`?project=<id>`; the id is the main checkout's folder name, with a short hash when two registered repositories share it). The header shows the project and its default branch; its menu holds **Tag rules** and the **Setup** and **Teardown** scripts. Cards branched from another branch than the default one show a **from &lt;base&gt;** chip.
-
-## Commands
-
-| Command | |
-|---|---|
-| `/mission` | opens the page on this repository's project, on this worktree's card when it has one |
-| `/task <prompt>` | creates a task in a new worktree branched from this checkout's branch; its omp plans the prompt |
-| `/next <prompt>` | creates a task that builds on this worktree's card: it branches from this branch, depends on this card and waits for it once its plan is approved. This worktree becomes a card first when it isn't one. In the main checkout, use `/task` |
-| `/link #n …` | makes this worktree's card depend on those cards; `/link` lists what it depends on and waits for, `/link none` clears it |
-| `/tag a b -c` | adds tags to this worktree's card and removes `c`; `/tag` lists them |
-| `/land [pr\|merge]` | lands this worktree's card: merges it into its parent branch when it was stacked on another task (committing pending changes, removing the worktree and ending the session), else opens its pull request; `pr` or `merge` forces one |
-
-`/link` completes card numbers and `/tag` the project's tags. Using any of these commands, or any tool below, makes the session follow the project: it streams the server, gets notified about the cards it created (start failed, plan ready, needs input, resumed, ready to merge or for a pull request, checks failing, merged), and brings the server back when it resumes.
-
-Tools: `mission_control_tasks` (the project's cards with their columns, tags, links and pull requests, then its other worktrees), `mission_control_task` (a new task; `after` stacks it on a card), `mission_control_adopt` (makes a worktree a card), `mission_control_edit` (title, tags, dependencies, parent), `mission_control_link`, `mission_control_children`, `mission_control_move` (Waiting, In Progress or Done, as dragging does), `mission_control_stop`, `mission_control_message` (a message to a task's agent), `mission_control_screen` (the agent's terminal), `mission_control_diff`, `mission_control_context`, `mission_control_publish`, `mission_control_land`, `mission_control_cleanup` and `mission_control_delete`. Your request to land is the approval; landing another card asks whether to keep its worktree, and deleting a card or removing a worktree asks you to confirm. A card's prompt and Control loop are fixed once it exists: tell its agent what changed with `mission_control_message`.
-
-## Linked tasks
-
-A task created **after** another one (`/next`, the composer's **After**, `mission_control_task`'s `after`) branches from that task's branch, depends on it, and plans right away. Once you approve its plan, its omp holds: the card waits in Waiting until every task it depends on is Done, then its agent is told what it waited for has landed, to rebase on its base if that moved, and to implement the approved plan. When a task lands, every unfinished task branched from its branch is moved onto its base, where its work went, so a stacked task follows its parent down to the default branch.
-
-**Depends on** in the task panel lists what a task waits for: **+** adds one and **×** removes one; on the Graph, dragging a port onto another task adds one. A cycle, or a task from another repository, is refused. **Parent** groups a task under another one of the same repository, and children also wait for what their parent tree depends on; it never creates nested worktrees.
-
-## Landing
-
-A task branched from another task's branch merges back into it: **Merge into &lt;base&gt;** (with a clean, committed worktree) or `/land` (which first commits pending changes as `Task n: <title>`) run `git merge --no-ff` in the checkout of that branch, optionally removing the worktree and ending its agent. A task branched from the default branch lands through a pull request; a merge is refused.
-
-**Create pull request** works for every task: while its agent is connected and free it is asked to commit everything, push the branch and open the pull request; otherwise the server pushes the committed branch and runs `gh pr create --fill` into its base. It refuses uncommitted changes, a branch with nothing to open, and a base that isn't on `origin`.
-
-## Pull requests
-
-`gh pr list` runs for each project once a minute (and on **Refresh**): open pull requests with their review decision, checks and mergeability, then the latest pull request of every other branch. A card shows its pull request's number with marks for checks (passing, failing or pending), the review (approved or changes requested) and conflicts, and its title says them in words.
+One server serves every project, and each page shows one (`?project=<id>`; the id is the main checkout's folder name, with a short hash when two registered repositories share it). `/mission` or the launcher registers the repository it runs in. The project menu holds **Tag rules** and the **Setup** and **Teardown** scripts.
 
 ## Tags
 
-A task has up to eight tags: short lowercase words (letters, digits, `.`, `_`, `-`). The composer, the task panel and `/tag` set them, and agents add the product areas their work touches with `mission_control_edit`. The tag bar under the toolbar lists the project's tags: selecting some shows only the cards with any of them; none selected shows everything.
+**Tag rules** in the project menu tag checkouts by name: one rule per line, a pattern then its tags, such as `feature/nutrition-* nutrition`. A pattern matches a checkout's branch name or its folder name, with `*` for anything and `?` for one character, ignoring case; up to eight tags apply. The tag bar under the toolbar lists the project's tags: selecting some shows only the checkouts with any of them.
 
-**Tag rules** in the project menu tag tasks by name: one rule per line, a pattern then its tags, such as `feature/nutrition-* nutrition`; a pattern matches a task's branch name or its worktree's folder name, with `*` for anything and `?` for one character, ignoring case. A task that is created or tracked gets the tags of every rule it matches, after its own and up to eight. Saving the rules also tags the project's open tasks, and untracked worktrees show the tags they match, so the tag bar filters them too.
+## Agents
 
-## Worktrees
+Every omp session in a git checkout reports to the board at `POST /api/agent`: its state, the step it is on, its run clock, to-do progress, latest sentence, the question it asks, your latest prompt and its terminal. A state change goes out at once, a new step at most every two seconds, and the current state again every 20 seconds, so a restarted board catches up. A report from outside a registered project is refused, and that omp tries again a minute later. An omp's report is dropped once its session lease is released.
 
-Every checkout of a project's repository that no task owns shows on the page as a dashed card in In Progress, Pull Request or Done (by its pull request): its linked worktrees and its main checkout. Each shows its branch, its base (its `branch.<name>.nestUnder` setting, else the branch its creation record names, else the default branch), its changes, its pull request and its omp: every omp running there (one holds the lease of one of its sessions), what each reports and the count when several run; else **Asleep** with when its latest session was last active and that session's title; else **No omp session** (read from omp's session files under `~/.omp/agent/sessions`). Clicking it offers **Track as task**, **Add tags…**, **Resume** (asleep), **Start agent** (no session), **Create pull request**, **Open worktree** (**Open its terminal** while omp runs there), **Hide from the board** and **Remove worktree…**. Opening only brings forward a terminal already there, the one omp runs in, else any in the worktree; with none it shows the `cd` to run. Every other action but hiding first makes it a card. **Resume** reopens that exact session (`omp --resume`, never continuing an interrupted turn on its own), **Start agent** runs `omp --continue`, and an omp already running there becomes the card's agent. Nothing resumes on its own.
+## Commands and tools
 
-A worktree on a detached HEAD shows as **detached &lt;commit&gt;** by its folder, and the main checkout as **main checkout**. Neither can become a card: both offer **Resume in a terminal** (asleep; a new terminal there runs `omp --resume` on its latest session) and **Open worktree**; the main checkout also **Hide from the board**, and a detached worktree **Remove worktree…**, which refuses while omp runs there or it has uncommitted changes and doesn't run the teardown script or `removeWorktree` command. Checkouts without a task also show in Graph, as dashed nodes without connections, and in Live.
+| Command | |
+|---|---|
+| `/mission` | opens the page on this repository's project, starting the server when needed |
+| `/task <prompt>` | a new worktree branched from this checkout's branch; its omp plans the prompt |
+| `/next <prompt>` | a new worktree after this one: branched from it, depending on it, holding its approved plan until this one lands |
+| `/link <name> …` | makes this checkout depend on those (`/link -<name>` removes one); `/link` lists what it depends on, what depends on it and what it waits for |
+| `/tag a b -c` | adds tags to this checkout and removes `c`; `/tag` lists them |
 
-**Hide from the board** (also in the task panel's ⋯ menu) leaves a branch's card or worktree out of Board, Graph and Live: for long-standing worktrees you keep, such as a feature branch other tasks merge into. The project remembers hidden branches by name, so a worktree made again on that branch stays hidden. **N hidden** at the end of the tag bar shows them, dimmed, with **Show on the board**. A hidden branch stays in the composer's **Branches from**, and tasks stacked on it still merge back into it.
+`/link` completes checkout names and `/tag` the project's tags. A session that created worktrees with `/task`, `/next` or `mission_control_task` follows them and is told when a plan is ready for review, an omp needs your input, one waits, is ready for a pull request, its checks fail or changes are requested, and when it lands.
 
-## Graph and Live views
-
-The three icons at the top left switch between **Board** (columns), **Graph** (a dependency canvas) and **Live** (what agents are doing and what waits for you); the choice is remembered in this browser. Search, tags, the task panel and the scheduler apply to every view. Double-click empty space in any view to start a task, as **New task** (`N`) does.
-
-- **Graph:** connections run from prerequisite to dependent task. Drag an output port onto another task to add a dependency, or an input port to choose its prerequisite; click a connection to select it, then reconnect or remove it. Double-click empty canvas to create a task centred where you clicked. Let an output port go on empty canvas to create a task that builds on it: a dashed outline shows where it lands, the composer opens with **After** set to that task (it branches from that task's branch and waits for it; for a Done task, from the branch its work landed in, without waiting), and the new node appears where you let go. Drag more lines onto it to add dependencies. A prerequisite that is planning or waiting gives a dashed line, one In Progress, in Review or with a pull request a line solid for its first half, and a done one a solid line. **Auto-layout**, **Fit all**, **Focus task** and **Hide done** arrange the canvas.
-- **Live:** started work and handoffs as cards, then every checkout without a task where omp runs. A card shows the task's status with its run clock (since your prompt) and to-do progress (3/7), its ticket, changes and pull request (with its unresolved review comments), then what the agent is on: the question it asks, the to-do in progress, the latest sentence it thought or wrote, the step it takes, your latest prompt and the branch's newest commit. Every other omp running in the same worktree is listed below it, with the same detail. One button reaches the agent's terminal: **Review plan**, **Answer in terminal**, **Connect terminal** or **Open terminal**; click a card for the task panel and its other actions. Plans ready for review, questions, disconnected sessions, failed starts, missing worktrees, Review and Pull Request cards are handoffs, listed first; waiting tasks, checkouts without a task where no omp runs (the most recently active first) and the latest done tasks are listed below.
-- Selecting a task highlights its upstream dependency path in all three views: done prerequisites green, unfinished ones red.
-
-If a worktree was deleted outside the page, its task shows **Worktree missing**, and **Remove card** removes it; it refuses while its agent still runs.
-
-## Pausing and stopping
-
-- **Waiting pauses an agent.** Its turn is interrupted; the worktree, branch, omp session and tmux session stay, and the card stays held until you move it back.
-- **In Progress resumes it**: its agent is told to continue where it stopped. A task paused while it planned plans on.
-- **Stop agent…** (⋯ menu, or `mission_control_stop`) also ends its omp and tmux sessions and closes its terminal; a planning or In Progress card is held in Waiting. Resuming starts a new tmux session on the same omp session and presents it again.
-
-Pauses, messages and stops reach the agent through its omp session, never by typing into its terminal. A task whose omp isn't connected can't take them, and the page says so; a pause still moves the card.
-
-## Task sessions
-
-A task's omp knows its card, branch, base and how it lands, what it waits for and which tasks build on it, including after restarting omp in its worktree. Its brief lists the tasks it depends on, its parent and children, the other tasks on the same base and the handoffs of its dependencies. Tell it to merge, or that it's done: for a stacked task your request is the approval, so `/land` (or `mission_control_land`) commits, merges into the parent branch and closes its worktree and agent; a task from the default branch commits, pushes and opens its pull request. It never lands just because it considers the work finished.
-
-`mission_control_publish {kind: "finding" | "outcome", text, id?}` appends a concise finding or outcome to a task's shared context, stamped with its source, time and branch@commit; `mission_control_context {id?}` reads it with its revision. A new task's brief includes the latest outcome and up to three other entries of each task it depends on.
-
-## Controls
-
-With the [Control](../control/README.md) plugin installed, the composer gets a **Controls** picker listing the project omp's Control sets; a task's set is fixed once it exists. The task session starts with that set in auto mode (`OMP_CONTROL_SET`, checking the change since the task's base branch), so the set's controls run after each change the agent makes, and the card shows the set as a chip. When the last control run passed and the set applies findings right away (approval `apply`), a stacked task merges into its parent branch once the agent stops; tasks that land through a pull request are left for you.
+Tools: `mission_control_checkouts` (read-only: the checkouts of this project, or of all, with their column, dependencies, work, pull request, tags and omps), `mission_control_task` (a new worktree with a prompt; `after` stacks it on this checkout), `mission_control_link` and `mission_control_edit` (tags).
 
 ## Hooks
 
-`~/.mission-control/config.json` replaces the worktree operations with your own commands. The server reads it at each operation, so a toolkit can register while it runs:
+`~/.mission-control/config.json` replaces creating and removing worktrees with your own commands. The server reads it at each operation:
 
 ```json
 {
   "commands": {
-    "createWorktree": "my-wt new \"$MISSION_CONTROL_BRANCH\" --run \"$MISSION_CONTROL_AGENT_COMMAND\"",
+    "createWorktree": "my-wt new \"$MISSION_CONTROL_BRANCH\"",
     "removeWorktree": "my-wt remove"
   }
 }
@@ -154,8 +118,8 @@ Each command runs with `/bin/sh -c`; a non-zero exit fails the operation with it
 
 | Command | cwd | Variables | Must | Without it |
 |---|---|---|---|---|
-| `createWorktree` | repository | `MISSION_CONTROL_TASK`, `MISSION_CONTROL_TITLE`, `MISSION_CONTROL_REPO`, `MISSION_CONTROL_BRANCH` (already created from its base), `MISSION_CONTROL_BASE`, `MISSION_CONTROL_AGENT_COMMAND`, `MISSION_CONTROL_SETUP_SCRIPT` | check the branch out in a worktree; the server then finds it with `git worktree list`. To show the agent in your own terminal, run `$MISSION_CONTROL_AGENT_COMMAND` there: it starts the task's tmux session unless it runs, then attaches to it. The server also runs it again for the existing worktree when the agent needs a terminal and none is in its worktree (a resume after a stop, **Open**), so reuse the branch's worktree when it exists | `git worktree add` under `~/.mission-control/worktrees/<repo>/<branch>`, the setup script in a newly created worktree, then the agent's tmux session, presented in the creating session's terminal |
-| `removeWorktree` | worktree | `MISSION_CONTROL_TASK`, `MISSION_CONTROL_REPO`, `MISSION_CONTROL_BRANCH`, `MISSION_CONTROL_WORKTREE`, `MISSION_CONTROL_TEARDOWN_SCRIPT` | remove the worktree and its branch; the agent is already stopped and its terminal closed | refuses with uncommitted changes, runs the teardown script in the worktree, then `git worktree remove` and `git branch -D` |
+| `createWorktree` | repository | `MISSION_CONTROL_REPO`, `MISSION_CONTROL_BRANCH`, `MISSION_CONTROL_BASE` (the default branch), `MISSION_CONTROL_SETUP_SCRIPT` | check the branch out in a worktree; the server then finds it with `git worktree list` | `git worktree add` under `~/.mission-control/worktrees/<repo>/<branch>` (the local branch, else `origin/<branch>`, else a new branch from the default branch), then the setup script |
+| `removeWorktree` | worktree | `MISSION_CONTROL_REPO`, `MISSION_CONTROL_BRANCH` (empty when detached), `MISSION_CONTROL_WORKTREE`, `MISSION_CONTROL_TEARDOWN_SCRIPT` | remove the worktree and its branch; when you confirmed losing uncommitted files, `y` is on its standard input | the teardown script in the worktree, then `git worktree remove --force` and `git branch -D` |
 
 ## Setup and teardown scripts
 
@@ -170,12 +134,7 @@ Each command runs with `/bin/sh -c`; a non-zero exit fails the operation with it
 }
 ```
 
-For each key, the project's own value applies when present, and an empty string means none; otherwise the `defaults` value applies, else none. A value is a script path, `~` allowed, run as `bash <path>` in the worktree with `MISSION_CONTROL_TASK`, `MISSION_CONTROL_REPO`, `MISSION_CONTROL_BRANCH`, `MISSION_CONTROL_BASE` and `MISSION_CONTROL_WORKTREE` set.
-
-- **Without hooks:** the setup script runs after a new worktree is created (not when one is reused) and before the agent starts, and the teardown script in the worktree before `git worktree remove`. A failing script shows in the task's start log or removal output but doesn't stop either.
-- **With `createWorktree` or `removeWorktree`:** only the hook knows when the agent starts, so neither script runs; the resolved paths are passed as `MISSION_CONTROL_SETUP_SCRIPT` and `MISSION_CONTROL_TEARDOWN_SCRIPT` instead (empty means none).
-
-**Setup script** and **Teardown script** in the page's **Project settings** edit both. Saving rewrites `config.json` atomically and keeps every other key; a value equal to the default removes the project's own key.
+For each key, the project's own value applies when present, and an empty string means none; otherwise the `defaults` value applies, else none. A value is a script path, `~` allowed, run as `bash <path>` in the worktree with `MISSION_CONTROL_REPO`, `MISSION_CONTROL_BRANCH` and `MISSION_CONTROL_WORKTREE` set. With a hook, neither script runs: the resolved paths are passed to it instead (empty means none). **Setup script** and **Teardown script** in the page's project menu edit both; saving rewrites `config.json` atomically and keeps every other key.
 
 ## Launcher (optional)
 
@@ -192,27 +151,18 @@ mission-control stop | restart | status | logs | serve             # serve: run 
 | Variable | Default | |
 |---|---|---|
 | `MISSION_CONTROL_PORT` | `4747` | where the server listens and the plugin finds it |
-| `MISSION_CONTROL_HOME` | `~/.mission-control` | `board.json`, task records, `config.json`, `server.log` and built-in worktrees |
+| `MISSION_CONTROL_HOME` | `~/.mission-control` | `board.json`, `config.json`, `server.log` and built-in worktrees |
 | `MISSION_CONTROL_PYTHON` | `python3` | the interpreter the plugin and the launcher start the server with |
-| `MISSION_CONTROL_BRANCH_PREFIX` | `feature/` | a new task's branch: `<prefix><ticket>-<title slug>`, with `-2`, `-3`… when taken |
-| `MISSION_CONTROL_TERMINAL` | `auto` | where this session's tasks are presented: `auto`, `cmux`, `tmux` or `plain`; `OMP_TERMINAL` applies when it isn't set |
-| `MISSION_CONTROL_IMPORT` | | `skip` starts a new home empty instead of importing |
+| `MISSION_CONTROL_TERMINAL` | `auto` | the terminal this session reports and `/mission` opens the page in: `auto`, `cmux`, `tmux` or `plain`; `OMP_TERMINAL` applies when it isn't set |
 
 ## Storage
 
-Plain JSON in `MISSION_CONTROL_HOME`:
-
-- `board.json`: the next card number and the registered projects with their Control sets, hidden branches and tag rules.
-- `tasks/<id>/task.json`: one record per task: title, prompt, column, links, tags, shared context, repository, base, branch and control set, plus what runs for it (worktree, agent session and terminal, the operation in progress and the last one's result, its pull request and merge).
-- Generated per task: `brief.md`, `omp.yml` (plan mode on startup), `launch.sh` and `resume.sh`, and the last screen of an agent that exited.
+`board.json` in `MISSION_CONTROL_HOME` holds the registered projects with their hidden branches, tag rules, dependencies and Graph places, each by branch. Everything else is read live: checkouts from git, sessions from omp's files and leases, pull requests from `gh`.
 
 ## How it works
 
-`server.py` uses only the Python standard library. It serves `index.html` and a JSON API and pushes snapshots and agent steps over server-sent events (`/api/events`). A snapshot holds the columns, the projects, the tasks and the worktrees no task owns; the cmux sidebar reads its tasks (`id`, `title`, `worktree`, `agent`) and their `step` events. An omp session subscribes with its id, its terminal and, once it uses Mission Control, its project; a task's omp also subscribes with its task id and carries out the pause, message, Control and stop commands the server sends it, answering at `/api/control/<id>`. When you approve a plan, the task's omp reports it at `/api/tasks/<id>/planned`, and the reply says whether to hold.
+`server.py` uses only the Python standard library. It serves `index.html` and a JSON API and pushes a snapshot of the projects and their checkouts over server-sent events (`/api/events`) after each change. A full scan of every checkout (its work, base and whether it landed) runs every 15 seconds and after each change made from the page; which omp runs where is checked every 3 seconds, pull requests every minute.
 
-Module boundaries: `runtime.py` owns process, environment and file helpers, `gitops.py` Git operations, `detach.py` the agents' tmux sessions, `lease.py` omp's session leases, `screen.py` styled screen previews, `integrations.py` the shared terminal adapters (`omp_terminals.py` from `omp-integrations`), `cmux.py` the terminal's Ghostty appearance, and `import_orchestrator.py` the one-time import. `server.py` keeps the store, scheduling, API routes and live state. The page keeps the board, panel and composer in `index.html`, the dependency canvas in `pipeline.js`, the Live mosaic in `workbench.js`, dependencies, parents and shared context in `links.js`, and Markdown rendering in `markdown.js`; `design-system.css` is a copy of `packages/web-design-system/design-system.css` that `bun run build` refreshes.
+Module boundaries: `runtime.py` owns process, environment and file helpers, `gitops.py` Git queries, `sessions.py` omp's session files, `lease.py` omp's session leases, `integrations.py` the shared terminal adapters (`omp_terminals.py` from `omp-integrations`), and `cmux.py` the terminal's Ghostty appearance. `server.py` keeps the projects, the checkouts, the agent reports and the API. The page keeps the board in `index.html`, the branch tree in `pipeline.js` and Live in `workbench.js`; `design-system.css` is a copy of `packages/web-design-system/design-system.css` that `bun run build` refreshes.
 
-- **Agent state:** every omp in a project's checkout reports, per session, planning, thinking, working, plan ready for review, needs you or idle, with the step it is on, its run clock, to-do progress, latest sentence, the question it asks, and its latest prompt. A task's own omp (the one the board started, else its recorded session while that runs) drives the card; any other omp in the same checkout is listed beside it.
-- **Git:** each worktree's changes, commits and uncommitted files refresh every 10 s; worktrees no task owns every 30 s.
-- **Local merges:** `git merge --no-ff --no-edit` with the message `Merge <branch> (task n: <title>)`. A conflict aborts that merge, starts `git rebase <base>` in the clean task worktree and retries the merge when the rebase succeeds; a conflicted rebase stays paused there and the task's agent is asked to resolve it.
-- **Safety:** the server listens on 127.0.0.1 only. It refuses requests with a foreign `Host` or cross-site `Origin`, and accepts writes only as JSON.
+The server listens on 127.0.0.1 only. It refuses requests with a foreign `Host` or a cross-site `Origin`, and accepts writes only as JSON.

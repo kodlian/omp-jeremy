@@ -2,9 +2,11 @@ import { realpathSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import type { ControlApproval, ControlSetSummary } from "omp-integrations/control";
 import { errorText } from "omp-integrations/text";
 import { parseControlFile } from "./frontmatter";
+
+/** apply: the agent fixes what controls find; ask: it asks you first. */
+export type ControlApproval = "apply" | "ask";
 
 /** Where a library item lives: repo (.omp/control, committed), global (every repo), built-in; repo overrides global overrides built-in. */
 export type Source = "built-in" | "global" | "repo";
@@ -156,11 +158,4 @@ export async function loadLibrary(root: string | null): Promise<Library> {
 		library.errors.push({ path: set.path, message: `${set.path}: set ${set.id} names missing controls: ${missing.join(", ")}` });
 	}
 	return library;
-}
-
-/** The sets as other plugins show them: sorted by name, each with its controls' names. */
-export function summarize(library: Library): ControlSetSummary[] {
-	return [...library.sets.values()]
-		.sort((a, b) => a.name.localeCompare(b.name))
-		.map((s) => ({ id: s.id, name: s.name, description: s.description, controls: s.controls.map((id) => library.controls.get(id)?.name ?? id), approval: s.approval }));
 }

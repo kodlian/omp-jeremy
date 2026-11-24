@@ -1,4 +1,4 @@
-import type { ControlApproval } from "omp-integrations/control";
+import type { ControlApproval } from "./library";
 import type { Baseline } from "./git";
 
 /** What a control run checks: control ids from the library, and what happens to their findings. */
@@ -59,13 +59,6 @@ export function onReport(state: State, fingerprint: string, passed: boolean): Se
 	state.last = { label: run.selection.label, passed };
 	state.run = null;
 	return run.selection;
-}
-
-export function status(state: State, fingerprint: string): { passed: boolean; autonomous: boolean } {
-	return {
-		passed: state.run === null && state.settled?.passed === true && state.settled.fingerprint === fingerprint,
-		autonomous: state.auto?.approval === "apply",
-	};
 }
 
 /** The line under the editor, or null for none. */

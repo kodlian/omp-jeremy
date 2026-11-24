@@ -26,7 +26,6 @@ health() { curl -fsS --max-time 1 "$url/api/health" 2>/dev/null; }
 json_field() { "$python" -c 'import json, sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"; }
 
 start() {
-  "$python" "$root/server.py" --prepare
   mkdir -p "$home"
   nohup "$python" "$root/server.py" >>"$log" 2>&1 &
   echo $! >"$pidfile"
@@ -87,7 +86,7 @@ case "${1:-open}" in
     open_board
     ;;
   serve)
-    "$python" "$root/server.py" --prepare
+    mkdir -p "$home"
     exec "$python" "$root/server.py"
     ;;
   stop) stop ;;

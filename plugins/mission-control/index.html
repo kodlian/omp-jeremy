@@ -12,19 +12,12 @@ body{display:flex;flex-direction:column;-webkit-font-smoothing:antialiased}
 @keyframes pulse{50%{opacity:.3}}
 @keyframes pop{from{opacity:0;transform:translateY(4px) scale(.98)}}
 @keyframes fade{from{opacity:0}}
-@keyframes flash{from{background:color-mix(in srgb,var(--add) 24%,transparent)}}
 @keyframes shake{25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
 
 /* MARK: controls */
 .chip{display:inline-flex;align-items:center;gap:4px;min-width:0;height:18px;padding:0 6px;border-radius:var(--radius-sm);background:var(--surface-2);color:var(--muted);font-size:var(--font-size-xs);font-weight:500;white-space:nowrap}
-button.chip{flex:none;border:0}
-button.chip:hover:not(:disabled){color:var(--fg)}
-button.chip:disabled{cursor:default;opacity:.7}
-.chip .x{display:inline-flex;margin-right:-2px;color:var(--faint)}
-.chip .x:hover{color:var(--remove)}
 .dot{flex:none;width:7px;height:7px;border-radius:50%;background:currentColor}
 .dot.pulse{animation:pulse 1.4s ease-in-out infinite}
-.flash{animation:flash 1s ease-out}
 .shake{animation:shake .3s}
 
 /* MARK: toolbar */
@@ -45,59 +38,56 @@ button.ctx:hover{color:var(--fg)}
 .tagbar{display:flex;flex:none;flex-wrap:wrap;align-items:center;gap:6px;padding:0 14px 4px;color:var(--faint)}
 .tagbar[hidden]{display:none}
 .tag{display:inline-flex;flex:none;align-items:center;gap:3px;height:18px;padding:0 7px;border:0;border-radius:9px;background:var(--accent-soft);color:var(--accent);font-size:var(--font-size-xs);font-weight:500;white-space:nowrap}
-.tag .x{display:inline-flex;margin-right:-3px;color:var(--faint);cursor:pointer}
-.tag .x:hover{color:var(--remove)}
 .tagbar button.tag{height:22px;padding:0 9px;background:var(--surface);color:var(--muted)}
 .tagbar button.tag:hover{color:var(--fg)}
 .tagbar button.tag.on{background:var(--accent);color:var(--accent-fg)}
 .c-tags{display:flex;flex-wrap:wrap;align-items:center;gap:4px;min-width:0}
 .c-tags>.chip{max-width:100%;overflow:hidden}
-.tags-edit{display:flex;flex-wrap:wrap;align-items:center;gap:4px;min-height:var(--control-h)}
 
 /* MARK: board */
 .main{position:relative;display:flex;flex:1;min-height:0}
 .board{display:flex;flex:1;gap:10px;min-width:0;padding:12px;overflow-x:auto;overflow-y:hidden}
-.col{display:flex;flex:1 0 208px;flex-direction:column;min-width:0;max-width:400px;min-height:0;border-radius:var(--radius-lg);background:var(--surface);transition:box-shadow .12s}
-.col.over{box-shadow:inset 0 0 0 1px var(--accent)}
+.col{display:flex;flex:1 1 210px;flex-direction:column;min-width:188px;max-width:400px;min-height:0;border-radius:var(--radius-lg);background:var(--surface)}
+.col[data-col=idle]{opacity:.6}
 .col-h{display:flex;flex:none;align-items:center;gap:7px;height:38px;padding:0 6px 0 12px}
 .col-t{font-weight:600}
 .col-h .count{color:var(--faint);font-weight:500;font-variant-numeric:tabular-nums}
 .col-b{display:flex;flex:1;flex-direction:column;gap:8px;min-height:60px;padding:0 8px 12px;overflow-y:auto}
 .col-empty{padding:18px 10px;border-radius:8px;color:var(--faint);font-size:var(--font-size-sm);text-align:center}
-.col-b:has(.ph) .col-empty{display:none}
-.card.untracked{border:1px dashed var(--line-strong);background:transparent}
-.card.untracked .c-title{font-family:var(--mono);font-size:var(--font-size-sm)}
-.card.is-hidden{opacity:.55}
-.card{position:relative;display:flex;flex:none;flex-direction:column;gap:6px;min-width:0;padding:9px 11px 10px;border:1px solid transparent;border-radius:8px;background:var(--raised);cursor:pointer;transition:border-color .12s,box-shadow .12s}
+.card{position:relative;display:flex;flex:none;flex-direction:column;gap:6px;min-width:0;padding:9px 11px 10px;border:1px solid transparent;border-radius:8px;background:var(--raised);cursor:pointer}
 .card:hover{background:var(--hover)}
-.card.sel{border-color:var(--accent);background:var(--accent-soft)}
 .card:focus-visible,.pipeline-node:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.card.dep-highlight,.pipeline-node.dep-highlight{background:var(--accent-soft)}
-.card.path-ready:not(.dep-highlight):not(.sel),.pipeline-node.path-ready:not(.dep-highlight):not(.sel){background:color-mix(in srgb,var(--add) 12%,var(--raised))}
-.card.path-blocked:not(.dep-highlight):not(.sel),.pipeline-node.path-blocked:not(.dep-highlight):not(.sel){background:color-mix(in srgb,var(--remove) 10%,var(--raised))}
-.card.path-unrelated:not(.dep-highlight):not(:hover),.pipeline-node.path-unrelated:not(.dep-highlight):not(:hover){opacity:.4}
-.card.dragging{opacity:.35}
+.card.is-hidden,.pipeline-node.is-hidden{opacity:.55}
+.card.sel{border-color:var(--accent);background:var(--accent-soft)}
+.card.path-ready:not(.sel),.pipeline-node.path-ready:not(.sel){background:color-mix(in srgb,var(--add) 12%,var(--raised))}
+.card.path-blocked:not(.sel),.pipeline-node.path-blocked:not(.sel){background:color-mix(in srgb,var(--remove) 10%,var(--raised))}
+.card.path-unrelated:not(:hover),.pipeline-node.path-unrelated:not(:hover){opacity:.4}
+.folder{flex:none;color:var(--faint);font-family:var(--mono);font-weight:400}
+.folder::after{content:"/"}
 .card.needs{background:color-mix(in srgb,var(--warning) 5%,var(--raised))}
 .card.needs::before{content:"";position:absolute;top:9px;bottom:9px;left:-1px;width:3px;border-radius:0 3px 3px 0;background:var(--warning)}
 .c-top{display:flex;align-items:center;gap:6px;min-width:0;color:var(--faint);font-size:var(--font-size-sm)}
-.c-id{font-family:var(--mono);font-size:var(--font-size-xs)}
-.c-title{display:-webkit-box;overflow:hidden;font-size:var(--font-size);font-weight:500;line-height:1.35;overflow-wrap:anywhere;-webkit-line-clamp:3;-webkit-box-orient:vertical}
+.c-top:empty{display:none}
+.c-title{display:-webkit-box;overflow:hidden;font-family:var(--mono);font-size:var(--font-size-sm);font-weight:500;line-height:1.35;overflow-wrap:anywhere;-webkit-line-clamp:3;-webkit-box-orient:vertical}
+.c-title .folder{font-size:var(--font-size-xs)}
 .c-line{display:flex;align-items:center;gap:6px;min-width:0;color:var(--muted);font-size:var(--font-size-sm)}
 .c-line>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.c-line>.icon{color:var(--faint)}
-.c-foot{display:flex;align-items:center;gap:8px;min-width:0;padding-top:3px;color:var(--muted);font-size:var(--font-size-sm)}
-.ph{flex:none;height:44px;border:1.5px dashed var(--accent);border-radius:8px;background:var(--accent-soft)}
+.c-line>.icon{flex:none;color:var(--faint)}
+.c-git{display:flex;align-items:center;gap:8px;min-width:0;color:var(--muted);font-size:var(--font-size-sm)}
+.c-deps .mono{color:var(--fg);font-size:var(--font-size-xs)}
+.c-deps .chip{height:16px;vertical-align:1px}
+.c-deps .ok{display:inline-block;color:var(--add);vertical-align:-1px}
+.c-git .commit{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.c-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding-top:3px}
+.c-actions .more{margin-left:auto;padding:0 6px}
+.c-actions a.btn{text-decoration:none}
 .state{display:inline-flex;align-items:center;gap:6px;font-size:var(--font-size-sm);font-weight:550;white-space:nowrap}
 .state .t{color:var(--muted);font-weight:400;font-variant-numeric:tabular-nums}
 .state.busy{color:var(--accent)}
 .state.needs{color:var(--warning)}
-.state.err{color:var(--remove)}
 .state.idle{color:var(--muted)}
 .state.idle .dot{color:var(--add)}
 .state.faint{color:var(--faint)}
-.state.ok{color:var(--add)}
-.branch{display:inline-flex;align-items:center;gap:4px;min-width:0;font-family:var(--mono);font-size:var(--font-size-xs)}
-.branch span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .diffstat{font-family:var(--mono);font-size:var(--font-size-xs);font-variant-numeric:tabular-nums;white-space:nowrap}
 .diffstat .a{color:var(--add)}
 .diffstat .r{color:var(--remove)}
@@ -110,110 +100,10 @@ button.ctx:hover{color:var(--fg)}
 .pr-chip .approved{color:var(--add)}
 .pr-chip .changes,.pr-chip .conflict{color:var(--remove)}
 
-/* MARK: panel */
-.resizer{flex:none;width:7px;margin:0 -3px 0 -4px;z-index:5;cursor:col-resize}
-.resizer:hover,.resizer.dragging{background:var(--accent-soft)}
-.panel{display:flex;flex:none;flex-direction:column;width:var(--panel-w);min-width:380px;max-width:72vw;min-height:0;background:var(--surface)}
-.p-head{display:flex;flex:none;align-items:center;gap:6px;height:var(--header-h);padding:0 8px 0 14px}
-.p-id{margin-right:2px;color:var(--muted);font-family:var(--mono);font-size:var(--font-size-sm)}
-.p-primary{display:contents}
-.status-btn{display:inline-flex;align-items:center;gap:6px;height:var(--tool-size);padding:0 8px;border:1px solid transparent;border-radius:var(--radius);background:var(--surface);font-weight:500}
-.status-btn:hover{background:var(--hover)}
-.status-btn .chev{color:var(--faint)}
-.p-title-wrap{flex:none;padding:14px 16px 10px}
-.p-title{display:block;width:calc(100% + 12px);margin:0 -6px;padding:3px 6px;overflow:hidden;border:0;border-radius:var(--radius);background:transparent;font-size:calc(var(--font-size-lg) * 1.2);font-weight:650;line-height:1.3;resize:none}
-.p-title:hover{background:var(--hover)}
-.p-title:focus{background:var(--surface-2)}
-.p-tabs{flex:none;padding:0 16px 10px}
-.p-tabs .dot{width:6px;height:6px}
-.p-scroll{flex:1;min-height:0;overflow-y:auto}
-.pane{display:flex;flex-direction:column;gap:18px;padding:16px}
-.sec{display:flex;flex-direction:column;gap:8px}
-.sec-h{display:flex;align-items:center;gap:6px;height:24px;color:var(--muted);font-size:var(--font-size-sm);font-weight:600;letter-spacing:.05em;text-transform:uppercase}
-.sec-h .meta{color:var(--faint);font-weight:400;letter-spacing:0;text-transform:none}
-.props{display:grid;grid-template-columns:104px minmax(0,1fr);row-gap:2px;align-items:center}
-.props label{display:flex;align-items:center;gap:7px;height:var(--control-h);color:var(--muted)}
-.props label .icon{color:var(--faint)}
-.prop{width:calc(100% + 7px);height:var(--control-h);margin-left:-7px;padding:0 7px;border:0;border-radius:5px;background:transparent;text-overflow:ellipsis}
-.prop.mono{font-size:var(--font-size-sm)}
-.prop.mono::placeholder{font-family:var(--ui);font-size:var(--ui-font-size)}
-.prop:hover:not(:disabled){background:var(--hover)}
-.prop:focus{background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--accent)}
-.prop:disabled{color:var(--muted);cursor:default}
-.p-prompt{margin:0;color:var(--fg);font-size:var(--font-size);line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
-.p-prompt.none{color:var(--faint)}
-.prop-row{display:flex;gap:6px;align-items:center;min-width:0}
-.prop-row>.prop{flex:1;min-width:0}
-.deps{display:flex;flex-wrap:wrap;gap:4px;align-items:center;min-height:var(--control-h)}
-
-/* MARK: content */
-.md{font-size:var(--font-size);line-height:1.6;overflow-wrap:anywhere}
-.md>:first-child{margin-top:0}
-.md>:last-child{margin-bottom:0}
-.md h1,.md h2,.md h3,.md h4,.md h5,.md h6{margin:18px 0 6px;font-size:1em;font-weight:650;line-height:1.3}
-.md h1{font-size:calc(var(--font-size-lg) * 1.15)}
-.md h2{margin-top:20px;font-size:var(--font-size-lg)}
-.md h3{font-size:var(--font-size-lg)}
-.md p{margin:6px 0}
-.md ul,.md ol{margin:6px 0;padding-left:20px}
-.md li{margin:3px 0}
-.md li::marker{color:var(--faint)}
-.md li.task{margin-left:-18px;list-style:none}
-.md li.task input{margin:0 6px 0 0;vertical-align:-1px}
-.md code{padding:1px 4px;border-radius:var(--radius-sm);background:var(--surface-2);font-family:var(--mono);font-size:var(--code-font-size-sm);-webkit-box-decoration-break:clone;box-decoration-break:clone}
-.md pre{margin:8px 0;padding:10px 12px;overflow-x:auto;border:1px solid var(--line);border-radius:7px;background:var(--surface);line-height:1.45}
-.md pre code{padding:0;background:none}
-.md blockquote{margin:8px 0;padding:2px 0 2px 12px;border-left:3px solid var(--line-strong);color:var(--muted)}
-.md table{margin:8px 0;border-collapse:collapse;font-size:var(--ui-font-size)}
-.md th,.md td{padding:4px 9px;border:1px solid var(--line)}
-.md th{background:var(--surface);font-weight:600}
-.md hr{margin:14px 0;border:0;border-top:1px solid var(--line)}
-.empty{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:16px;border-radius:var(--radius-lg);color:var(--muted);line-height:1.5}
-.empty strong{display:flex;align-items:center;gap:7px;color:var(--fg);font-size:var(--font-size)}
-.empty strong .icon{color:var(--accent)}
-.activity{overflow:hidden;border-radius:var(--radius-lg);background:var(--surface)}
-.activity.failed{background:color-mix(in srgb,var(--remove) 6%,var(--bg))}
-.act-h{display:flex;align-items:center;gap:8px;min-height:38px;padding:0 8px 0 12px}
-.act-h .ic{color:var(--accent)}
-.activity.failed .act-h .ic{color:var(--remove)}
-.act-h .lbl{font-weight:600}
-.act-err{padding:0 12px 10px;color:var(--remove);white-space:pre-wrap;overflow-wrap:anywhere}
-.log{max-height:220px;margin:0;padding:8px 12px;overflow:auto;color:var(--muted);font:var(--code-font-size-sm)/1.45 var(--mono);white-space:pre-wrap}
-
-/* MARK: agent */
-.agent-head{display:flex;align-items:center;gap:8px;min-height:var(--tool-size)}
-.agent-msg{display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border-radius:8px;background:var(--surface);color:var(--muted);font-size:var(--font-size-sm);line-height:1.45}
-.agent-msg .icon{margin-top:2px;color:var(--faint)}
-.agent-msg span{display:-webkit-box;overflow:hidden;white-space:pre-wrap;-webkit-line-clamp:3;-webkit-box-orient:vertical}
-.agent-step{display:flex;align-items:center;gap:8px;min-width:0;color:var(--muted);font-size:var(--font-size-sm)}
-.agent-step span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.agent-step .icon{color:var(--faint)}
-.git-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;color:var(--muted);font-size:var(--font-size-sm)}
-.git-row .to{color:var(--faint)}
-.actions{display:flex;flex-wrap:wrap;gap:6px}
-.term{height:clamp(240px,50vh,760px);margin:0;padding:10px 12px;overflow:auto;border-radius:var(--radius-lg);background:color-mix(in srgb,var(--fg) 3%,var(--bg));color:var(--fg);font:var(--code-font-size-sm)/1.35 var(--mono);white-space:pre}
-.banner{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:var(--radius-lg);background:var(--surface)}
-.banner>.icon{color:var(--merged)}
-.banner .txt{flex:1;color:var(--muted)}
-.banner .txt strong{color:var(--fg);font-weight:600}
-
-/* MARK: composer */
-.composer-wrap{flex:none;padding:6px 12px 12px}
-.composer{display:flex;flex-direction:column;border:1px solid transparent;border-radius:12px;background:var(--bg);transition:border-color .12s,box-shadow .12s}
-.composer:focus-within{border-color:color-mix(in srgb,var(--accent) 70%,var(--line-strong));box-shadow:0 0 0 3px var(--accent-soft)}
-.composer textarea{display:block;width:100%;min-height:44px;max-height:220px;padding:11px 13px 4px;border:0;background:transparent;font-size:var(--font-size);line-height:1.5;resize:none}
-.composer textarea:disabled{cursor:not-allowed}
-.composer-bar{display:flex;align-items:center;gap:6px;padding:4px 6px 6px 7px}
-.hint{color:var(--faint);font-size:var(--font-size-sm);white-space:nowrap}
-.send{display:inline-flex;flex:none;align-items:center;justify-content:center;width:var(--control-h);height:var(--control-h);padding:0;border:0;border-radius:50%;background:var(--accent);color:var(--accent-fg)}
-.send:hover{filter:brightness(1.08)}
-.send:disabled{background:var(--surface-2);color:var(--faint);pointer-events:none}
-.prop-chip select{max-width:200px;padding:0;border:0;background:transparent;color:var(--fg);font-family:var(--mono);font-size:var(--font-size-sm)}
-.prop-chip select:disabled{color:var(--muted);opacity:1}
-
 /* MARK: menu */
-.menu{position:fixed;z-index:90;min-width:210px;max-width:340px;padding:4px;border-radius:9px;background:var(--raised);box-shadow:var(--shadow);animation:pop .1s ease-out}
-.menu-h{padding:6px 9px 4px;color:var(--faint);font-size:var(--font-size-xs);font-weight:600;letter-spacing:.05em;text-transform:uppercase}
+.menu{position:fixed;z-index:90;min-width:210px;max-width:380px;max-height:calc(100vh - 16px);padding:4px;overflow-y:auto;border-radius:9px;background:var(--raised);box-shadow:var(--shadow);animation:pop .1s ease-out}
+.menu-h{padding:6px 9px 4px;overflow:hidden;color:var(--faint);font-size:var(--font-size-xs);font-weight:600;letter-spacing:.05em;text-overflow:ellipsis;text-transform:uppercase;white-space:nowrap}
+.menu-note{padding:4px 9px 7px;color:var(--muted);font-size:var(--font-size-sm)}
 .menu button{display:flex;align-items:center;gap:9px;width:100%;height:var(--field-h);padding:0 9px;border:0;border-radius:var(--radius);background:transparent;text-align:left;white-space:nowrap}
 .menu button .icon{color:var(--muted)}
 .menu button .lbl{flex:1;overflow:hidden;text-overflow:ellipsis}
@@ -223,60 +113,83 @@ button.ctx:hover{color:var(--fg)}
 .menu button:hover .icon,.menu button:hover .sub,.menu button:focus-visible .icon,.menu button:focus-visible .sub{color:inherit}
 .menu button.danger,.menu button.danger .icon{color:var(--remove)}
 .menu button.danger:hover,.menu button.danger:hover .icon{background:var(--remove);color:#fff}
-.menu button:disabled{opacity:.4;pointer-events:none}
 .menu hr{margin:4px 2px;border:0;border-top:1px solid var(--line)}
 .menu-input{width:calc(100% - 8px);margin:4px}
+.tag .x{display:inline-flex;margin-right:-3px;color:var(--faint);cursor:pointer}
+.tag .x:hover{color:var(--remove)}
+.tag.rule{background:var(--surface-2);color:var(--muted)}
+.tags-edit{display:flex;flex-wrap:wrap;align-items:center;gap:4px;min-height:var(--control-h)}
+
+/* MARK: panel */
+.resizer{flex:none;width:7px;margin:0 -3px 0 -4px;z-index:5;cursor:col-resize}
+.resizer:hover,.resizer.dragging{background:var(--accent-soft)}
+.panel{display:flex;flex:none;flex-direction:column;width:var(--panel-w);min-width:380px;max-width:72vw;min-height:0;background:var(--surface)}
+.p-head{display:flex;flex:none;align-items:center;gap:8px;height:var(--header-h);padding:0 8px 0 16px}
+.p-head .state{min-width:0;overflow:hidden}
+.p-scroll{display:flex;flex:1;flex-direction:column;gap:18px;min-height:0;padding:6px 16px 20px;overflow-y:auto}
+.p-title{margin:0;font-family:var(--mono);font-size:var(--font-size-lg);font-weight:650;line-height:1.35;overflow-wrap:anywhere}
+.p-sub{display:flex;flex-direction:column;gap:2px;margin-top:4px;color:var(--muted);font-family:var(--mono);font-size:var(--font-size-xs);overflow-wrap:anywhere}
+.sec{display:flex;flex-direction:column;gap:8px}
+.sec-h{display:flex;align-items:center;gap:6px;height:24px;color:var(--muted);font-size:var(--font-size-sm);font-weight:600;letter-spacing:.05em;text-transform:uppercase}
+.sec-h .meta{color:var(--faint);font-weight:400;letter-spacing:0;text-transform:none}
+.sec-h .tool-button{margin-left:auto}
+.p-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;min-width:0;color:var(--muted);font-size:var(--font-size-sm)}
+.p-row .mono{color:var(--fg)}
+.p-none{color:var(--faint);font-size:var(--font-size-sm)}
+.p-commit{flex-wrap:nowrap}
+.p-commit>.mono{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.p-commit>span:last-child{flex:none}
+.dep{display:flex;align-items:center;gap:7px;min-width:0;padding:4px 4px 4px 8px;border-radius:7px;background:var(--raised);font-size:var(--font-size-sm)}
+.dep .t{flex:1;min-width:0;overflow:hidden;font-family:var(--mono);text-overflow:ellipsis;white-space:nowrap}
+.dep .tool-button{width:22px;height:22px}
+.panel .wb-agent{background:var(--raised)}
+
+/* MARK: composer */
+.modal.nt{width:620px}
+.nt-head{display:flex;align-items:center;gap:6px;padding:14px 18px 0;color:var(--muted);font-size:var(--font-size-sm);font-weight:500}
+.nt-head>.icon{color:var(--accent)}
+.nt-desc{display:block;width:100%;min-height:110px;max-height:45vh;padding:8px 18px 12px;border:0;background:transparent;font-size:var(--font-size);line-height:1.55;resize:none}
+.nt-props{display:flex;flex-wrap:wrap;gap:6px;padding:0 18px 14px}
+.prop-chip{display:inline-flex;align-items:center;gap:6px;height:var(--tool-size);padding:0 9px;border:1px solid transparent;border-radius:7px;background:var(--surface);color:var(--muted)}
+.prop-chip:focus-within{border-color:var(--accent)}
+.prop-chip input{width:240px;padding:0;border:0;background:transparent;color:var(--fg);font-family:var(--mono);font-size:var(--font-size-sm)}
+.prop-chip select{max-width:240px;padding:0;border:0;background:transparent;color:var(--fg);font-family:var(--mono);font-size:var(--font-size-sm)}
+.nt-foot{display:flex;align-items:center;gap:8px;padding:10px 12px 10px 14px;background:var(--surface)}
+.hint{color:var(--faint);font-size:var(--font-size-sm);white-space:nowrap}
 
 /* MARK: modals */
 .overlay{position:fixed;inset:0;z-index:70;display:flex;align-items:flex-start;justify-content:center;padding:12vh 16px 16px;background:rgb(0 0 0 / .45);animation:fade .12s ease-out}
-.overlay:has(.diff){padding-top:5vh}
 .modal{display:flex;flex-direction:column;width:440px;max-width:100%;max-height:100%;overflow:hidden;border-radius:12px;background:var(--raised);box-shadow:var(--shadow);animation:pop .14s ease-out}
 .m-body{display:flex;flex-direction:column;gap:10px;padding:18px 18px 16px}
 .m-body h2{margin:0;font-size:var(--font-size-lg);font-weight:650}
 .m-text{margin:0;color:var(--muted);line-height:1.5}
 .m-label{margin-bottom:-4px;color:var(--muted);font-size:var(--font-size-sm);font-weight:500}
 .m-note{display:flex;flex-wrap:wrap;align-items:center;gap:5px;color:var(--muted);font-size:var(--font-size-sm)}
-.m-note .mono{color:var(--fg)}
-.check{display:flex;gap:8px;align-items:center;color:var(--muted)}
 .m-foot{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:10px 12px;border-top:1px solid var(--line);background:var(--surface)}
-.modal.nt{width:620px}
-.nt-head{display:flex;align-items:center;gap:6px;padding:14px 18px 0;color:var(--muted);font-size:var(--font-size-sm);font-weight:500}
-.nt-head>.icon{color:var(--accent)}
-.nt-desc{display:block;width:100%;min-height:110px;max-height:45vh;padding:4px 18px 12px;border:0;background:transparent;font-size:var(--font-size);line-height:1.55;resize:none}
-.nt-props{display:flex;flex-wrap:wrap;gap:6px;padding:0 18px 14px}
-.prop-chip{display:inline-flex;align-items:center;gap:6px;height:var(--tool-size);padding:0 9px;border:1px solid transparent;border-radius:7px;background:var(--surface);color:var(--muted)}
-.prop-chip:focus-within{border-color:var(--accent)}
-.nt-foot{display:flex;align-items:center;gap:8px;padding:10px 12px 10px 14px;background:var(--surface)}
 .toasts{position:fixed;bottom:18px;left:50%;z-index:100;display:flex;flex-direction:column;align-items:center;gap:6px;transform:translateX(-50%);pointer-events:none}
-.toast{display:flex;align-items:center;gap:8px;max-width:520px;padding:8px 14px;border-radius:9px;background:var(--raised);box-shadow:var(--shadow);animation:pop .14s ease-out;pointer-events:auto}
-.toast .icon{color:var(--add)}
+.toast{display:flex;align-items:flex-start;gap:8px;max-width:560px;padding:8px 14px;border-radius:9px;background:var(--raised);box-shadow:var(--shadow);animation:pop .14s ease-out;pointer-events:auto}
+.toast>span{display:-webkit-box;overflow:hidden;white-space:pre-line;overflow-wrap:anywhere;-webkit-line-clamp:8;-webkit-box-orient:vertical}
+.toast .icon{flex:none;margin-top:2px;color:var(--add)}
 .toast.error .icon{color:var(--remove)}
-@media (max-width:900px){
-  .panel{min-width:0;width:min(var(--panel-w),60vw)}
-  .search{width:150px}
-}
-@media (max-width:560px){
-  .panel.expanded{position:absolute;inset:0 0 0 auto;z-index:20;width:100%;max-width:none}
-}
+@media (max-width:900px){.search{width:150px}.panel{min-width:0;width:min(var(--panel-w),60vw)}}
 </style>
 <link rel="stylesheet" href="/pipeline.css">
 <link rel="stylesheet" href="/workbench.css">
-<link rel="stylesheet" href="/links.css">
 <link rel="stylesheet" href="/appearance.css">
 </head>
 <body>
 <header class="toolbar">
-  <div class="segmented icons view-switch" role="group" aria-label="Task view">
+  <div class="segmented icons view-switch" role="group" aria-label="View">
     <button id="boardViewBtn" title="Board view" aria-label="Board view"></button>
-    <button id="pipelineViewBtn" title="Graph view" aria-label="Graph view"></button>
-    <button id="liveViewBtn" title="Live view: what agents are doing and what waits for you" aria-label="Live view"></button>
+    <button id="pipelineViewBtn" title="Graph view: which branch each worktree comes from" aria-label="Graph view"></button>
+    <button id="liveViewBtn" title="Live view: what every omp is doing and what waits for you" aria-label="Live view"></button>
   </div>
   <span class="brand" id="brand"></span>
   <button class="ctx" id="ctx"></button>
   <span class="conn" id="conn" title="Disconnected"></span>
   <span class="spacer"></span>
-  <label class="search" id="search"><input id="filter" placeholder="Filter tasks" spellcheck="false" autocomplete="off"><kbd>/</kbd></label>
-  <button class="tool-button" id="refreshBtn" title="Refresh agents, git and pull requests"></button>
+  <label class="search" id="search"><input id="filter" placeholder="Filter worktrees" spellcheck="false" autocomplete="off"><kbd>/</kbd></label>
+  <button class="tool-button" id="refreshBtn" title="Refresh omp sessions, git and pull requests"></button>
   <button class="btn primary" id="newBtn"></button>
 </header>
 <nav class="tagbar" id="tagbar" aria-label="Filter by tag" hidden></nav>
@@ -297,33 +210,26 @@ const LUCIDE = {
   prDraft:'<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M18 6V5"/><path d="M18 11v-1"/><line x1="6" x2="6" y1="9" y2="21"/>',
   prMerged:'<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/>',
   prClosed:'<path d="m15.5 3.5 5 5"/><path d="m15.5 8.5 5-5"/><path d="M18 11.62V15"/><path d="M6 9v12"/><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/>',
-  merge:'<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/>',
-  link:'<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
   plus:'<path d="M5 12h14"/><path d="M12 5v14"/>',
   x:'<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   check:'<path d="M20 6 9 17l-5-5"/>',
   chevronDown:'<path d="m6 9 6 6 6-6"/>',
   refresh:'<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
-  arrowUp:'<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
   arrowRight:'<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
-  pencil:'<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
-  copy:'<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
   trash:'<path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
   more:'<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
+  link:'<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
   terminal:'<path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>',
   activity:'<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>',
   openIn:'<path d="M21 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h6"/><path d="m21 3-9 9"/><path d="M15 3h6v6"/>',
-  compare:'<circle cx="5" cy="6" r="3"/><path d="M12 6h5a2 2 0 0 1 2 2v7"/><path d="m15 9-3-3 3-3"/><circle cx="19" cy="18" r="3"/><path d="M12 18H7a2 2 0 0 1-2-2V9"/><path d="m9 15 3 3-3 3"/>',
   play:'<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/>',
   pause:'<rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/>',
-  stop:'<rect width="18" height="18" x="3" y="3" rx="2"/>',
   message:'<path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/>',
   file:'<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
   search:'<path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/>',
   wrench:'<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z"/>',
   alert:'<circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/>',
   hand:'<path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
-  ticket:'<path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/>',
   tag:'<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/>',
   eye:'<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>',
   eyeOff:'<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/>',
@@ -337,26 +243,16 @@ const COLUMN_GLYPH = {
   doing:'<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 4.5a3.5 3.5 0 0 1 0 7z" fill="currentColor"/>',
   review:'<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 4.5a3.5 3.5 0 1 1-3.5 3.5H8z" fill="currentColor"/>',
   pr:'<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="8" cy="8" r="3.5" fill="currentColor"/>',
+  idle:'<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/>',
   done:'<circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M5 8.2l2 2 4-4.2" fill="none" style="stroke:var(--bg)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>',
 };
-const COLUMN_COLOR = { planning: "var(--muted)", waiting: "var(--fg)", doing: "var(--warning)", review: "var(--add)", pr: "var(--accent)", done: "var(--merged)" };
+const COLUMN_COLOR = { planning: "var(--muted)", waiting: "var(--fg)", doing: "var(--warning)", review: "var(--add)", pr: "var(--accent)", idle: "var(--faint)", done: "var(--merged)" };
 const colIcon = (id, size = 14) => `<svg class="icon" viewBox="0 0 16 16" width="${size}" height="${size}" style="color:${COLUMN_COLOR[id]}" aria-hidden="true">${COLUMN_GLYPH[id]}</svg>`;
-const projectSets = projectId => projects().find(p => p.id === projectId)?.controlSets ?? null;
-const setSummary = t => t.controlSet ? (projectSets(t.project) || []).find(s => s.id === t.controlSet) ?? null : null;
-const setName = t => setSummary(t)?.name ?? t.controlSet;
-function setItems(list, selected, choose) {
-  return [{ icon: "x", label: "None", sub: "The task session runs no controls", checked: !selected, action: () => choose(null) },
-    ...(list || []).map(s => ({ icon: "refresh", label: s.name, sub: s.description || s.controls.join(", "), checked: s.id === selected, action: () => choose(s.id) }))];
-}
-function setBadge(t) {
-  return h("span", { class: "chip", title: "Controls the task session runs on its own" }, I("refresh", 10), setName(t));
-}
 
 // MARK: utils
 const $ = (s, r = document) => r.querySelector(s);
 function frag(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; }
 const I = (name, size, cls) => frag(icon(name, size, cls));
-const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 function h(tag, attrs = {}, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -389,23 +285,18 @@ const LS = {
   get: k => { try { return localStorage.getItem("mission-control." + k); } catch { return null; } },
   set: (k, v) => { try { localStorage.setItem("mission-control." + k, v); } catch {} },
 };
-function autosize(el, max = 400) {
-  el.style.height = "auto";
-  el.style.height = Math.min(el.scrollHeight, max) + "px";
-  el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
-}
-function flash(el) { el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
-function toolButton(name, title, onclick, size = 15) {
-  return h("button", { class: "tool-button", title, "aria-label": title, onclick }, I(name, size));
-}
 function actionButton(label, icon, onclick, primary = false, title = null, disabled = false) {
   return h("button", { class: "btn sm" + (primary ? " primary" : ""), title, disabled, onclick: e => { e.stopPropagation(); onclick(); } }, I(icon, 11), label);
 }
-function toast(text, error = false, ms = error ? 6000 : 3000) {
-  const t = h("div", { class: "toast" + (error ? " error" : "") }, I(error ? "alert" : "check", 14), h("span", {}, text));
+function toolButton(name, title, onclick, size = 15) {
+  return h("button", { class: "tool-button", title, "aria-label": title, onclick: e => { e.stopPropagation(); onclick(e); } }, I(name, size));
+}
+function toast(content, error = false, ms = error ? 8000 : 4000) {
+  const t = h("div", { class: "toast" + (error ? " error" : "") }, I(error ? "alert" : "check", 14), h("span", {}, content));
   $("#toasts").append(t);
   setTimeout(() => t.remove(), ms);
 }
+const failed = e => { const out = e.data?.output?.trim(); toast(out && !e.message.includes(out) ? `${e.message}\n${out}` : e.message, true); };
 async function copyText(text, message) {
   try { await navigator.clipboard.writeText(text); toast(message); }
   catch { toast("Couldn't copy to the clipboard", true); }
@@ -423,44 +314,36 @@ async function api(method, path, body) {
 }
 async function act(method, path, body, okMessage) {
   try { const r = await api(method, path, body); if (okMessage) toast(okMessage); return r; }
-  catch (e) { toast(e.message, true); throw e; }
+  catch (e) { failed(e); throw e; }
 }
-const tpath = (id, suffix = "") => `/api/tasks/${encodeURIComponent(id)}${suffix}`;
 
 // MARK: state
 let board = null;
-let dragging = null;
-let pendingRender = false;
-let openId = null;
-let highlightedDependency = null;
+let boardView = ["pipeline", "live"].includes(LS.get("boardView")) ? LS.get("boardView") : "board";
 let filter = "";
 let projectSel = new URLSearchParams(location.search).get("project") || null;
 let tagSel = null;
 let showHidden = null;
 let themeHref = "/appearance.css";
-const tabFor = {};
-const drafts = new Map();
-const sessionConnected = t => t.session?.connected === true;
-const findTask = id => board && board.tasks.find(t => t.id === id);
-const taskNumber = id => { const t = findTask(id); return t ? "#" + t.number : id; };
-const taskNumbers = ids => ids.map(taskNumber).join(", ");
-// A card from a typed reference: a number ("12", "#12.1") in this page's project, else an id as given.
-const taskRef = raw => {
-  const v = raw.trim().replace(/^#(?=\d)/, "");
-  if (!/^\d+(?:\.\d+)*$/.test(v)) return /^(?:mc|kb)-\d+(?:\.\d+)*$/i.test(v) ? v.toUpperCase() : v;
-  return board?.tasks.find(t => t.number === v && (!projectSel || t.project === projectSel))?.id ?? v;
-};
+// Operations in flight, as "op:path": the button that started one shows a spinner until it ends.
+const pending = new Set();
 const projects = () => (board && board.projects) || [];
 const selectedProject = () => projects().find(p => p.id === projectSel) || null;
-const inProject = t => !!selectedProject() && t.project === projectSel;
 const projectWorktrees = () => ((board && board.worktrees) || []).filter(w => w.project === projectSel);
-const colTasks = col => board.tasks.filter(t => t.column === col).sort((a, b) => a.order - b.order);
-const colTitle = id => (board.columns.find(c => c.id === id) || { title: id }).title;
-const tagOk = t => !tagSel?.size || (t.tags || []).some(x => tagSel.has(x));
+const worktreeAt = path => ((board && board.worktrees) || []).find(w => w.path === path) || null;
+const tagOk = w => !tagSel?.size || (w.tags || []).some(x => tagSel.has(x));
 const hiddenBranch = branch => !!branch && (selectedProject()?.hidden || []).includes(branch);
-const shownOk = x => showHidden || !hiddenBranch(x.branch);
-const matches = t => shownOk(t) && tagOk(t) && (!filter || `${t.id} ${taskNumber(t.id)} ${t.title} ${t.ticket || ""} ${t.branch} ${(t.tags || []).join(" ")}`.toLowerCase().includes(filter));
-const worktreeMatches = w => shownOk(w) && tagOk(w) && (!filter || `${worktreeName(w)} ${w.tags.join(" ")}`.toLowerCase().includes(filter));
+const shownOk = w => showHidden || !hiddenBranch(w.branch);
+// A worktree on a detached HEAD has no branch: it shows by its folder and the folder above it.
+const worktreeName = w => w.title || w.branch || w.path.split("/").slice(-2).join("/");
+// The title with its folder as a faint prefix: `feature/` then `x`.
+const titleEl = w => [w.folder ? h("span", { class: "folder" }, w.folder) : null, worktreeName(w)];
+const worktreeText = w => [w.key, worktreeName(w), w.path.split("/").slice(-2).join("/"), ...w.tags, w.agent?.title, ...(w.agents || []).map(a => a.title)].filter(Boolean).join(" ").toLowerCase();
+const worktreeByKey = key => projectWorktrees().find(w => w.key === key) || null;
+const titleOf = key => { const w = worktreeByKey(key); return w ? worktreeName(w) : key.split("/").pop(); };
+const waitText = keys => keys?.length ? "Waiting for " + keys.map(titleOf).join(", ") : "Waiting";
+const worktreeMatches = w => shownOk(w) && tagOk(w) && (!filter || worktreeText(w).includes(filter));
+const needsYou = a => a.state === "needs_input" || a.state === "plan_ready";
 
 function setBoard(b) {
   board = b;
@@ -469,26 +352,25 @@ function setBoard(b) {
   renderContext();
   renderTagBar();
   renderBoard();
-  if (openId) { const t = findTask(openId); if (t && inProject(t)) updatePanel(); else closePanel(); }
-  const waiting = b.tasks.filter(t => inProject(t) && shownOk(t) && needsAttention(t)).length;
+  const waiting = projectWorktrees().filter(shownOk).flatMap(w => w.agents || []).filter(needsYou).length;
   document.title = waiting ? `${waiting} waiting · Mission Control` : "Mission Control";
 }
-/** The page shows one project: the URL's, else the linked task's, else the first live one, else the first. */
+/** The page shows one project: the URL's, else the first live one, else the first. */
 function lockProject() {
   const list = projects();
   if (projectSel && list.some(p => p.id === projectSel)) return;
-  projectSel = findTask(taskRef(decodeURIComponent(location.hash.slice(1))))?.project || list.find(p => p.live)?.id || list[0]?.id || projectSel;
+  projectSel = list.find(p => p.live)?.id || list[0]?.id || projectSel;
   if (!projectSel) return;
   tagSel = showHidden = null;
   const q = new URLSearchParams(location.search);
   q.set("project", projectSel);
-  history.replaceState(null, "", location.pathname + "?" + q + location.hash);
+  history.replaceState(null, "", location.pathname + "?" + q);
 }
 function renderContext() {
   const c = $("#ctx"), p = selectedProject();
   if (p) {
     c.replaceChildren(I("repo", 13), h("strong", {}, p.name), I("branch", 12), h("span", { class: "mono" }, p.defaultBranch), I("chevronDown", 12));
-    c.title = `${p.repo} · pull requests go into ${p.defaultBranch}. Project settings`;
+    c.title = `${p.repo} · new worktrees start from ${p.defaultBranch}. Project settings`;
   } else {
     c.replaceChildren(I("repo", 13), h("strong", {}, "Project unavailable"), I("chevronDown", 12));
     c.title = "This page's project isn't registered; run /mission in its checkout";
@@ -510,16 +392,16 @@ function renderTagBar() {
   }
   if (showHidden === null) showHidden = LS.get("showHidden." + projectSel) === "1";
   for (const x of [...tagSel]) if (!tags.includes(x)) tagSel.delete(x);
-  const hidden = board.tasks.filter(t => inProject(t) && hiddenBranch(t.branch)).length + projectWorktrees().filter(w => hiddenBranch(w.branch)).length;
+  const hidden = projectWorktrees().filter(w => hiddenBranch(w.branch)).length;
   if (!hidden && showHidden) {
     showHidden = false;
     LS.set("showHidden." + projectSel, "0");
   }
   bar.hidden = !tags.length && !hidden;
   bar.replaceChildren(...(tags.length ? [I("tag", 12)] : []), ...tags.map(x => h("button", { class: "tag" + (tagSel.has(x) ? " on" : ""), "aria-pressed": String(tagSel.has(x)),
-    title: tagSel.has(x) ? `Stop filtering by ${x}` : `Show only cards tagged ${x}`, onclick: () => toggleTag(x) }, x)));
+    title: tagSel.has(x) ? `Stop filtering by ${x}` : `Show only worktrees tagged ${x}`, onclick: () => toggleTag(x) }, x)));
   if (hidden) bar.append(h("span", { class: "spacer" }), h("button", { class: "tag" + (showHidden ? " on" : ""), "aria-pressed": String(showHidden),
-    title: showHidden ? "Leave hidden cards out again" : "Show the cards hidden from the board", onclick: toggleHidden }, I(showHidden ? "eye" : "eyeOff", 11), `${hidden} hidden`));
+    title: showHidden ? "Leave hidden worktrees out again" : "Show the worktrees hidden from the board", onclick: toggleHidden }, I(showHidden ? "eye" : "eyeOff", 11), `${hidden} hidden`));
 }
 function toggleTag(x) {
   if (!tagSel.delete(x)) tagSel.add(x);
@@ -540,7 +422,6 @@ async function setHidden(project, branch, hidden) {
     const current = projects().find(p => p.id === project);
     if (current) Object.assign(current, r.project);
     renderTagBar();
-    if (hidden && !showHidden && findTask(openId)?.branch === branch) closePanel();
     renderBoard();
   } catch {}
 }
@@ -567,11 +448,11 @@ function showTagRulesModal(project) {
   openModal([
     h("div", { class: "m-body" },
       h("h2", {}, "Tag rules"),
-      h("p", { class: "m-text" }, `Tasks and worktrees of ${project.name} get the tags of every rule matching their branch name or their worktree's folder name when they are created or tracked; saving also tags its open tasks.`),
+      h("p", { class: "m-text" }, `Worktrees of ${project.name} carry the tags of every rule matching their branch name or their folder name.`),
       h("label", { class: "m-label" }, "One rule per line: a branch or folder pattern, then its tags"),
       area,
       h("div", { class: "m-note" }, "* matches anything, ? one character; case is ignored.")),
-    h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), save)]);
+    h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: () => closeModal() }, "Cancel"), save)]);
   setTimeout(() => area.focus(), 0);
 }
 const scriptName = path => (path ? path.split("/").pop() : "None");
@@ -595,13 +476,13 @@ function showScriptsModal(project) {
   openModal([
     h("div", { class: "m-body" },
       h("h2", {}, "Scripts"),
-      h("p", { class: "m-text" }, `Run with bash in the worktree of every ${project.name} task: setup after a new worktree is created and before its agent starts, teardown before the worktree is removed.`),
+      h("p", { class: "m-text" }, `Run with bash in a worktree of ${project.name}: setup after New worktree creates it, teardown before Remove worktree deletes it. Your createWorktree and removeWorktree commands get their paths instead.`),
       h("label", { class: "m-label" }, "Setup script"),
       setup,
       h("label", { class: "m-label" }, "Teardown script"),
       teardown,
       h("div", { class: "m-note" }, "Paths may start with ~. Leave a field empty for none; a value equal to the default in config.json keeps following it.")),
-    h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), save)]);
+    h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: () => closeModal() }, "Cancel"), save)]);
   setTimeout(() => { setup.focus(); setup.select(); }, 0);
 }
 /** Loads the selected project's omp colors without flashing the previous theme. */
@@ -619,50 +500,12 @@ function connect() {
   es.onopen = () => setConn(true);
   es.onerror = () => { setConn(false); if (es.readyState === EventSource.CLOSED) setTimeout(connect, 2000); };
   es.addEventListener("snapshot", e => { setConn(true); setBoard(JSON.parse(e.data)); });
-  es.addEventListener("step", e => {
-    const { taskId, step } = JSON.parse(e.data);
-    const t = findTask(taskId);
-    if (!t || !t.agent) return;
-    t.agent.step = step;
-    refreshCard(t);
-    if (openId === taskId && P) updateAgent(t);
-  });
 }
 function setConn(on) { const d = $("#conn"); d.classList.toggle("on", on); d.title = on ? "Connected" : "Disconnected"; }
 async function loadState() { try { setBoard(await api("GET", "/api/state")); } catch (e) { toast(e.message, true); } }
 
 // MARK: status
 const AGENT_LABEL = { working: "Working", thinking: "Thinking", planning: "Planning" };
-const INTENT_LABEL = { start: "Creating worktree", resume: "Resuming agent", stop: "Stopping agent", remove: "Removing worktree", delete: "Deleting" };
-const OP_LABEL = { start: "Start", resume: "Resume", stop: "Stop", merge: "Merge", remove: "Worktree removal", delete: "Delete" };
-function statusOf(t) {
-  if (t.intent) {
-    const op = t.intent.op, text = op === "merge" ? "Merging into " + t.base : INTENT_LABEL[op] || "Working";
-    return t.intent.attempt > 0 ? { tone: "busy", spin: true, text: text + " · retrying", title: t.intent.lastError || "" } : { tone: "busy", spin: true, text };
-  }
-  if (t.spawn.state === "failed") return { tone: "err", icon: "alert", text: "Start failed" };
-  if (t.column === "done") return { tone: "ok", icon: t.merged ? "merge" : "check", text: t.merged ? "Merged into " + t.base : "Done" };
-  if (t.column === "waiting") {
-    if (t.held) return { tone: "faint", icon: "pause", text: "Paused" };
-    if (t.blockedBy.length) return { tone: "faint", icon: "link", text: "Waiting for " + taskNumbers(t.blockedBy) };
-    if (t.planned) return { tone: "faint", icon: "play", text: "Resuming" };
-  }
-  const s = t.agent?.state;
-  if (s === "needs_input") return { tone: "needs", icon: "hand", text: "Needs you", since: t.agent.since };
-  if (s === "plan_ready") return { tone: "needs", icon: "file", text: "Plan ready for review", since: t.agent.since };
-  if (s === "disconnected") return { tone: "needs", icon: "alert", text: "Session disconnected" };
-  if (AGENT_LABEL[s]) return { tone: "busy", spin: true, text: AGENT_LABEL[s], since: t.agent.startedAt || t.agent.since };
-  if (t.column === "review") return t.land?.mergeInto ? { tone: "ok", icon: "merge", text: "Ready to merge" } : { tone: "ok", icon: "pr", text: "Ready for pull request" };
-  if (t.column === "pr" && t.pr) {
-    if (t.pr.checks === "failing") return { tone: "needs", icon: "alert", text: "Checks failing" };
-    if (t.pr.review === "changes_requested") return { tone: "needs", icon: "message", text: "Changes requested" };
-    if (t.pr.conflicts) return { tone: "needs", icon: "alert", text: "Conflicts with " + (t.pr.base || t.base) };
-    return t.pr.state === "draft" ? { tone: "idle", icon: "prDraft", text: "Draft pull request" } : { tone: "ok", icon: "pr", text: "Pull request open" };
-  }
-  if (!t.agent) return t.column === "planning" ? { tone: "faint", icon: "file", text: "Planning" } : null;
-  if (s === "stopped") return { tone: "faint", dot: true, text: "Agent stopped" };
-  return { tone: "idle", dot: true, text: "Idle" };
-}
 function stateEl(info) {
   const el = h("span", { class: `state ${info.tone}`, title: info.title || null });
   if (info.spin) el.append(frag(spinner(12)));
@@ -672,23 +515,25 @@ function stateEl(info) {
   if (info.since) el.append(h("span", { class: "t", "data-elapsed": info.since }, elapsed(info.since)));
   return el;
 }
-function needsAttention(t) { return statusOf(t)?.tone === "needs"; }
-function agentTone(t) {
-  if (t.paused) return "var(--faint)";
-  if (t.column === "done") return "var(--add)";
-  if (!t.agent) return null;
-  const s = t.agent.state;
-  if (s === "needs_input" || s === "plan_ready") return "var(--warning)";
-  if (s === "disconnected") return "var(--warning)";
-  if (AGENT_LABEL[s]) return "var(--accent)";
-  if (s === "stopped") return "var(--faint)";
-  return "var(--add)";
+// What one running omp does, from its own report; "omp running" when it reports nothing.
+function agentInfo(a) {
+  if (a.state === "waiting") return { tone: "idle", icon: "pause", text: waitText(a.waitingFor), since: a.since };
+  if (a.state === "needs_input") return { tone: "needs", icon: "hand", text: "Needs you", since: a.since };
+  if (a.state === "plan_ready") return { tone: "needs", icon: "file", text: "Plan ready for review", since: a.since };
+  if (AGENT_LABEL[a.state]) return { tone: "busy", spin: true, text: AGENT_LABEL[a.state], since: a.startedAt || a.since };
+  return { tone: "idle", dot: true, text: a.state === "idle" ? "Idle" : "omp running" };
 }
-function cardLine(t) {
-  if (t.agent && (AGENT_LABEL[t.agent.state] || t.agent.state === "needs_input") && t.agent.step) return { icon: t.agent.state === "needs_input" ? "hand" : "wrench", text: t.agent.step };
-  if (t.spawn.state === "failed" && t.spawn.error) return { icon: "alert", text: t.spawn.error };
-  if (t.agent && t.agent.message) return { icon: "message", text: t.agent.message };
-  return null;
+// The omp that needs you first, else one at work, else the newest; the count when several run.
+function worktreeStatus(w) {
+  const running = w.agents || [];
+  if (running.length) {
+    const lead = running.find(needsYou) || running.find(a => AGENT_LABEL[a.state]) || running[0];
+    const info = agentInfo(lead);
+    return running.length > 1 ? { ...info, text: `${info.text} · ${running.length} omp` } : info;
+  }
+  const a = w.agent || {};
+  if (a.state === "asleep") return { tone: "faint", icon: "pause", text: `Asleep · ${ago(a.at)}`, title: `Its omp session was last active ${ago(a.at)}; Resume reopens it` };
+  return { tone: "faint", text: "No omp session" };
 }
 const PR_STYLE = { open: ["pr", "var(--add)", "Open"], draft: ["prDraft", "var(--muted)", "Draft"], merged: ["prMerged", "var(--merged)", "Merged"], closed: ["prClosed", "var(--remove)", "Closed"] };
 function prChip(pr) {
@@ -702,283 +547,328 @@ function prChip(pr) {
   else if (pr.review === "changes_requested") { kids.push(I("x", 10, "changes")); words.push("changes requested"); }
   if (pr.conflicts) { kids.push(I("alert", 10, "conflict")); words.push("conflicts"); }
   if (pr.unresolved > 0) { kids.push(I("message", 10), String(pr.unresolved)); words.push(plural(pr.unresolved, "unresolved review comment")); }
-  return h("a", { class: "pr-chip", href: pr.url, target: "_blank", rel: "noopener", draggable: "false", style: `color:${color}`, title: words.join(" · "), onclick: e => e.stopPropagation() }, ...kids);
+  return h("a", { class: "pr-chip", href: pr.url, target: "_blank", rel: "noopener", style: `color:${color}`, title: words.join(" · "), onclick: e => e.stopPropagation() }, ...kids);
 }
-function fromChip(x) {
-  const p = projects().find(p => p.id === x.project);
-  return p && x.base && x.base !== p.defaultBranch ? h("span", { class: "chip mono", title: `Branches from ${x.base}` }, I("branch", 10), "from " + x.base) : null;
+function fromChip(w) {
+  const p = projects().find(p => p.id === w.project);
+  return p && !w.main && w.base && w.base !== p.defaultBranch ? h("span", { class: "chip mono", title: `Branches from ${w.base}` }, I("branch", 10), "from " + w.base) : null;
 }
-function tagRow(t) {
-  const from = fromChip(t), tags = t.tags || [];
+function tagRow(w) {
+  const from = fromChip(w), tags = w.tags || [];
   return from || tags.length ? h("div", { class: "c-tags" }, from, ...tags.map(x => h("span", { class: "tag" }, x))) : null;
 }
-function landActions(t) {
-  if (t.column === "done" || !t.worktree || !t.land || !(t.git?.commits > 0)) return [];
-  const out = [], dirty = t.git.dirty > 0;
-  if (t.land.mergeInto) out.push(actionButton("Merge into " + t.land.mergeInto, "merge", () => showMergeModal(findTask(t.id) || t), true,
-    dirty ? "Commit the uncommitted changes first" : "git merge --no-ff into " + t.land.mergeInto, dirty));
-  if (t.land.pr) out.push(actionButton("Create pull request", "pr", () => createPr(t), !t.land.mergeInto, `Push ${t.branch} and open a pull request into ${t.base}`));
-  return out;
-}
-async function createPr(t) {
-  try {
-    const r = await act("POST", tpath(t.id, "/pr"), {});
-    toast(r.via === "agent" ? "Asked the agent to open it" : "Pull request opened");
-  } catch {}
-}
 const diffstat = git => h("span", { class: "diffstat" }, h("span", { class: "a" }, `+${git.added}`), " ", h("span", { class: "r" }, `\u2212${git.removed}`));
-
-// MARK: board
-const EMPTY_COLUMN = {
-  planning: "Nothing is being planned. Press N to start a task.",
-  waiting: "Nothing waits",
-  doing: "Agents at work show up here",
-  review: "Finished work ready to land",
-  pr: "Tasks with an open pull request",
-  done: "Landed tasks end up here",
-};
-const DROP_COLUMNS = ["waiting", "doing", "done"];
-function renderBoard() {
-  if (!board) return;
-  if (dragging) { pendingRender = true; return; }
-  pendingRender = false;
-  $("#board").classList.toggle("pipeline-view", boardView === "pipeline");
-  $("#board").classList.toggle("workbench-view", boardView === "live");
-  if (boardView === "pipeline") { renderPipeline(); return; }
-  if (boardView === "live") { renderWorkbench(); highlightDependencyPath(); return; }
-  const root = $("#board");
-  const scrolls = {};
-  root.querySelectorAll(".col-b").forEach(b => { scrolls[b.dataset.col] = b.scrollTop; });
-  root.replaceChildren(...board.columns.map(columnEl));
-  root.querySelectorAll(".col-b").forEach(b => { if (scrolls[b.dataset.col]) b.scrollTop = scrolls[b.dataset.col]; });
-  highlightDependencyPath();
-}
-function columnEl(col) {
-  const tasks = colTasks(col.id).filter(t => inProject(t) && matches(t));
-  const trees = projectWorktrees().filter(w => w.column === col.id && worktreeMatches(w));
-  const head = h("div", { class: "col-h", html: colIcon(col.id) },
-    h("span", { class: "col-t" }, col.title), h("span", { class: "count" }, String(tasks.length + trees.length)), h("span", { class: "spacer" }));
-  if (col.id === "planning") head.append(toolButton("plus", "New task (N)", () => openComposer(), 14));
-  const body = h("div", { class: "col-b", "data-col": col.id });
-  if (tasks.length || trees.length) body.append(...tasks.map(cardEl), ...trees.map(worktreeCard));
-  else body.append(h("div", { class: "col-empty" }, filter || tagSel?.size ? "No matching tasks" : EMPTY_COLUMN[col.id]));
-  if (DROP_COLUMNS.includes(col.id)) wireDrop(body, col.id);
-  return h("section", { class: "col", "data-col": col.id }, head, body);
-}
-function cardEl(t) {
-  const top = h("div", { class: "c-top" }, h("span", { class: "c-id" }, taskNumber(t.id)));
-  if (t.ticket) top.append(h("span", { class: "chip mono" }, t.ticket));
-  if (t.controlSet) top.append(setBadge(t));
-  if (t.dependsOn.length) top.append(h("span", { class: "chip", title: "Depends on " + taskNumbers(t.dependsOn) }, I("link", 10), t.dependsOn.map(taskNumber).join(" ")));
-  top.append(h("span", { class: "spacer" }));
-  if (t.pr) top.append(prChip(t.pr));
-  const needs = needsAttention(t);
-  const el = h("div", { class: "card" + (t.id === openId ? " sel" : "") + (t.id === highlightedDependency ? " dep-highlight" : "") + (needs ? " needs" : "") + (hiddenBranch(t.branch) ? " is-hidden" : ""), draggable: "true", "data-id": t.id, onclick: () => openPanel(t.id), ondblclick: () => openPanel(t.id, true) },
-    top, h("div", { class: "c-title" }, t.title || "Untitled"), tagRow(t));
-  const info = statusOf(t);
-  if (info) el.append(h("div", { class: "c-line" }, stateEl(info)));
-  const line = cardLine(t);
-  if (line) el.append(h("div", { class: "c-line", title: line.text }, I(line.icon, 12), h("span", {}, line.text)));
-  if (t.worktree) {
-    const foot = h("div", { class: "c-foot" }, h("span", { class: "branch", title: t.branch }, I("branch", 11), h("span", {}, t.branch)), h("span", { class: "spacer" }));
-    if (t.git && (t.git.added || t.git.removed)) foot.append(diffstat(t.git));
-    if (t.git && t.git.dirty > 0) foot.append(h("span", { class: "udot", title: plural(t.git.dirty, "uncommitted file") }));
-    el.append(foot);
-  }
-  el.addEventListener("dragstart", e => {
-    dragging = { id: t.id, el };
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("text/plain", t.id);
-    requestAnimationFrame(() => el.classList.add("dragging"));
-  });
-  el.addEventListener("dragend", () => {
-    el.classList.remove("dragging");
-    placeholder.remove();
-    document.querySelectorAll(".col.over").forEach(c => c.classList.remove("over"));
-    dragging = null;
-    if (pendingRender) renderBoard();
-  });
-  return el;
-}
-// A worktree on a detached HEAD has no branch: it shows by its folder and the folder above it.
-const worktreeName = w => w.branch || w.path.split("/").slice(-2).join("/");
-const worktreeAt = path => ((board && board.worktrees) || []).find(w => w.path === path) || null;
 function worktreeChip(w) {
-  if (w.main) return h("span", { class: "chip", title: "The project's main checkout: tasks get worktrees of their own, so it never becomes one" }, "main checkout");
-  return w.detached ? h("span", { class: "chip mono", title: `A detached HEAD at ${w.detached}: with no branch it can't become a task` }, `detached ${w.detached}`)
-    : h("span", { class: "chip", title: "No task tracks this worktree yet" }, "untracked");
+  if (w.main) return h("span", { class: "chip", title: "The project's main checkout" }, "main checkout");
+  return w.detached ? h("span", { class: "chip mono", title: `A detached HEAD at ${w.detached}` }, `detached ${w.detached}`) : null;
 }
-// What one running omp does, from its own report; "omp running" when it reports nothing.
-function agentInfo(a) {
-  if (a.state === "needs_input") return { tone: "needs", icon: "hand", text: "Needs you", since: a.since };
-  if (a.state === "plan_ready") return { tone: "needs", icon: "file", text: "Plan ready for review", since: a.since };
-  if (AGENT_LABEL[a.state]) return { tone: "busy", spin: true, text: AGENT_LABEL[a.state], since: a.startedAt || a.since };
-  return { tone: "idle", dot: true, text: a.state === "idle" ? "Idle" : "omp running" };
+// Diffstat, uncommitted files and the newest commit, or null when there is nothing to show.
+function gitLine(w) {
+  const g = w.git;
+  if (!g) return null;
+  const bits = [];
+  if (g.added || g.removed) bits.push(diffstat(g));
+  if (g.dirty > 0) bits.push(h("span", { class: "udot", title: plural(g.dirty, "uncommitted file") }));
+  if (g.last) bits.push(h("span", { class: "commit", title: g.last.subject }, `${g.last.subject} · ${ago(g.last.at)}`));
+  return bits.length ? h("div", { class: "c-git" }, ...bits) : null;
 }
-// The omp that needs you first, else one at work, else the newest; the count when several run.
-function worktreeStatus(w) {
-  const running = w.agents || [];
-  if (running.length) {
-    const lead = running.find(a => a.state === "needs_input" || a.state === "plan_ready") || running.find(a => AGENT_LABEL[a.state]) || running[0];
-    const info = agentInfo(lead);
-    return running.length > 1 ? { ...info, text: `${info.text} · ${running.length} omp` } : info;
-  }
-  const a = w.agent || {};
-  if (a.state === "asleep") return { tone: "faint", icon: "pause", text: `Asleep · ${ago(a.at)}`, title: `Its omp session was last active ${ago(a.at)}; Resume reopens it` };
-  return { tone: "faint", text: "No omp session" };
-}
-function worktreeCard(w) {
-  const top = h("div", { class: "c-top" }, worktreeChip(w), h("span", { class: "spacer" }));
-  if (w.pr) top.append(prChip(w.pr));
-  const el = h("div", { class: "card untracked" + (hiddenBranch(w.branch) ? " is-hidden" : ""), "data-path": w.path, tabindex: "0", title: w.path }, top, h("div", { class: "c-title" }, worktreeName(w)));
-  el.onclick = () => openMenu(el, worktreeMenu(w, el));
-  el.onkeydown = e => { if (e.key === "Enter") el.click(); };
-  const tags = tagRow(w);
-  if (tags) el.append(tags);
-  el.append(h("div", { class: "c-line" }, stateEl(worktreeStatus(w))));
-  if (w.agent?.title) el.append(h("div", { class: "c-line", title: w.agent.title }, I("message", 12), h("span", {}, w.agent.title)));
-  if (w.git && (w.git.added || w.git.removed || w.git.dirty > 0)) {
-    const foot = h("div", { class: "c-foot" }, h("span", { class: "spacer" }));
-    if (w.git.added || w.git.removed) foot.append(diffstat(w.git));
-    if (w.git.dirty > 0) foot.append(h("span", { class: "udot", title: plural(w.git.dirty, "uncommitted file") }));
-    el.append(foot);
-  }
-  return el;
-}
-async function adoptWorktree(w, extra = {}) {
-  const t = await act("POST", "/api/worktrees/adopt", { path: w.path, ...extra });
-  const cur = findTask(t.id);
-  if (cur) Object.assign(cur, t); else board.tasks.push(t);
-  board.worktrees = board.worktrees.filter(x => x.path !== w.path);
+
+// MARK: worktree actions
+const current = w => worktreeAt(w.path) || w;
+async function run(key, fn) {
+  pending.add(key);
   renderBoard();
-  return t;
+  try { return await fn(); }
+  finally { pending.delete(key); renderBoard(); }
 }
-const adoptThen = (w, fn, extra) => async () => { try { await fn(await adoptWorktree(w, extra)); } catch {} };
-function worktreeMenu(w, anchor) {
-  const state = w.agent?.state;
-  const open = state === "running" ? { icon: "terminal", label: "Open its terminal", action: () => openListedWorktree(w) }
-    : { icon: "openIn", label: "Open worktree", action: () => openListedWorktree(w) };
-  if (w.detached || w.main) {
-    return [{ header: worktreeName(w) },
-      ...(state === "asleep" ? [{ icon: "play", label: "Resume in a terminal", action: () => resumeListedWorktree(w) }] : []),
-      open,
-      ...(w.main ? (w.branch ? [hideItem(w.project, w.branch)] : []) : ["-", { icon: "trash", label: "Remove worktree…", danger: true, action: () => confirmModal("Remove the worktree?",
-        `Deletes ${w.path}, a detached HEAD at ${w.detached}. Refused while omp runs there or it has uncommitted changes.`, "Remove worktree",
-        async () => {
-          try { await act("POST", "/api/worktrees/remove", { path: w.path }, "Worktree removed"); }
-          catch { return; }
-          board.worktrees = board.worktrees.filter(x => x.path !== w.path);
-          renderBoard();
-        }) }])];
-  }
-  const move = message => t => act("POST", tpath(t.id, "/move"), { column: "doing" }, message(taskNumber(t.id)));
-  const agent = state === "asleep" ? { icon: "play", label: "Resume", action: adoptThen(w, move(n => `${n} is reopening its omp session`), { session: w.agent.session.id }) }
-    : state === "running" ? null : { icon: "play", label: "Start agent", action: adoptThen(w, move(n => `${n} is starting its agent`)) };
-  const prOpen = w.pr && (w.pr.state === "open" || w.pr.state === "draft");
-  return [{ header: w.branch },
-    { icon: "kanban", label: "Track as task", action: adoptThen(w, t => openPanel(t.id)) },
-    { icon: "tag", label: "Add tags…", action: () => openMenu(anchor, tagMenu([], tags => adoptThen(w, t => openPanel(t.id), { tags })())) },
-    ...(agent ? [agent] : []),
-    { icon: "pr", label: "Create pull request", disabled: prOpen, action: adoptThen(w, createPr) },
-    open,
-    hideItem(w.project, w.branch),
-    "-", { icon: "trash", label: "Remove worktree…", danger: true, action: () => confirmModal("Remove the worktree?",
-      `Deletes ${w.path} and branch ${w.branch}, after stopping any agent the board runs there.`, "Remove worktree",
-      adoptThen(w, async t => {
-        const r = await act("DELETE", tpath(t.id), { cleanup: true, confirmWorking: true });
-        if (r && r.pending) toast(r.message || "The worktree is removed once its agent has stopped");
-        else { board.tasks = board.tasks.filter(x => x.id !== t.id); if (openId === t.id) closePanel(); renderBoard(); toast("Worktree removed"); }
-      })) }];
+function opButton(w, op, label, icon, fn, title) {
+  const busy = pending.has(`${op}:${w.path}`);
+  const b = actionButton(label, icon, () => run(`${op}:${w.path}`, () => fn(current(w))).catch(() => {}), false, title, busy);
+  if (busy) b.firstChild.replaceWith(frag(spinner(11)));
+  return b;
 }
-async function openListedWorktree(w) {
+// The same row on every card of every view, from the actions the server computed.
+function worktreeActions(w) {
+  const a = w.actions || {}, row = h("div", { class: "c-actions" });
+  row.append(opButton(w, "open", "Open worktree", "openIn", openWorktree, "Bring forward a terminal in this checkout"));
+  if (a.pr === "open" && w.pr) {
+    const [ic, color, label] = PR_STYLE[w.pr.state] || PR_STYLE.open;
+    row.append(h("a", { class: "btn sm", href: w.pr.url, target: "_blank", rel: "noopener", style: `color:${color}`, title: `${label} pull request into ${w.pr.base}: ${w.pr.title}`,
+      onclick: e => e.stopPropagation() }, I(ic, 11), `Open PR #${w.pr.number}`));
+  } else if (a.pr === "create") row.append(opButton(w, "pr", "Create PR", "pr", createPr, `Push ${w.branch} and open a pull request into ${w.base}`));
+  if (a.resume) row.append(opButton(w, "resume", "Resume", "play", resumeWorktree, `Reopen its omp session in a new terminal; last active ${ago(w.agent.at)}`));
+  const removing = pending.has("remove:" + w.path);
+  const more = h("button", { class: "btn sm more", title: removing ? "Removing the worktree" : "More", "aria-label": "More actions", disabled: removing,
+    onclick: e => { e.stopPropagation(); openWorktreeMenu(more, w, { align: "right" }); } }, removing ? frag(spinner(12)) : I("more", 14));
+  row.append(more);
+  return row;
+}
+function openWorktreeMenu(anchor, w, opts = {}) {
+  w = current(w);
+  const items = [{ header: worktreeName(w) }, { icon: "link", label: "Depends on…", sub: String(prerequisites(w).length || ""), action: () => openMenu(anchor, dependsMenu(w), opts) }];
+  if (w.branch && !w.detached) items.push(hideItem(w.project, w.branch));
+  if (w.actions?.remove) items.push("-", { icon: "trash", label: "Remove worktree…", danger: true, action: () => confirmRemove(w) });
+  else items.push({ note: w.main ? "The main checkout stays" : "End its omp to remove it" });
+  openMenu(anchor, items, opts);
+}
+function dependsMenu(w) {
+  const others = projectWorktrees().filter(x => x.key !== w.key), linked = new Set(prerequisites(w).map(x => x.key));
+  return [{ header: `${worktreeName(w)} depends on` }, ...(others.length
+    ? others.map(x => madeFrom(x.key, w.key)
+      ? { icon: "branch", label: worktreeName(x), sub: "made from", checked: true, disabled: true }
+      : { icon: "branch", label: worktreeName(x), sub: columnTitle(x.column), checked: linked.has(x.key), action: () => setLink(x.key, w.key, !linked.has(x.key)) })
+    : [{ note: "The project has no other checkout" }])];
+}
+// Clicking a card's body opens its detail panel.
+function cardClick(el, w) {
+  return e => { if (!e.target.closest("button,a")) openPanel(w.key); };
+}
+const cardKey = w => e => { if (e.key === "Enter" && e.target === e.currentTarget) openPanel(w.key); };
+const dependents = w => (selectedProject()?.links || []).filter(l => l.from === w.key).map(l => worktreeByKey(l.to)).filter(Boolean);
+// The checkouts `w` depends on, from the project's links.
+const prerequisites = w => (selectedProject()?.links || []).filter(l => l.to === w.key).map(l => projectWorktrees().find(x => x.key === l.from)).filter(Boolean);
+// Whether `to` is made from `from`'s branch: git records that link, so it can't be removed here.
+const madeFrom = (from, to) => (selectedProject()?.links || []).some(l => l.madeFrom && l.from === from && l.to === to);
+async function setLink(from, to, linked) {
+  const project = selectedProject();
+  if (!project) return false;
+  try {
+    const r = await api("PATCH", "/api/projects/links", { id: project.id, from, to, linked });
+    Object.assign(projects().find(p => p.id === project.id) || {}, r.project);
+    renderBoard();
+    return true;
+  } catch (e) { failed(e); return false; }
+}
+// "Waiting for" what holds it, else "Builds on" its prerequisites once all are Done; null without either.
+function depsLine(w) {
+  const waiting = w.waitingFor || [];
+  if (waiting.length) return h("div", { class: "c-line c-deps", title: waitText(waiting) }, I("pause", 12),
+    h("span", {}, "Waiting for ", ...waiting.flatMap((k, i) => [i ? ", " : "", h("span", { class: "mono" }, titleOf(k))])));
+  const pre = prerequisites(w);
+  if (!pre.length || pre.some(x => x.column !== "done")) return null;
+  return h("div", { class: "c-line c-deps", title: "Builds on " + pre.map(worktreeName).join(", ") + ", all done" }, I("link", 12),
+    h("span", {}, "Builds on ", ...pre.flatMap((x, i) => [i ? ", " : "", h("span", { class: "mono" }, worktreeName(x))]), " ", I("check", 11, "ok")));
+}
+async function openWorktree(w) {
   try {
     const r = await act("POST", "/api/worktrees/open", { path: w.path });
-    if (!r.opened) commandModal(`Open ${worktreeName(w)}`, "Run this in any terminal to work in the worktree.", r.cd);
+    if (!r.opened) commandModal(`Open ${worktreeName(w)}`, "No terminal is open in this checkout. Run this in a terminal to go there.", r.cd);
   } catch {}
 }
-async function resumeListedWorktree(w) {
+async function openAgentTerminal(w, a) {
+  try {
+    const r = await act("POST", "/api/worktrees/open", { path: w.path, session: a.id });
+    if (!r.opened) commandModal(`Open ${worktreeName(w)}`, "Its omp's terminal can't be brought forward. Run this in a terminal to go there.", r.cd);
+  } catch {}
+}
+async function resumeWorktree(w) {
   try {
     const r = await act("POST", "/api/worktrees/resume", { path: w.path, session: w.agent.session.id });
     if (!r.opened) commandModal(`Resume ${worktreeName(w)}`, "Run this in any terminal to reopen its omp session.", r.command);
   } catch {}
 }
-function refreshCard(t) {
-  if (dragging) { pendingRender = true; return; }
-  if (boardView === "pipeline") { renderPipeline(); return; }
-  if (boardView === "live") { renderWorkbench(); highlightDependencyPath(); return; }
-  const old = document.querySelector(`.card[data-id="${CSS.escape(t.id)}"]`);
-  if (old) old.replaceWith(cardEl(t));
-  highlightDependencyPath();
+async function createPr(w) {
+  try {
+    const r = await act("POST", "/api/worktrees/pr", { path: w.path });
+    toast(r.url ? h("span", {}, "Pull request opened: ", h("a", { href: r.url, target: "_blank", rel: "noopener" }, r.url)) : "Pull request opened");
+  } catch {}
+}
+function confirmRemove(w, dirty = 0) {
+  const what = w.branch ? `${w.path} and branch ${w.branch}` : `${w.path}, a detached HEAD at ${w.detached}`;
+  confirmModal(dirty ? `${plural(dirty, "uncommitted file")} will be lost` : "Remove the worktree?",
+    dirty ? `${worktreeName(w)} has uncommitted changes. Removing it anyway deletes them with ${what}.` : `Deletes ${what}.`,
+    dirty ? "Remove anyway" : "Remove worktree", () => run("remove:" + w.path, () => removeWorktree(w, dirty > 0)));
+}
+async function removeWorktree(w, force) {
+  try {
+    const r = await api("POST", "/api/worktrees/remove", force ? { path: w.path, force: true } : { path: w.path });
+    board.worktrees = board.worktrees.filter(x => x.path !== w.path);
+    renderTagBar();
+    toast(r.output || `${worktreeName(w)} removed`);
+  } catch (e) {
+    if (e.status === 409 && e.data?.dirty && !force) confirmRemove(w, e.data.dirty);
+    else failed(e);
+  }
 }
 
-// MARK: drag and drop
-const placeholder = h("div", { class: "ph" });
-function wireDrop(body, col) {
-  body.addEventListener("dragover", e => {
-    if (!dragging) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    body.parentElement.classList.add("over");
-    const cards = [...body.querySelectorAll(".card[data-id]:not(.dragging)")];
-    const after = cards.find(c => { const r = c.getBoundingClientRect(); return e.clientY < r.top + r.height / 2; });
-    if (after) { if (placeholder.nextSibling !== after) body.insertBefore(placeholder, after); }
-    else if (body.lastChild !== placeholder) body.append(placeholder);
-  });
-  body.addEventListener("dragleave", e => { if (!body.contains(e.relatedTarget)) body.parentElement.classList.remove("over"); });
-  body.addEventListener("drop", e => {
-    if (!dragging) return;
-    e.preventDefault();
-    body.parentElement.classList.remove("over");
-    const id = dragging.id;
-    const sibs = [...body.children].filter(c => c === placeholder || (c.dataset.id && c.dataset.id !== id));
-    const i = sibs.indexOf(placeholder);
-    const prev = sibs[i - 1] && findTask(sibs[i - 1].dataset.id);
-    const next = sibs[i + 1] && findTask(sibs[i + 1].dataset.id);
-    let order;
-    if (prev && next) order = (prev.order + next.order) / 2;
-    else if (prev) order = prev.order + 1000;
-    else if (next) order = next.order - 1000;
-    else order = 1000;
-    placeholder.remove();
-    dragging = null;
-    const t = findTask(id);
-    if (t && t.column === col) renderBoard();
-    else requestMove(id, col, order);
-  });
-}
-async function requestMove(id, col, order) {
-  const t = findTask(id);
-  if (!t) return;
-  if (col === "doing" && t.column !== "doing" && t.blockedBy.length && t.spawn.state !== "failed") {
-    confirmModal(`Resume ${taskNumber(t.id)} now?`,
-      `It builds on ${taskNumbers(t.blockedBy)}, which ${t.blockedBy.length === 1 ? "hasn't" : "haven't"} landed. Left in Waiting, the board resumes it once ${t.blockedBy.length === 1 ? "it has" : "they have"}.`,
-      "Resume anyway", () => doMove(t, col, order, true, t.moveRequiresConfirmation === true), { cls: "primary" });
-    renderBoard();
-    return;
+// MARK: board
+const COLUMNS = [
+  { id: "planning", title: "Planning", empty: "Nothing is being planned. Press N to start a worktree with a prompt." },
+  { id: "waiting", title: "Waiting", empty: "Nothing waits" },
+  { id: "doing", title: "In Progress", empty: "omp sessions at work show up here" },
+  { id: "review", title: "Review", empty: "Worktrees with commits ready for a pull request" },
+  { id: "pr", title: "Pull Request", empty: "Worktrees with an open pull request" },
+  { id: "idle", title: "Idle", empty: "Checkouts with nothing going on" },
+  { id: "done", title: "Done", empty: "Merged or landed worktrees end up here" },
+];
+const columnTitle = id => COLUMNS.find(c => c.id === id)?.title || id;
+function renderBoard() {
+  if (!board) return;
+  $("#board").classList.toggle("pipeline-view", boardView === "pipeline");
+  $("#board").classList.toggle("workbench-view", boardView === "live");
+  if (boardView === "pipeline") renderPipeline();
+  else if (boardView === "live") renderWorkbench();
+  else {
+    const root = $("#board");
+    const scrolls = {};
+    root.querySelectorAll(".col-b").forEach(b => { scrolls[b.dataset.col] = b.scrollTop; });
+    root.replaceChildren(...COLUMNS.map(columnEl));
+    root.querySelectorAll(".col-b").forEach(b => { if (scrolls[b.dataset.col]) b.scrollTop = scrolls[b.dataset.col]; });
   }
-  if (col !== t.column && t.moveRequiresConfirmation) { confirmWorkingMove(t, col, order); return; }
-  await doMove(t, col, order);
+  renderPanel();
+  highlightDependencyPath();
 }
-async function doMove(t, col, order, force, confirmedWorking = false) {
-  const prev = { column: t.column, order: t.order };
-  t.column = col;
-  t.order = order ?? Math.max(0, ...colTasks(col).filter(x => x !== t).map(x => x.order)) + 1000;
-  renderBoard();
-  if (openId === t.id) updatePanel();
-  const body = { column: col };
-  if (order != null) body.order = order;
-  if (force) body.force = true;
-  if (confirmedWorking) body.confirmWorking = true;
+function columnEl(col) {
+  const trees = projectWorktrees().filter(w => w.column === col.id && worktreeMatches(w));
+  const head = h("div", { class: "col-h", html: colIcon(col.id) }, h("span", { class: "col-t" }, col.title), h("span", { class: "count" }, String(trees.length)));
+  const body = h("div", { class: "col-b", "data-col": col.id });
+  if (trees.length) body.append(...trees.map(worktreeCard));
+  else body.append(h("div", { class: "col-empty" }, filter || tagSel?.size ? "No matching worktrees" : col.empty));
+  return h("section", { class: "col", "data-col": col.id }, head, body);
+}
+function worktreeCard(w) {
+  const top = h("div", { class: "c-top" }, worktreeChip(w));
+  const el = h("div", { class: "card" + (hiddenBranch(w.branch) ? " is-hidden" : "") + ((w.agents || []).some(needsYou) ? " needs" : ""), "data-key": w.key, tabindex: "0", title: w.path },
+    top, h("div", { class: "c-title" }, ...titleEl(w)), tagRow(w), h("div", { class: "c-line" }, stateEl(worktreeStatus(w))), depsLine(w));
+  el.onclick = cardClick(el, w);
+  el.onkeydown = cardKey(w);
+  if (w.agent?.title) el.append(h("div", { class: "c-line", title: w.agent.title }, I("message", 12), h("span", {}, w.agent.title)));
+  el.append(gitLine(w) || "");
+  if (w.pr) el.append(h("div", { class: "c-line" }, prChip(w.pr)));
+  el.append(worktreeActions(w));
+  return el;
+}
+
+// MARK: dependency path
+// The open card's prerequisites, transitively: Done ones green, open ones red, the rest dimmed, in every view.
+function highlightDependencyPath() {
+  const links = selectedProject()?.links || [], column = new Map(projectWorktrees().map(w => [w.key, w.column]));
+  const upstream = new Set(), edges = new Set(), todo = openKey ? [openKey] : [];
+  while (todo.length) {
+    const key = todo.pop();
+    if (upstream.has(key)) continue;
+    upstream.add(key);
+    for (const l of links) if (l.to === key) { edges.add(l.from + "\n" + l.to); todo.push(l.from); }
+  }
+  document.querySelectorAll("#board [data-key]").forEach(node => {
+    const key = node.dataset.key, prerequisite = key !== openKey && upstream.has(key), ready = column.get(key) === "done";
+    node.classList.toggle("sel", key === openKey);
+    node.classList.toggle("path-ready", prerequisite && ready);
+    node.classList.toggle("path-blocked", prerequisite && !ready);
+    node.classList.toggle("path-unrelated", !!openKey && !upstream.has(key));
+  });
+  if (boardView !== "pipeline" || !pipeline.root) return;
+  for (const edge of pipeline.edges.values()) {
+    const related = edges.has(edge.key), ready = column.get(edge.from) === "done";
+    edge.group.classList.toggle("path-ready", related && ready);
+    edge.group.classList.toggle("path-blocked", related && !ready);
+    edge.group.classList.toggle("path-unrelated", !!openKey && !related);
+  }
+}
+
+// MARK: panel
+let openKey = null;
+function openPanel(key) {
+  closeMenu();
+  openKey = key;
+  $("#panel").hidden = $("#resizer").hidden = false;
+  delete $("#panel").dataset.content;
+  renderPanel();
+  highlightDependencyPath();
+}
+function closePanel() {
+  openKey = null;
+  const panel = $("#panel");
+  panel.hidden = $("#resizer").hidden = true;
+  delete panel.dataset.content;
+  panel.replaceChildren();
+  highlightDependencyPath();
+}
+function panelSection(title, meta, extra, ...kids) {
+  return h("section", { class: "sec" }, h("div", { class: "sec-h" }, title, meta != null ? h("span", { class: "meta" }, String(meta)) : null, extra), ...kids);
+}
+function depRow(w, x, remove) {
+  const made = madeFrom(x.key, w.key);
+  const row = h("div", { class: "dep", title: `${x.key} · ${made ? "made from its branch" : columnTitle(x.column)}`, style: "cursor:pointer", onclick: () => openPanel(x.key) },
+    h("span", { html: colIcon(x.column, 13), style: "display:inline-flex" }), h("span", { class: "t" }, ...titleEl(x)), h("span", { class: "chip" }, columnTitle(x.column)));
+  if (remove && !made) row.append(toolButton("x", `Stop depending on ${worktreeName(x)}`, () => setLink(x.key, w.key, false), 12));
+  return row;
+}
+function addDependencyMenu(w) {
+  const has = new Set(prerequisites(w).map(x => x.key)), below = new Set(), todo = [w.key];
+  while (todo.length) { const k = todo.pop(); for (const l of selectedProject()?.links || []) if (l.from === k && !below.has(l.to)) { below.add(l.to); todo.push(l.to); } }
+  const others = projectWorktrees().filter(x => x.key !== w.key && !has.has(x.key) && !below.has(x.key));
+  return [{ header: `${worktreeName(w)} depends on` }, ...(others.length
+    ? others.map(x => ({ icon: "branch", label: x.key, sub: columnTitle(x.column), action: () => setLink(x.key, w.key, true) }))
+    : [{ note: "No other checkout can be a prerequisite" }])];
+}
+async function setTags(w, tags) {
+  const project = selectedProject();
+  if (!project) return;
   try {
-    const r = await act("POST", tpath(t.id, "/move"), body);
-    if (r && r.note) toast(`${taskNumber(t.id)} paused · ${r.note}`);
-    if (r && r.id) { delete r.note; Object.assign(t, r); }
-  }
-  catch {
-    Object.assign(t, prev);
-  }
-  renderBoard();
-  if (openId === t.id) updatePanel();
+    const r = await api("PATCH", "/api/projects/tags", { id: project.id, key: w.key, tags });
+    Object.assign(projects().find(p => p.id === project.id) || {}, r.project);
+    const own = new Set(w.ownTags || []), rules = (w.tags || []).filter(x => !own.has(x));
+    const live = worktreeByKey(w.key);
+    if (live) { live.ownTags = tags; live.tags = [...new Set([...tags, ...rules])].slice(0, 8); }
+    renderTagBar();
+    renderBoard();
+  } catch (e) { failed(e); }
+}
+function tagMenu(w) {
+  const own = w.ownTags || [], unused = (selectedProject()?.tags || []).filter(x => !own.includes(x));
+  const add = v => setTags(w, [...new Set([...own, ...v])]);
+  return [{ input: "New tag…", action: v => add(v.toLowerCase().split(/[\s,]+/).filter(Boolean)) },
+    ...(unused.length ? ["-", { header: "Tags in this project" }, ...unused.map(x => ({ icon: "tag", label: x, action: () => add([x]) }))] : [])];
+}
+function panelTags(w) {
+  const own = w.ownTags || [], rules = (w.tags || []).filter(x => !own.includes(x));
+  const add = toolButton("plus", "Add a tag", e => openMenu(e.currentTarget, tagMenu(current(w))), 12);
+  return h("div", { class: "tags-edit" },
+    ...own.map(x => h("span", { class: "tag" }, x, h("span", { class: "x", role: "button", title: `Remove ${x}`, "aria-label": `Remove tag ${x}`,
+      onclick: () => setTags(current(w), own.filter(y => y !== x)) }, I("x", 9)))),
+    ...rules.map(x => h("span", { class: "tag rule", title: "From a tag rule (project settings)" }, x)), add);
+}
+function panelGit(w) {
+  const g = w.git;
+  if (!g) return [h("div", { class: "p-none" }, "No git information yet")];
+  const out = [];
+  if (g.last) out.push(h("div", { class: "p-row p-commit", title: g.last.subject }, I("branch", 12), h("span", { class: "mono" }, g.last.subject), h("span", {}, ago(g.last.at))));
+  const counts = [plural(g.commits, "commit"), plural(g.files, "file")];
+  out.push(h("div", { class: "p-row" }, h("span", {}, counts.join(" · ")), g.added || g.removed ? diffstat(g) : null,
+    g.dirty > 0 ? h("span", { class: "udot" }) : null, g.dirty > 0 ? h("span", {}, plural(g.dirty, "uncommitted file")) : h("span", {}, "nothing uncommitted")));
+  return out;
+}
+function panelPr(pr) {
+  const bits = [pr.checks ? "checks " + pr.checks : null, pr.review ? pr.review.replace(/_/g, " ") : null,
+    pr.conflicts ? "conflicts" : null, pr.unresolved > 0 ? plural(pr.unresolved, "unresolved comment") : null].filter(Boolean);
+  return [h("div", { class: "p-row" }, prChip(pr), h("a", { href: pr.url, target: "_blank", rel: "noopener", class: "mono" }, pr.title), h("span", {}, "into " + pr.base)),
+    bits.length ? h("div", { class: "p-row" }, bits.join(" · ")) : null];
+}
+function renderPanel() {
+  if (!openKey) return;
+  const w = worktreeByKey(openKey), panel = $("#panel");
+  if (!w) { closePanel(); return; }
+  const content = JSON.stringify([w, selectedProject()?.links, wbPending(w), hiddenBranch(w.branch), projectWorktrees().map(x => [x.key, x.column, x.title])]);
+  if (panel.dataset.content === content) return;
+  panel.dataset.content = content;
+  const scroll = panel.querySelector(".p-scroll")?.scrollTop || 0;
+  const pre = prerequisites(w), after = dependents(w), agents = w.agents || [];
+  const addDep = toolButton("plus", "Add a dependency", e => openMenu(e.currentTarget, addDependencyMenu(current(w))), 13);
+  const body = h("div", { class: "p-scroll" },
+    h("div", {}, h("h2", { class: "p-title" }, ...titleEl(w)),
+      h("div", { class: "p-sub" }, h("span", {}, w.branch || `detached ${w.detached}`), h("span", { title: w.path }, w.path))),
+    depsLine(w) || "",
+    worktreeActions(w),
+    panelSection("omp", agents.length || null, null, ...(agents.length ? agents.map(a => wbAgentBlock(w, a)) : [h("div", { class: "p-row" }, stateEl(worktreeStatus(w)))])),
+    panelSection("Git", null, null, ...panelGit(w)),
+    w.pr ? panelSection("Pull request", null, null, ...panelPr(w.pr)) : "",
+    panelSection("Depends on", pre.length || null, addDep, ...(pre.length ? pre.map(x => depRow(w, x, true)) : [h("div", { class: "p-none" }, "Nothing")])),
+    after.length ? panelSection("Needed by", after.length, null, ...after.map(x => depRow(w, x, false))) : "",
+    panelSection("Tags", null, null, panelTags(w)));
+  panel.replaceChildren(h("div", { class: "p-head" }, h("span", { html: colIcon(w.column), style: "display:inline-flex" }), h("strong", {}, columnTitle(w.column)),
+    stateEl(worktreeStatus(w)), h("span", { class: "spacer" }), toolButton("x", "Close (Esc)", closePanel)), body);
+  body.scrollTop = scroll;
 }
 
 // MARK: menus
@@ -989,7 +879,8 @@ function openMenu(anchor, items, opts = {}) {
   const el = h("div", { class: "menu", role: "menu" });
   for (const it of items) {
     if (it === "-") { el.append(h("hr")); continue; }
-    if (it.header) { el.append(h("div", { class: "menu-h" }, it.header)); continue; }
+    if (it.header) { el.append(h("div", { class: "menu-h", title: it.header }, it.header)); continue; }
+    if (it.note) { el.append(h("div", { class: "menu-note" }, it.note)); continue; }
     if (it.input) {
       const input = h("input", { class: "field menu-input", placeholder: it.input, spellcheck: "false", autocomplete: "off" });
       input.addEventListener("keydown", e => {
@@ -999,31 +890,32 @@ function openMenu(anchor, items, opts = {}) {
         if (v) { closeMenu(); it.action(v); }
       });
       el.append(input);
+      setTimeout(() => input.focus(), 0);
       continue;
     }
-    const b = h("button", { class: it.danger ? "danger" : "", role: "menuitem", disabled: it.disabled, onclick: () => { closeMenu(); it.action(); } });
-    if (it.html) b.append(frag(it.html));
-    else if (it.icon) b.append(I(it.icon, 14));
+    const b = h("button", { class: it.danger ? "danger" : "", role: "menuitem", disabled: !!it.disabled, onclick: () => { closeMenu(); it.action(); } });
+    if (it.icon) b.append(I(it.icon, 14));
     b.append(h("span", { class: "lbl" }, it.label));
     if (it.sub) b.append(h("span", { class: "sub" }, it.sub));
     if (it.checked) b.append(I("check", 13, "chk"));
-    el.append(it.title ? h("div", { title: it.title }, b) : b);
+    el.append(b);
   }
   el.addEventListener("keydown", e => {
     const btns = [...el.querySelectorAll("button:not(:disabled)")];
+    if (!btns.length) return;
     const i = btns.indexOf(document.activeElement);
     if (e.key === "ArrowDown") { e.preventDefault(); btns[(i + 1) % btns.length].focus(); }
     else if (e.key === "ArrowUp") { e.preventDefault(); btns[(i - 1 + btns.length) % btns.length].focus(); }
   });
   document.body.append(el);
-  const r = anchor.getBoundingClientRect(), m = el.getBoundingClientRect();
+  const r = opts.at ? { left: opts.at.clientX, right: opts.at.clientX, top: opts.at.clientY, bottom: opts.at.clientY } : anchor.getBoundingClientRect();
+  const m = el.getBoundingClientRect();
   const left = Math.max(8, Math.min(opts.align === "right" ? r.right - m.width : r.left, innerWidth - m.width - 8));
-  let top = opts.above ? r.top - m.height - 6 : r.bottom + 6;
+  let top = r.bottom + 6;
   if (top + m.height > innerHeight - 8) top = r.top - m.height - 6;
   el.style.left = `${left}px`;
   el.style.top = `${Math.max(8, top)}px`;
   menu = { el, anchor };
-  el.querySelector(".menu-input")?.focus();
 }
 function closeMenu() { if (menu) { menu.el.remove(); menu = null; } }
 document.addEventListener("mousedown", e => { if (menu && !menu.el.contains(e.target) && !menu.anchor.contains(e.target)) closeMenu(); }, true);
@@ -1037,640 +929,118 @@ window.addEventListener("resize", closeMenu);
 const modals = [];
 function openModal(children, cls = "") {
   closeMenu();
-  const box = h("div", { class: "modal " + cls, role: "dialog" }, ...children);
-  const ov = h("div", { class: "overlay", onmousedown: e => { if (e.target === ov) closeModal(); } }, box);
+  const box = h("div", { class: "modal" + (cls ? " " + cls : ""), role: "dialog" }, ...children);
+  const ov = h("div", { class: "overlay", onmousedown: e => { if (e.target === ov) closeModal(ov); } }, box);
   document.body.append(ov);
   modals.push(ov);
-  return box;
+  return ov;
 }
-function closeModal() { const m = modals.pop(); if (m) m.remove(); }
-function confirmModal(title, text, label, fn, opts = {}) {
-  const ok = h("button", { class: "btn " + (opts.cls || "danger-solid"), onclick: () => { closeModal(); fn(); } }, label);
-  openModal([h("div", { class: "m-body" }, h("h2", {}, title), text ? h("p", { class: "m-text" }, text) : null, opts.extra || null),
-    h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), ok)]);
+function closeModal(ov = modals.at(-1)) {
+  const i = modals.indexOf(ov);
+  if (i >= 0) { modals.splice(i, 1); ov.remove(); ov.onclose?.(); }
+}
+function confirmModal(title, text, label, fn) {
+  const ok = h("button", { class: "btn danger-solid", onclick: () => { closeModal(); fn(); } }, label);
+  openModal([h("div", { class: "m-body" }, h("h2", {}, title), text ? h("p", { class: "m-text" }, text) : null),
+    h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: () => closeModal() }, "Cancel"), ok)]);
   setTimeout(() => ok.focus(), 0);
-}
-function confirmWorkingMove(t, col, order) {
-  const pauses = col === "waiting" && !!t.worktree && !t.paused;
-  confirmModal(pauses ? `Pause ${taskNumber(t.id)}?` : `Move working ${taskNumber(t.id)} to ${colTitle(col)}?`,
-    pauses ? "Its agent stops what it's doing; the worktree and omp session stay. It waits until you move it back to In Progress."
-      : "Moving the card only changes its column; it does not stop omp or remove the worktree.",
-    pauses ? "Pause" : "Move anyway", () => doMove(t, col, order, false, true));
-}
-function confirmStop(t) {
-  const where = t.column === "review" || t.column === "pr" ? `The card stays in ${colTitle(t.column)}` : "The card parks in Waiting";
-  confirmModal(`Stop ${taskNumber(t.id)}'s agent?`,
-    `Its omp session exits; the worktree, branch and saved session stay. ${where}; moving it to In Progress resumes it. Closing only its terminal attachment does not stop the agent.`,
-    "Stop agent", async () => {
-      try { const r = await act("POST", tpath(t.id, "/stop"), {}, `${taskNumber(t.id)} stopped`); if (r && r.note) toast(r.note, true); } catch {}
-    });
-}
-function confirmDelete(t) {
-  const text = t.moveRequiresConfirmation
-    ? "This task may still be working. Deleting it removes board tracking, but omp, its terminal attachment, worktree and branch stay."
-    : "The board forgets this task. Its worktree, branch and terminal attachment stay.";
-  confirmModal(`Delete ${taskNumber(t.id)}?`, text, "Delete task", async () => {
-    try {
-      const r = await act("DELETE", tpath(t.id), { confirmWorking: t.moveRequiresConfirmation === true });
-      if (r && r.pending) { toast(r.message || `${taskNumber(t.id)} is deleted once its worktree is gone`); return; }
-      board.tasks = board.tasks.filter(x => x.id !== t.id); closePanel(); renderBoard();
-    } catch {}
-  });
-}
-function confirmCleanup(t) {
-  confirmModal("Remove the worktree?", `Stops this task's agent, then deletes ${t.worktree}, branch ${t.branch} and its owned terminal attachment.`, "Remove worktree", async () => {
-    try {
-      const r = await act("POST", tpath(t.id, "/cleanup"), {});
-      toast(r.pending ? r.message || r.output || "Its agent is still stopping; the worktree is removed once it exits" : "Worktree removed");
-    } catch {}
-  });
-}
-function confirmRecover(t) {
-  confirmModal(`Remove ${taskNumber(t.id)}?`,
-    `Its worktree ${t.worktree} was deleted outside the board, so the task can't continue. Removing the card leaves its branch and commits untouched.`,
-    "Remove card", async () => {
-      try {
-        await act("POST", tpath(t.id, "/recover"), {}, `${taskNumber(t.id)} removed`);
-        board.tasks = board.tasks.filter(x => x.id !== t.id);
-        if (openId === t.id) closePanel();
-        renderBoard();
-      } catch {}
-    });
-}
-function showMergeModal(t) {
-  const cleanup = h("input", { type: "checkbox" });
-  cleanup.checked = LS.get("mergeCleanup") !== "0";
-  confirmModal(`Merge ${taskNumber(t.id)} into ${t.base}?`,
-    `${plural(t.git.commits, "commit")} on ${t.branch} (+${t.git.added} \u2212${t.git.removed} in ${plural(t.git.files, "file")}). Runs git merge --no-ff in the checkout of ${t.base}.`,
-    "Merge", async () => {
-      LS.set("mergeCleanup", cleanup.checked ? "1" : "0");
-      try {
-        const r = await act("POST", tpath(t.id, "/merge"), { cleanup: cleanup.checked }, `Merged into ${t.base}`);
-        if (r.pending) toast(cleanup.checked ? "Its worktree is removed once its agent has stopped" : "Its agent is stopping");
-      } catch {}
-    }, { cls: "primary", extra: h("label", { class: "check" }, cleanup, "Stop the agent and remove its worktree") });
-}
-
-// MARK: tags
-function tagMenu(current, add) {
-  const unused = (selectedProject()?.tags || []).filter(x => !current.includes(x));
-  return [{ input: "New tag…", action: v => add(v.toLowerCase().split(/[\s,]+/).filter(Boolean)) },
-    ...(unused.length ? ["-", { header: "Tags in this project" }, ...unused.map(x => ({ icon: "tag", label: x, action: () => add([x]) }))] : [])];
-}
-function tagEditor(onChange) {
-  const ed = { tags: [], el: h("div", { class: "tags-edit" }) };
-  const add = toolButton("plus", "Add a tag", () => openMenu(add, tagMenu(ed.tags, v => ed.change([...ed.tags, ...v]))), 12);
-  ed.show = tags => {
-    ed.tags = [...tags];
-    ed.el.replaceChildren(...ed.tags.map(x => h("span", { class: "tag" }, x, h("span", { class: "x", role: "button", title: `Remove ${x}`, "aria-label": `Remove tag ${x}`,
-      onclick: e => { e.stopPropagation(); ed.change(ed.tags.filter(y => y !== x)); } }, I("x", 9)))), add);
-  };
-  ed.change = tags => { ed.show([...new Set(tags)]); onChange(ed.tags); };
-  ed.show([]);
-  return ed;
-}
-
-// MARK: new task
-function openComposer({ parent = null, after: afterId = null, onCreated = null } = {}) {
-  if (modals.length || !board) return;
-  const project = selectedProject();
-  if (!project) { toast("This project is unavailable: run /mission in its checkout", true); return; }
-  const prompt = h("textarea", { class: "nt-desc", rows: "5", "aria-label": "Task prompt",
-    placeholder: "What should change, and why? Its agent plans this first; you review the plan in its terminal." });
-  const open = board.tasks.filter(t => inProject(t) && t.column !== "done" && !t.merged).sort(byId);
-  const anchor = afterId && findTask(afterId);
-  const afterTasks = anchor && !open.includes(anchor) ? [...open, anchor] : open;
-  const branches = [...new Set([project.defaultBranch, ...open.map(t => t.branch), ...projectWorktrees().map(w => w.branch), ...(anchor ? [anchor.base] : [])])];
-  const base = h("select", { "aria-label": "Branches from" }, ...branches.map(b => h("option", { value: b }, b)));
-  const parentTask = parent && findTask(parent);
-  if (parentTask && branches.includes(parentTask.base)) base.value = parentTask.base;
-  const after = h("select", { "aria-label": "After" }, h("option", { value: "" }, "None"), ...afterTasks.map(t => h("option", { value: t.id }, `${taskNumber(t.id)} ${t.title}${open.includes(t) ? "" : " (landed)"}`)));
-  after.onchange = () => { const a = findTask(after.value); if (a) base.value = open.includes(a) ? a.branch : a.base; base.disabled = !!a; };
-  if (anchor) { after.value = anchor.id; after.onchange(); }
-  let tags = [];
-  const tagEd = tagEditor(v => { tags = v; });
-  let controlSet = null;
-  const setList = projectSets(project.id);
-  const setChip = h("button", { class: "prop-chip", type: "button", hidden: setList === null });
-  const renderSetChip = () => {
-    const s = (setList || []).find(x => x.id === controlSet);
-    setChip.replaceChildren(I("refresh", 13), s ? s.name : "No controls", I("chevronDown", 11));
-    setChip.title = s ? `Controls: ${s.description || s.controls.join(", ")}` : "The task session runs no controls";
-    setChip.setAttribute("aria-label", `Controls: ${s ? s.name : "none"}`);
-  };
-  setChip.onclick = () => openMenu(setChip, setItems(setList, controlSet, id => { controlSet = id; renderSetChip(); }));
-  renderSetChip();
-  const parentPick = linksParentPicker(parent, projectSel);
-  const create = h("button", { class: "btn primary" }, "Create task", h("kbd", {}, "\u2318\u21A9"));
-  const submit = async () => {
-    const text = prompt.value.trim();
-    if (!text) { prompt.focus(); prompt.classList.remove("shake"); void prompt.offsetWidth; prompt.classList.add("shake"); return; }
-    create.disabled = true;
-    try {
-      const a = findTask(after.value);
-      const from = !a ? { base: base.value } : open.includes(a) ? { after: a.id } : { base: a.base, dependsOn: [a.id] };
-      const t = await act("POST", "/api/tasks", { prompt: text, repo: project.repo, ...from,
-        tags, controlSet, ...(parentPick.value ? { parent: parentPick.value } : {}) });
-      if (!findTask(t.id)) board.tasks.push(t);
-      onCreated?.(t);
-      closeModal();
-      renderBoard();
-      openPanel(t.id);
-    } catch { create.disabled = false; }
-  };
-  create.onclick = submit;
-  prompt.addEventListener("input", () => autosize(prompt, innerHeight * 0.45));
-  const box = openModal([
-    h("div", { class: "nt-head" }, I("kanban", 13), "New task", h("span", { class: "spacer" }), project.name),
-    prompt,
-    h("div", { class: "nt-props" },
-      h("label", { class: "prop-chip", title: "The branch its worktree starts from" }, I("branch", 13), base),
-      h("label", { class: "prop-chip", title: "Builds on an open task: branches from its branch and waits for it to land" }, I("link", 13), "After", after),
-      setChip, parentPick.el,
-      h("span", { class: "prop-chip", title: "Tags" }, I("tag", 13), tagEd.el)),
-    h("div", { class: "nt-foot" }, h("span", { class: "hint" }, "Creates a worktree and starts omp in plan mode"), h("span", { class: "spacer" }),
-      h("button", { class: "btn ghost", onclick: closeModal }, "Cancel"), create)], "nt");
-  box.addEventListener("keydown", e => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
-  });
-  setTimeout(() => prompt.focus(), 0);
-}
-
-// MARK: terminals
-async function openWorkspace() {
-  const id = openId;
-  try {
-    const r = await act("POST", tpath(id, "/open"), {});
-    if (r.opened) return;
-    if (r.attachCommand) commandModal(`Connect to ${taskNumber(id)}`, "No terminal shows its agent. Run this in a terminal to attach; Ctrl-b d detaches and the agent keeps running.", r.attachCommand);
-    else commandModal(`Open ${taskNumber(id)}`, "No terminal is open in its worktree. Run this in a terminal to go there.", r.cd);
-  } catch {}
 }
 function commandModal(title, text, command) {
   const field = h("textarea", { class: "field mono", rows: "2", readonly: true, "aria-label": "Command" }, command);
   openModal([h("div", { class: "m-body" }, h("h2", {}, title), h("p", { class: "m-text" }, text), field),
-    h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: closeModal }, "Close"),
+    h("div", { class: "m-foot" }, h("button", { class: "btn ghost", onclick: () => closeModal() }, "Close"),
       h("button", { class: "btn primary", onclick: () => copyText(command, "Command copied") }, "Copy command"))]);
 }
-async function openWorktree(id = openId) {
-  try {
-    const r = await act("POST", tpath(id, "/worktree/open"), {});
-    if (!r.opened) commandModal(`Open ${taskNumber(id)}'s worktree`, "Run this in any terminal to work in the task's worktree; its agent is left as it is.", r.cd);
-  } catch {}
-}
 
-// MARK: panel
-let P = null;
-let peekTimer = null;
-const canShowAgent = t => !!t.worktree || t.spawn.state !== "none";
-function currentTab(t) {
-  const tab = tabFor[t.id] || (canShowAgent(t) ? "agent" : "task");
-  return tab === "agent" && !canShowAgent(t) ? "task" : tab;
-}
-function setTab(tab) { tabFor[openId] = tab; updatePanel(); }
-function openPanel(id, expanded = false) {
-  if (!findTask(id) || !inProject(findTask(id))) return;
-  if (openId !== id) { highlightDependency(null); openId = id; buildPanel(); }
-  if (location.hash !== "#" + id) history.replaceState(null, "", "#" + id);
-  $("#panel").hidden = $("#resizer").hidden = false;
-  $("#panel").classList.toggle("expanded", expanded && matchMedia("(max-width:560px)").matches);
-  document.querySelectorAll(".card,.pipeline-node,.workbench-tile").forEach(c => c.classList.toggle("sel", c.dataset.id === id));
-  updatePanel();
-  highlightDependencyPath();
-}
-function closePanel() {
-  highlightDependency(null);
-  if (P && P.cmode) drafts.set(`${openId}:${P.cmode}`, P.ta.value);
-  openId = null;
-  P = null;
-  stopPeek();
-  $("#panel").hidden = $("#resizer").hidden = true;
-  $("#panel").classList.remove("expanded");
-  $("#panel").replaceChildren();
-  history.replaceState(null, "", location.pathname + location.search);
-  document.querySelectorAll(".card.sel,.pipeline-node.sel,.workbench-tile.sel").forEach(c => c.classList.remove("sel"));
-  highlightDependencyPath();
-}
-// Text field bound to a task property: saved on blur, never overwritten by snapshots while focused or unsaved.
-function boundField(el, key, opts = {}) {
-  el.addEventListener("input", () => {
-    if (key === "title" && el.value.includes("\n")) el.value = el.value.replace(/\n+/g, " ");
-    el.dataset.dirty = "1";
-    if (opts.autosize) autosize(el, opts.autosize);
-  });
-  el.commit = async () => {
-    const t = findTask(openId);
-    if (!t || el.dataset.dirty !== "1") return;
-    let v = el.value.trim();
-    if (key === "ticket") v = v || null;
-    if ((t[key] ?? "") === (v ?? "")) { delete el.dataset.dirty; return; }
-    const r = await act("PATCH", tpath(t.id), { [key]: v });
-    delete el.dataset.dirty;
-    if (r && r.id) Object.assign(t, r);
-    flash(el);
-    renderBoard();
-    updatePanel();
-  };
-  el.addEventListener("blur", () => el.commit().catch(() => {}));
-  el.addEventListener("keydown", e => {
-    if (e.key === "Enter") { e.preventDefault(); el.blur(); }
-    else if (e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      const t = findTask(openId);
-      delete el.dataset.dirty;
-      el.value = (t && t[key]) ?? "";
-      if (opts.autosize) autosize(el, opts.autosize);
-      el.blur();
+// MARK: new worktree
+function openNewWorktree({ after = "", onCreated = null, onClosed = null } = {}) {
+  if (modals.length || !board) return;
+  const project = selectedProject();
+  if (!project) { toast("This project is unavailable: run /mission in its checkout", true); return; }
+  const prompt = h("textarea", { class: "nt-desc", rows: "5", "aria-label": "Prompt",
+    placeholder: "What should change, and why? Optional: its omp plans this first and you review the plan in its terminal." });
+  const branch = h("input", { type: "text", placeholder: "feature/my-change", spellcheck: "false", autocomplete: "off", "aria-label": "Branch" });
+  prompt.addEventListener("input", () => { branch.placeholder = prompt.value.trim() ? "feature/… from the prompt" : "feature/my-change"; });
+  const choices = projectWorktrees().filter(w => w.branch);
+  const afterSel = h("select", { "aria-label": "After" }, h("option", { value: "" }, `None · from ${project.defaultBranch}`), ...choices.map(w => h("option", { value: w.key }, w.key)));
+  afterSel.value = after;
+  const create = h("button", { class: "btn primary" }, "Create worktree", h("kbd", {}, "\u2318\u21A9"));
+  const submit = async () => {
+    const text = prompt.value.trim(), name = branch.value.trim();
+    if (!text && !name) { branch.focus(); branch.parentNode.classList.remove("shake"); void branch.offsetWidth; branch.parentNode.classList.add("shake"); return; }
+    create.disabled = true;
+    create.replaceChildren(frag(spinner(12)), "Creating…");
+    try {
+      const r = await api("POST", "/api/worktrees/new", { project: project.id, ...(name ? { branch: name } : {}), ...(text ? { prompt: text } : {}), ...(afterSel.value ? { after: afterSel.value } : {}) });
+      closeModal(ov);
+      toast(r.output || `Created ${r.path}`);
+      onCreated?.(r.key);
+      if (text && !r.opened && r.command) commandModal(`Start ${r.key}`, "No terminal could be opened there. Run this in a terminal to start its omp in plan mode on the prompt.", r.command);
+      loadState();
+    } catch (e) {
+      failed(e);
+      create.disabled = false;
+      create.replaceChildren("Create worktree", h("kbd", {}, "\u2318\u21A9"));
     }
-  });
-  return el;
-}
-function setField(el, v) {
-  if (document.activeElement === el || el.dataset.dirty === "1") return false;
-  if (el.value === (v ?? "")) return false;
-  el.value = v ?? "";
+  };
+  create.onclick = submit;
+  branch.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); submit(); } });
+  const ov = openModal([
+    h("div", { class: "nt-head" }, I("plus", 13), "New worktree", h("span", { class: "spacer" }), project.name),
+    prompt,
+    h("div", { class: "nt-props" },
+      h("label", { class: "prop-chip", title: "Optional with a prompt: named from it" }, I("branch", 13), branch),
+      h("label", { class: "prop-chip", title: "Branches from that checkout's branch, nests under it and depends on it" }, I("link", 13), "After", afterSel)),
+    h("div", { class: "nt-foot" }, h("span", { class: "hint" }, "With a prompt its omp starts in plan mode there"), h("span", { class: "spacer" }),
+      h("button", { class: "btn ghost", onclick: () => closeModal(ov) }, "Cancel"), create)], "nt");
+  ov.addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); } });
+  ov.onclose = onClosed;
+  setTimeout(() => prompt.focus(), 0);
   return true;
 }
-
-const MOVE_TARGETS = ["waiting", "doing", "done"];
-function buildPanel() {
-  const id = h("span", { class: "p-id" });
-  const status = h("button", { class: "status-btn", title: "Pause, resume or finish the task" });
-  status.onclick = () => {
-    const t = findTask(openId);
-    openMenu(status, MOVE_TARGETS.map(c => ({ html: colIcon(c), label: colTitle(c), checked: c === t.column, action: () => requestMove(t.id, c) })));
+</script>
+<script src="/pipeline.js"></script>
+<script src="/workbench.js"></script>
+<script>
+"use strict";
+// MARK: wiring
+$("#brand").append(I("rocket", 18), "Mission Control");
+$("#search").prepend(I("search", 13));
+$("#refreshBtn").append(I("refresh", 14));
+$("#refreshBtn").onclick = () => act("POST", "/api/refresh", {}, "Refreshing omp sessions, git and pull requests").catch(() => {});
+$("#newBtn").append(I("plus", 14), "New worktree", h("kbd", {}, "N"));
+$("#newBtn").onclick = () => openNewWorktree();
+$("#board").addEventListener("dblclick", e => {
+  if (boardView !== "pipeline" && e.target.matches(".board,.col-b,.col-empty,.workbench,.wb-grid,.wb-empty,.wb-quiet,.wb-rows")) openNewWorktree();
+});
+for (const [view, id, glyph] of [["board", "boardViewBtn", "kanban"], ["pipeline", "pipelineViewBtn", "branch"], ["live", "liveViewBtn", "activity"]]) {
+  const button = $("#" + id);
+  button.append(I(glyph, 14));
+  button.setAttribute("aria-pressed", String(boardView === view));
+  button.onclick = () => {
+    if (boardView === view) return;
+    boardView = view;
+    LS.set("boardView", view);
+    for (const b of document.querySelectorAll(".view-switch button")) b.setAttribute("aria-pressed", String(b === button));
+    renderBoard();
   };
-  const primary = h("span", { class: "p-primary" });
-  const openBtn = toolButton("openIn", "Connect to the agent terminal", openWorkspace);
-  const more = toolButton("more", "More actions", () => openMenu(more, moreMenu(findTask(openId)), { align: "right" }));
-  const head = h("div", { class: "p-head" }, id, status, h("span", { class: "spacer" }), primary, openBtn, more, toolButton("x", "Close (Esc)", closePanel));
-
-  const title = boundField(h("textarea", { class: "p-title", rows: "1", placeholder: "Title", spellcheck: "false" }), "title", { autosize: 120 });
-  const tabTask = h("button", { onclick: () => setTab("task") }, I("file", 13), "Task");
-  const agentDot = h("span", { class: "dot" });
-  const tabAgent = h("button", { onclick: () => setTab("agent") }, I("terminal", 13), "Agent", agentDot);
-
-  // task pane
-  const ticket = boundField(h("input", { class: "prop mono", placeholder: "Add a ticket", spellcheck: "false" }), "ticket");
-  const fixed = () => h("input", { class: "prop mono", disabled: true });
-  const branch = fixed(), base = fixed(), controlSet = fixed(), repo = fixed();
-  const setLabel = h("label", { title: "The Control set the task session runs on its own after each change; fixed once the task exists" }, I("refresh", 13), "Controls");
-  const tags = tagEditor(async next => {
-    const t = findTask(openId);
-    try { const r = await act("PATCH", tpath(t.id), { tags: next }); if (r && r.id) Object.assign(t, r); renderBoard(); } catch {}
-    updatePanel();
-  });
-  const deps = h("div", { class: "deps" });
-  const depsAdd = toolButton("plus", "Add a dependency", () => openMenu(depsAdd, dependencyMenu(findTask(openId))), 13);
-  const props = h("div", { class: "props" },
-    h("label", {}, I("ticket", 13), "Ticket"), ticket,
-    h("label", {}, I("branch", 13), "Branch"), branch,
-    h("label", { title: "The branch this task starts from" }, I("prMerged", 13), "From"), base,
-    setLabel, controlSet,
-    h("label", {}, I("repo", 13), "Repository"), repo,
-    h("label", {}, I("tag", 13), "Tags"), tags.el,
-    h("label", {}, I("link", 13), "Depends on"), deps);
-  const prompt = h("p", { class: "p-prompt" });
-  const taskPane = h("div", { class: "pane" }, props,
-    h("section", { class: "sec" }, h("div", { class: "sec-h" }, "Prompt"), prompt));
-
-  // agent pane
-  const spawn = { ic: h("span", { class: "ic" }), lbl: h("span", { class: "lbl" }), err: h("div", { class: "act-err" }), log: h("pre", { class: "log" }) };
-  spawn.el = h("div", { class: "activity" }, h("div", { class: "act-h" }, spawn.ic, spawn.lbl), spawn.err, spawn.log);
-  const agentHead = h("div", { class: "agent-head" });
-  const agentStep = h("div", { class: "agent-step" }, I("wrench", 13), h("span"));
-  const agentMsg = h("div", { class: "agent-msg", title: "Your latest message to the agent" }, I("message", 13), h("span"));
-  const gitRow = h("div", { class: "git-row" });
-  const actions = h("div", { class: "actions" },
-    h("button", { class: "btn sm", "data-presentation-diff": true, title: "Open the presentation's diff viewer", onclick: () => act("POST", tpath(openId, "/diff/open"), {}).catch(() => {}) }, I("compare", 13), "Terminal diff"),
-    h("button", { class: "btn sm", onclick: () => openWorktree() }, I("openIn", 13), "Open worktree"));
-  const cleanupText = h("div", { class: "txt" });
-  const cleanup = h("div", { class: "banner" }, I("prMerged", 16), cleanupText,
-    h("button", { class: "btn sm danger", onclick: () => confirmCleanup(findTask(openId)) }, "Remove worktree"));
-  const health = h("div", { class: "banner" }, I("alert", 16),
-    h("div", { class: "txt" }, h("strong", {}, "Worktree missing"), " The recorded worktree was deleted outside the board, so the task can't continue. Removing the card leaves its branch and commits untouched."),
-    h("button", { class: "btn sm", onclick: () => confirmRecover(findTask(openId)) }, "Remove card"));
-  const opFailText = h("div", { class: "txt" });
-  const opFail = h("div", { class: "banner" }, I("alert", 16), opFailText);
-  const term = h("pre", { class: "term" });
-  term.addEventListener("scroll", () => { if (P) P.termPinned = term.scrollHeight - term.scrollTop - term.clientHeight < 8; });
-  const closed = h("div", { class: "empty" }, h("strong", {}, I("terminal", 14), "Session disconnected"),
-    h("span", {}, "The board cannot confirm the agent's current state. A missing terminal attachment does not mean the agent stopped."),
-    h("button", { class: "btn sm", onclick: openWorkspace }, I("openIn", 12), "Connect terminal"));
-  const removed = h("div", { class: "empty" }, h("strong", {}, I("check", 14), "Worktree removed"), h("span", {}, "The task's worktree and branch were cleaned up."));
-  const live = h("div", { class: "sec" }, health, opFail, agentHead, agentStep, agentMsg, gitRow, actions, cleanup, term, closed);
-  const agentPane = h("div", { class: "pane" }, spawn.el, live, removed);
-
-  // composer
-  const ta = h("textarea", { rows: "1" });
-  const hint = h("span", { class: "hint" });
-  const send = h("button", { class: "send", title: "Send to the agent (\u2318\u21A9)", onclick: submitComposer }, I("arrowUp", 15));
-  const composer = h("div", { class: "composer-wrap" },
-    h("div", { class: "composer" }, ta, h("div", { class: "composer-bar" }, h("span", { class: "spacer" }), hint, send)));
-  ta.addEventListener("input", () => { if (P.cmode) drafts.set(`${openId}:${P.cmode}`, ta.value); autosize(ta, 220); syncSend(); });
-  ta.addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submitComposer(); } });
-
-  $("#panel").replaceChildren(head, h("div", { class: "p-title-wrap" }, title),
-    h("div", { class: "p-tabs" }, h("div", { class: "segmented" }, tabTask, tabAgent)),
-    h("div", { class: "p-scroll" }, taskPane, agentPane), composer);
-  P = { id, status, primary, openBtn, title, tabTask, tabAgent, agentDot, ticket, branch, base, controlSet, setLabel, repo, tags, deps, depsAdd, prompt,
-        taskPane, spawn, agentHead, agentStep, agentMsg, gitRow, actions, cleanup, cleanupText, health, opFail, opFailText, term, closed, removed, live, agentPane,
-        composer, ta, hint, send, cmode: null, termPinned: true, sending: false };
-  P.links = linksPanel(props, taskPane);
 }
-
-function moreMenu(t) {
-  const items = [{ icon: "copy", label: "Copy branch name", action: () => copyText(t.branch, "Branch name copied") }];
-  if (t.branch) items.push(hideItem(t.project, t.branch));
-  if (t.health?.worktreeMissing) {
-    items.push("-", { icon: "trash", label: "Remove card…", action: () => confirmRecover(t) });
-  } else if (t.worktree) {
-    items.push("-", { icon: "openIn", label: "Open worktree", action: () => openWorktree() });
-    if (t.presentation?.capabilities?.diff) items.push({ icon: "compare", label: "Open terminal diff", action: () => act("POST", tpath(t.id, "/diff/open"), {}).catch(() => {}) });
-    if (t.land?.pr && t.column !== "done") items.push({ icon: "pr", label: "Create pull request", action: () => createPr(t) });
-    if (t.column !== "done" && !t.merged && t.agent?.state !== "stopped") items.push({ icon: "stop", label: "Stop agent…", action: () => confirmStop(t) });
-    if (t.column !== "done") items.push({ icon: "trash", label: "Remove worktree…", danger: true, action: () => confirmCleanup(t) });
+$("#filter").addEventListener("input", e => { filter = e.target.value.trim().toLowerCase(); renderBoard(); });
+$("#filter").addEventListener("keydown", e => { if (e.key === "Escape" && e.target.value) { e.preventDefault(); e.stopPropagation(); e.target.value = ""; filter = ""; renderBoard(); } });
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") {
+    if (menu) closeMenu();
+    else if (modals.length) closeModal();
+    else if (isTyping()) document.activeElement.blur();
+    else if (openKey) closePanel();
+    else return;
+    e.preventDefault();
+    return;
   }
-  items.push("-", { icon: "plus", label: "Create child task…", disabled: t.column === "done" || !!t.merged, action: () => openComposer({ parent: t.id }) });
-  items.push("-", { icon: "trash", label: "Delete task…", danger: true, action: () => confirmDelete(t) });
-  return items;
-}
-function dependencyMenu(t) {
-  const tree = new Set([...linksAncestors(t.id), ...linksDescendants(t.id)]);
-  const items = board.tasks.filter(x => x.id !== t.id && x.project === t.project && !tree.has(x.id) && !t.dependsOn.includes(x.id) && x.column !== "done")
-    .map(x => ({ label: `${taskNumber(x.id)} ${x.title}`, action: () => act("PATCH", tpath(t.id), { dependsOn: [...t.dependsOn, x.id] }).catch(() => {}) }));
-  return items.length ? items : [{ header: "No other open task" }];
-}
-function highlightDependencyPath() {
-  const tasks = new Map(board.tasks.map(t => [t.id, t]));
-  const upstream = new Set(), connections = new Set(), pending = openId ? [openId] : [];
-  while (pending.length) {
-    const id = pending.pop();
-    if (upstream.has(id)) continue;
-    upstream.add(id);
-    for (const prerequisite of tasks.get(id)?.dependsOn || []) {
-      connections.add(prerequisite + ":" + id);
-      pending.push(prerequisite);
-    }
-  }
-  document.querySelectorAll("#board .card,#board .pipeline-node,#board .workbench-tile").forEach(node => {
-    const id = node.dataset.id, prerequisite = id !== openId && upstream.has(id);
-    const ready = tasks.get(id)?.column === "done";
-    node.classList.toggle("path-ready", prerequisite && ready);
-    node.classList.toggle("path-blocked", prerequisite && !ready);
-    node.classList.toggle("path-unrelated", !!openId && !upstream.has(id));
-  });
-  if (boardView === "pipeline" && pipeline.root) {
-    for (const edge of pipeline.edges.values()) {
-      const related = connections.has(edge.key), ready = tasks.get(edge.from)?.column === "done";
-      edge.group.classList.toggle("path-ready", related && ready);
-      edge.group.classList.toggle("path-blocked", related && !ready);
-      edge.group.classList.toggle("path-unrelated", !!openId && !related);
-    }
-  }
-}
-function highlightDependency(id, reveal = false) {
-  highlightedDependency = id;
-  let target = null;
-  document.querySelectorAll("#board .card,#board .pipeline-node,#board .workbench-tile").forEach(node => {
-    const highlighted = node.dataset.id === id;
-    node.classList.toggle("dep-highlight", highlighted);
-    if (highlighted) target = node;
-  });
-  if (reveal && target && boardView !== "pipeline") target.scrollIntoView({ block: "nearest", inline: "nearest" });
-}
-function dependencyHighlightChanged(e) {
-  const entering = e.type === "mouseenter" || e.type === "focus";
-  const fallback = P?.deps.querySelector(e.type === "mouseleave" ? "[data-dependency]:focus" : "[data-dependency]:hover");
-  highlightDependency(entering ? e.currentTarget.dataset.dependency : fallback?.dataset.dependency || null, entering);
-}
-function dependencyChip(t, id) {
-  const dep = findTask(id);
-  const remove = h("span", { class: "x", title: "Remove the dependency", onclick: e => { e.stopPropagation(); act("PATCH", tpath(t.id), { dependsOn: t.dependsOn.filter(d => d !== id) }).catch(() => {}); } }, I("x", 10));
-  return h("button", { class: "chip mono", "data-dependency": id, title: dep ? dep.title : "deleted",
-    onmouseenter: dependencyHighlightChanged, onmouseleave: dependencyHighlightChanged,
-    onfocus: dependencyHighlightChanged, onblur: dependencyHighlightChanged, onclick: () => openPanel(id) }, taskNumber(id), remove);
-}
-
-function updatePanel() {
-  const t = findTask(openId);
-  if (!t || !P) return;
-  P.id.textContent = taskNumber(t.id);
-  P.status.replaceChildren(frag(colIcon(t.column)), h("span", {}, colTitle(t.column)), I("chevronDown", 12, "chev"));
-  const missing = !!t.health?.worktreeMissing;
-  const btn = (label, icon, onclick, title) => actionButton(label, icon, onclick, true, title);
-  P.primary.replaceChildren(...(missing ? [btn("Remove card", "trash", () => confirmRecover(t), "The worktree was deleted outside the board; remove the card")]
-    : t.spawn.state === "failed" ? [btn("Retry start", "play", () => doMove(t, "doing"), "Create the worktree and start omp on this task again")]
-    : t.paused || (t.column === "doing" && t.agent?.state === "stopped") ? [btn("Resume", "play", () => requestMove(t.id, "doing"),
-      t.blockedBy.length ? `It waits for ${taskNumbers(t.blockedBy)}; resuming now asks first` : "Moves it to In Progress; its agent continues where it stopped")]
-    : t.agent?.state === "plan_ready" ? [btn("Review plan", "file", openWorkspace, "Opens the agent's terminal, where its plan waits for review")]
-    : landActions(t)));
-  P.openBtn.hidden = !t.worktree || missing;
-  if (setField(P.title, t.title) || !P.title.style.height) autosize(P.title, 120);
-  setField(P.ticket, t.ticket);
-  setField(P.branch, t.branch);
-  setField(P.base, t.base);
-  P.controlSet.hidden = P.setLabel.hidden = !t.controlSet;
-  setField(P.controlSet, t.controlSet ? setName(t) : "");
-  setField(P.repo, t.repo);
-  if (JSON.stringify(P.tags.tags) !== JSON.stringify(t.tags || [])) P.tags.show(t.tags || []);
-  const depsKey = JSON.stringify(t.dependsOn);
-  if (P.deps.dataset.key !== depsKey) {
-    highlightDependency(null);
-    P.deps.dataset.key = depsKey;
-    P.deps.replaceChildren(...t.dependsOn.map(id => dependencyChip(t, id)), P.depsAdd);
-  }
-  P.deps.querySelectorAll("[data-dependency]").forEach(chip => {
-    chip.title = findTask(chip.dataset.dependency)?.title || "deleted";
-  });
-  linksPanelUpdate(t);
-  P.title.disabled = t.column === "done" || !!t.merged;
-  P.prompt.textContent = t.description || "No prompt: this card tracks a worktree made outside the board.";
-  P.prompt.classList.toggle("none", !t.description);
-
-  const tab = currentTab(t);
-  P.tabAgent.disabled = !canShowAgent(t);
-  P.tabTask.classList.toggle("active", tab === "task");
-  P.tabAgent.classList.toggle("active", tab === "agent");
-  const tone = agentTone(t);
-  P.agentDot.hidden = !tone;
-  if (tone) { P.agentDot.style.color = tone; P.agentDot.classList.toggle("pulse", tone === "var(--accent)" || tone === "var(--warning)"); }
-  P.taskPane.hidden = tab !== "task";
-  P.agentPane.hidden = tab !== "agent";
-  updateAgent(t);
-  updateComposer(t, tab);
-  if (tab === "agent") startPeek(); else stopPeek();
-}
-
-function updateAgent(t) {
-  const spawning = t.spawn.state === "running", spawnFailed = t.spawn.state === "failed";
-  P.spawn.el.hidden = !(spawning || spawnFailed);
-  if (spawning || spawnFailed) {
-    P.spawn.el.classList.toggle("failed", spawnFailed);
-    P.spawn.ic.replaceChildren(spawning ? frag(spinner(13)) : I("alert", 14));
-    P.spawn.lbl.textContent = spawning ? "Creating the worktree and starting omp" : "Couldn't start the task";
-    P.spawn.err.hidden = !spawnFailed;
-    P.spawn.err.textContent = t.spawn.error || "";
-    const pinned = P.spawn.log.scrollHeight - P.spawn.log.scrollTop - P.spawn.log.clientHeight < 8;
-    if (P.spawn.log.textContent !== (t.spawn.log || "")) { P.spawn.log.textContent = t.spawn.log || ""; if (pinned) P.spawn.log.scrollTop = P.spawn.log.scrollHeight; }
-    P.spawn.log.hidden = !t.spawn.log;
-  }
-  P.live.hidden = !t.worktree;
-  P.removed.hidden = !!t.worktree || spawning || spawnFailed;
-  if (!t.worktree) return;
-  P.agentHead.replaceChildren(stateEl(t.agent ? statusOf({ ...t, spawn: { state: "done" } }) : { tone: "faint", dot: true, text: "No agent" }), h("span", { class: "spacer" }));
-  if (t.pr) P.agentHead.append(prChip(t.pr));
-  const step = t.agent && (AGENT_LABEL[t.agent.state] || t.agent.state === "needs_input") ? t.agent.step : null;
-  P.agentStep.hidden = !step;
-  P.agentStep.lastChild.textContent = step || "";
-  P.agentStep.title = step || "";
-  P.agentMsg.hidden = !(t.agent && t.agent.message);
-  P.agentMsg.lastChild.textContent = t.agent && t.agent.message ? t.agent.message : "";
-  P.gitRow.replaceChildren(h("span", { class: "branch", title: t.branch }, I("branch", 12), h("span", {}, t.branch)), I("arrowRight", 11, "to"), h("span", { class: "branch" }, h("span", {}, t.base)));
-  if (t.git && (t.git.added || t.git.removed)) P.gitRow.append(diffstat(t.git));
-  if (t.git && t.git.dirty > 0) P.gitRow.append(h("span", {}, plural(t.git.dirty, "uncommitted file")));
-  const readable = t.execution?.kind === "tmux" || sessionConnected(t);
-  P.term.hidden = !readable;
-  const missing = !!t.health?.worktreeMissing;
-  P.closed.hidden = missing || sessionConnected(t) || t.agent?.state === "stopped";
-  P.agentPane.querySelector("[data-presentation-diff]").hidden = !t.presentation?.capabilities?.diff;
-  P.cleanup.hidden = t.column !== "done" || missing;
-  P.health.hidden = !missing;
-  const failed = t.lastOperation && !t.lastOperation.ok && !t.intent ? t.lastOperation : null;
-  P.opFail.hidden = !failed;
-  if (failed) P.opFailText.replaceChildren(h("strong", {}, `${OP_LABEL[failed.op] || failed.op} failed ${ago(failed.at)}:`), " " + (failed.error || ""));
-  P.actions.hidden = missing;
-  P.cleanupText.replaceChildren(t.intent?.op === "remove"
-    ? h("span", {}, h("strong", {}, "Removing the worktree"), t.intent.attempt > 0 ? ` · retrying: ${t.intent.lastError || ""}` : " once its agent has exited.")
-    : t.merged
-    ? h("span", {}, h("strong", {}, "Merged into " + t.base), ` ${ago(t.merged.at)} (${t.merged.sha.slice(0, 7)}). The worktree can go.`)
-    : t.pr && t.pr.state === "merged"
-      ? h("span", {}, h("strong", {}, `#${t.pr.number} merged`), ` into ${t.base}. The worktree can go.`)
-      : h("span", {}, h("strong", {}, "Done."), " Remove the worktree when you no longer need it."));
-}
-
-// MARK: composer
-function updateComposer(t, tab) {
-  const mode = tab === "agent" && t.worktree ? "agent" : null;
-  P.composer.hidden = !mode;
-  if (P.cmode !== mode) {
-    if (P.cmode) drafts.set(`${t.id}:${P.cmode}`, P.ta.value);
-    P.cmode = mode;
-    P.ta.value = mode ? drafts.get(`${t.id}:${mode}`) || "" : "";
-    autosize(P.ta, 220);
-  }
-  if (!mode) return;
-  const connected = sessionConnected(t);
-  const state = t.agent && t.agent.state;
-  const available = connected && !t.paused && !!state && !["stopped", "disconnected", "plan_ready", "needs_input"].includes(state);
-  P.ta.disabled = !available;
-  P.ta.placeholder = !connected ? "The omp session is disconnected"
-    : t.paused ? "Paused: move it to In Progress to message the agent"
-    : state === "plan_ready" ? "Its plan waits for review"
-    : state === "needs_input" ? "It waits for your answer; connect to its terminal"
-    : available ? "Message the agent…" : "No connected omp session";
-  syncSend();
-}
-function syncSend() {
-  if (!P || !P.cmode) return;
-  P.send.disabled = P.sending || P.ta.disabled || !P.ta.value.trim();
-  P.hint.textContent = P.ta.disabled ? "" : "\u2318\u21A9 to send";
-}
-async function submitComposer() {
-  const t = findTask(openId);
-  if (!t || !P || !P.cmode || P.sending) return;
-  const text = P.ta.value.trim();
-  const mode = P.cmode;
-  if (!text || P.ta.disabled) return;
-  P.sending = true;
-  syncSend();
-  try {
-    await act("POST", tpath(t.id, "/message"), { text }, "Sent to the agent");
-    drafts.delete(`${t.id}:${mode}`);
-    if (P && openId === t.id && P.cmode === mode) { P.ta.value = ""; autosize(P.ta, 220); }
-  } catch {}
-  if (P) { P.sending = false; syncSend(); }
-}
-
-// MARK: terminal peek
-const SCREEN_BYTE = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
-const SCREEN_COLOR = new RegExp(`^(?:#[0-9a-f]{3}|#[0-9a-f]{6}|rgb\\(\\s*${SCREEN_BYTE}\\s*,\\s*${SCREEN_BYTE}\\s*,\\s*${SCREEN_BYTE}\\s*\\))$`, "i");
-const SCREEN_FLAGS = ["bold", "dim", "italic", "underline", "strike", "inverse"];
-function screenRun(r) {
-  const text = typeof r?.text === "string" ? r.text.replace(/[\x00-\x1f\x7f-\x9f]/g, "") : "";
-  if (!text) return null;
-  const run = { text };
-  for (const k of ["fg", "bg"]) if (typeof r[k] === "string" && SCREEN_COLOR.test(r[k])) run[k] = r[k];
-  for (const k of SCREEN_FLAGS) if (r[k] === true) run[k] = true;
-  return run;
-}
-function screenRow(row) {
-  const runs = row.map(screenRun).filter(Boolean);
-  if (runs.reduce((len, r) => len + r.text.length, 0) <= 240) return runs;
-  const out = [];
-  let left = 239;
-  for (const r of runs) {
-    if (r.text.length >= left) { out.push({ ...r, text: r.text.slice(0, left) + "…" }); break; }
-    out.push(r);
-    left -= r.text.length;
-  }
-  return out;
-}
-function screenView(data) {
-  if (Array.isArray(data?.rows) && data.rows.every(Array.isArray)) { const rows = data.rows.map(screenRow); return { key: "r" + JSON.stringify(rows), rows }; }
-  const text = String(data?.text ?? "").split("\n").map(l => l.length > 240 ? l.slice(0, 239) + "…" : l).join("\n");
-  return { key: "t" + text, text };
-}
-function screenRunEl(r) {
-  if (Object.keys(r).length === 1) return document.createTextNode(r.text);
-  let fg = r.fg, bg = r.bg;
-  if (r.inverse) [fg, bg] = [bg ?? "var(--bg)", fg ?? "var(--fg)"];
-  const el = document.createElement("span"), s = el.style;
-  el.textContent = r.text;
-  if (fg) s.color = fg;
-  if (bg) s.backgroundColor = bg;
-  if (r.bold) s.fontWeight = "700";
-  if (r.dim) s.opacity = "0.6";
-  if (r.italic) s.fontStyle = "italic";
-  const deco = [r.underline && "underline", r.strike && "line-through"].filter(Boolean);
-  if (deco.length) s.textDecorationLine = deco.join(" ");
-  return el;
-}
-function paintScreen(term, view) {
-  if (!view.rows) { term.textContent = view.text; return; }
-  const nodes = [];
-  view.rows.forEach((row, i) => {
-    if (i) nodes.push(document.createTextNode("\n"));
-    for (const r of row) nodes.push(screenRunEl(r));
-  });
-  term.replaceChildren(...nodes);
-}
-function peekWanted() {
-  const t = openId && findTask(openId);
-  return !!(P && t && t.worktree && (t.execution?.kind === "tmux" || sessionConnected(t)) && currentTab(t) === "agent" && document.visibilityState === "visible");
-}
-function startPeek() {
-  if (!peekWanted()) { stopPeek(); return; }
-  if (peekTimer) return;
-  const tick = async () => {
-    if (!peekWanted()) { stopPeek(); return; }
-    const id = openId;
-    try {
-      const view = screenView(await api("GET", tpath(id, "/screen")));
-      if (P && openId === id && P.termKey !== view.key) {
-        P.termKey = view.key;
-        paintScreen(P.term, view);
-        if (P.termPinned) P.term.scrollTop = P.term.scrollHeight;
-      }
-    } catch {}
-  };
-  tick();
-  peekTimer = setInterval(tick, 2000);
-}
-function stopPeek() { clearInterval(peekTimer); peekTimer = null; }
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") startPeek(); else stopPeek(); });
-
+  if (isTyping() || modals.length || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === "n" || e.key === "N") { e.preventDefault(); openNewWorktree(); }
+  else if (e.key === "/") { e.preventDefault(); $("#filter").focus(); }
+});
 // MARK: resizer
 (() => {
   const saved = parseInt(LS.get("panelWidth"), 10);
@@ -1695,68 +1065,12 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
     r.addEventListener("pointerup", up);
   });
 })();
-
-</script>
-<script src="/markdown.js"></script>
-<script src="/graph-layout.js"></script>
-<script src="/pipeline.js"></script>
-<script src="/workbench.js"></script>
-<script src="/links.js"></script>
-<script>
-"use strict";
-// MARK: wiring
-$("#brand").append(I("rocket", 18), "Mission Control");
-$("#search").prepend(I("search", 13));
-$("#refreshBtn").append(I("refresh", 14));
-$("#refreshBtn").onclick = () => act("POST", "/api/refresh", {}, "Refreshing agents, git and pull requests").catch(() => {});
-$("#newBtn").append(I("plus", 14), "New task", h("kbd", {}, "N"));
-$("#newBtn").onclick = () => openComposer();
-// Double-clicking empty space starts a task; the Graph handles its own canvas, which places the new node where you clicked.
-$("#board").addEventListener("dblclick", e => {
-  if (boardView !== "pipeline" && e.target.matches(".board,.col-b,.col-empty,.workbench,.wb-grid,.wb-empty")) openComposer();
-});
-if (LS.get("boardView") === "live") boardView = "live";
-for (const [view, id, glyph] of [["board", "boardViewBtn", "kanban"], ["pipeline", "pipelineViewBtn", "branch"], ["live", "liveViewBtn", "activity"]]) {
-  const button = $("#" + id);
-  button.append(I(glyph, 14));
-  button.setAttribute("aria-pressed", String(boardView === view));
-  button.onclick = () => {
-    if (boardView === view) return;
-    boardView = view;
-    LS.set("boardView", view);
-    for (const b of document.querySelectorAll(".view-switch button")) b.setAttribute("aria-pressed", String(b === button));
-    renderBoard();
-  };
-}
-$("#filter").addEventListener("input", e => { filter = e.target.value.trim().toLowerCase(); renderBoard(); });
-$("#filter").addEventListener("keydown", e => { if (e.key === "Escape" && e.target.value) { e.preventDefault(); e.stopPropagation(); e.target.value = ""; filter = ""; renderBoard(); } });
-document.addEventListener("keydown", e => {
-  if (e.key === "Escape") {
-    if (menu) closeMenu();
-    else if (modals.length) closeModal();
-    else if (isTyping()) document.activeElement.blur();
-    else if (openId) closePanel();
-    else return;
-    e.preventDefault();
-    return;
-  }
-  if (isTyping() || modals.length || e.metaKey || e.ctrlKey || e.altKey) return;
-  if (e.key === "n" || e.key === "N") { e.preventDefault(); openComposer(); }
-  else if (e.key === "/") { e.preventDefault(); $("#filter").focus(); }
-});
-window.addEventListener("hashchange", () => {
-  const id = taskRef(decodeURIComponent(location.hash.slice(1)));
-  if (id && findTask(id)) openPanel(id);
-  else if (!id && openId) closePanel();
-});
 setInterval(() => {
   document.querySelectorAll("[data-elapsed]").forEach(el => { if (el.dataset.elapsed) el.textContent = elapsed(el.dataset.elapsed); });
 }, 1000);
 
 (async () => {
   await loadState();
-  const id = taskRef(decodeURIComponent(location.hash.slice(1)));
-  if (id && findTask(id)) openPanel(id);
   connect();
 })();
 </script>

@@ -1,14 +1,4 @@
 // @bun
-// packages/integrations/src/control.ts
-var CONTROL_ASK_EVENT = "control:ask";
-var CONTROL_SETS_EVENT = "control:sets";
-function isControlRequest(data) {
-  if (!data || typeof data !== "object")
-    return false;
-  const r = data;
-  return typeof r.reply === "function" && (r.type === "sets" || r.type === "status");
-}
-
 // packages/integrations/src/text.ts
 var errorText = (e) => e instanceof Error ? e.message : String(e);
 var toolReply = (text, isError = false) => ({ content: [{ type: "text", text }], isError });
@@ -261,9 +251,6 @@ async function loadLibrary(root) {
   }
   return library;
 }
-function summarize(library) {
-  return [...library.sets.values()].sort((a, b) => a.name.localeCompare(b.name)).map((s) => ({ id: s.id, name: s.name, description: s.description, controls: s.controls.map((id) => library.controls.get(id)?.name ?? id), approval: s.approval }));
-}
 
 // plugins/control/src/prompts.ts
 var RUN_HEAD = "Control run:";
@@ -359,12 +346,6 @@ function onReport(state, fingerprint2, passed) {
   state.run = null;
   return run.selection;
 }
-function status(state, fingerprint2) {
-  return {
-    passed: state.run === null && state.settled?.passed === true && state.settled.fingerprint === fingerprint2,
-    autonomous: state.auto?.approval === "apply"
-  };
-}
 function line(state) {
   if (state.run)
     return `Control \xB7 running ${state.run.selection.label}${state.auto ? " \xB7 auto" : ""}`;
@@ -385,7 +366,7 @@ var AUTO = "Auto: after each request that changes code";
 var APPLY = "Apply right away";
 var ASK = "Ask me before applying";
 async function startBaseline(at) {
-  const ref = process.env.OMP_CONTROL_BASE ?? await defaultBranch(at);
+  const ref = await defaultBranch(at);
   if (ref)
     return { kind: "merge-base", ref };
   const head = await git(["rev-parse", "HEAD"], at);
@@ -479,19 +460,8 @@ function control(pi) {
         saved = e.data;
     }
     state = restored(saved);
-    const lib = await loadLibrary(root);
-    const id = process.env.OMP_CONTROL_SET;
-    if (!saved && id) {
-      const set = lib.sets.get(id);
-      if (set) {
-        state.auto = { label: set.name, controls: set.controls, approval: set.approval };
-        persist();
-      } else
-        ctx.ui.notify(`Control: no set ${id} in the library; this session runs no controls`, "error");
-    }
     await activate();
     show();
-    pi.events.emit(CONTROL_SETS_EVENT, summarize(lib));
   };
   const follow = async (_event, ctx) => {
     if (ctx.agent?.kind === "sub")
@@ -556,18 +526,6 @@ function control(pi) {
     show();
     return { decision: "block", reason: runPrompt({ base: sha, approval: stop.selection.approval, controls }) };
   });
-  pi.events.on(CONTROL_ASK_EVENT, async (data) => {
-    if (!isControlRequest(data))
-      return;
-    try {
-      if (data.type === "sets")
-        data.reply({ ok: true, message: "", sets: summarize(await loadLibrary(root)) });
-      else
-        data.reply({ ok: true, message: "", ...status(state, await currentFingerprint()) });
-    } catch (e) {
-      data.reply({ ok: false, message: errorText(e) });
-    }
-  });
   pi.registerTool({
     name: TOOL,
     label: "Control report",
@@ -597,7 +555,6 @@ function control(pi) {
         if (!root)
           throw new Error("Control needs a git repository");
         const lib = await loadLibrary(root);
-        pi.events.emit(CONTROL_SETS_EVENT, summarize(lib));
         for (const e of lib.errors)
           ctx.ui.notify(`Control: ${e.message}`, "warning");
         const controls = [...lib.controls.values()];

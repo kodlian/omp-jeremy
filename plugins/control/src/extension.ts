@@ -1,11 +1,10 @@
 // Control for omp: /control picks checks and reviewers that audit the session's change, once or after every change.
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { CONTROL_ASK_EVENT, CONTROL_SETS_EVENT, isControlRequest } from "omp-integrations/control";
 import { errorText, toolReply } from "omp-integrations/text";
 import { type Baseline, baselineSha, defaultBranch, fingerprint, git, repoRoot } from "./git";
-import { type ControlDefinition, type Library, loadLibrary, summarize } from "./library";
+import { type ControlDefinition, type Library, loadLibrary } from "./library";
 import { NUDGE, RUN_HEAD, runPrompt } from "./prompts";
-import { empty, line, onReport, onStop, restored, type Selection, type State, status } from "./run";
+import { empty, line, onReport, onStop, restored, type Selection, type State } from "./run";
 
 const ENTRY = "control.session";
 const WIDGET = "control";
@@ -17,9 +16,9 @@ const AUTO = "Auto: after each request that changes code";
 const APPLY = "Apply right away";
 const ASK = "Ask me before applying";
 
-/** Where a change is measured from: Mission Control's base, else where the branch left its default branch, else HEAD. */
+/** Where a change is measured from: where the branch left its default branch, else HEAD. */
 async function startBaseline(at: string): Promise<Baseline> {
-	const ref = process.env.OMP_CONTROL_BASE ?? (await defaultBranch(at));
+	const ref = await defaultBranch(at);
 	if (ref) return { kind: "merge-base", ref };
 	const head = await git(["rev-parse", "HEAD"], at);
 	if (head.code !== 0) throw new Error("Control needs a commit to compare against");
@@ -117,18 +116,8 @@ export default function control(pi: ExtensionAPI) {
 			if (e.type === "custom" && e.customType === ENTRY) saved = e.data as Partial<State>; // written by persist
 		}
 		state = restored(saved);
-		const lib = await loadLibrary(root);
-		const id = process.env.OMP_CONTROL_SET;
-		if (!saved && id) {
-			const set = lib.sets.get(id);
-			if (set) {
-				state.auto = { label: set.name, controls: set.controls, approval: set.approval };
-				persist();
-			} else ctx.ui.notify(`Control: no set ${id} in the library; this session runs no controls`, "error");
-		}
 		await activate();
 		show();
-		pi.events.emit(CONTROL_SETS_EVENT, summarize(lib));
 	};
 
 	const follow = async (_event: unknown, ctx: ExtensionContext) => {
@@ -189,16 +178,6 @@ export default function control(pi: ExtensionAPI) {
 		return { decision: "block" as const, reason: runPrompt({ base: sha, approval: stop.selection.approval, controls }) };
 	});
 
-	pi.events.on(CONTROL_ASK_EVENT, async (data) => {
-		if (!isControlRequest(data)) return;
-		try {
-			if (data.type === "sets") data.reply({ ok: true, message: "", sets: summarize(await loadLibrary(root)) });
-			else data.reply({ ok: true, message: "", ...status(state, await currentFingerprint()) });
-		} catch (e) {
-			data.reply({ ok: false, message: errorText(e) });
-		}
-	});
-
 	pi.registerTool({
 		name: TOOL,
 		label: "Control report",
@@ -226,7 +205,6 @@ export default function control(pi: ExtensionAPI) {
 				root ??= await repoRoot(ctx.cwd);
 				if (!root) throw new Error("Control needs a git repository");
 				const lib = await loadLibrary(root);
-				pi.events.emit(CONTROL_SETS_EVENT, summarize(lib));
 				for (const e of lib.errors) ctx.ui.notify(`Control: ${e.message}`, "warning");
 				const controls = [...lib.controls.values()];
 				if (!controls.length) throw new Error("The control library is empty");

@@ -1,4 +1,4 @@
-"""Git queries and branch/worktree commands the board runs on task repositories."""
+"""Git queries and worktree commands the board runs on project repositories."""
 from __future__ import annotations
 
 import os
@@ -40,7 +40,7 @@ def checkout_info(path: str) -> Optional[Dict[str, str]]:
 
 
 def base_ref(cwd: str, base: str) -> str:
-    """The ref a task's branch starts from and is compared with: the newer of origin/<base> and <base>."""
+    """The ref a branch made from `base` is compared with: the newer of origin/<base> and <base>."""
     remote, local = has_ref(cwd, f"refs/remotes/origin/{base}"), has_ref(cwd, f"refs/heads/{base}")
     if remote and local:
         behind = run(["git", "-C", cwd, "merge-base", "--is-ancestor", f"origin/{base}", base], timeout=10)[0] != 0
@@ -88,7 +88,7 @@ def drop_missing_worktrees(repo: str, branch: str, path: Optional[str] = None) -
 
 
 def prepare_branch(repo: str, branch: str, base: str) -> str:
-    """Creates the task branch from its base unless it already exists locally or on origin; returns a log."""
+    """Creates `branch` from `base` (after fetching origin) unless it exists here or on origin; returns a log."""
     if has_ref(repo, f"refs/heads/{branch}"):
         return f"Using the existing branch {branch}\n"
     log = ""
@@ -104,9 +104,19 @@ def prepare_branch(repo: str, branch: str, base: str) -> str:
     return log + f"Created {branch} from {ref}\n"
 
 
-def unmerged_files(path: str) -> List[str]:
-    _, output, _ = run(["git", "-C", path, "diff", "--name-only", "--diff-filter=U"], timeout=15)
-    return [name for name in output.splitlines() if name.strip()]
+def creation_record(repo: str, branch: str) -> str:
+    """The reflog git keeps for `branch`, oldest entry first; empty when it has none."""
+    code, common, _ = run(["git", "-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"], timeout=10)
+    try:
+        return (Path(common.strip()) / "logs" / "refs" / "heads" / branch).read_text(encoding="utf-8") if code == 0 else ""
+    except OSError:
+        return ""
+
+
+def created_commit(repo: str, branch: str) -> Optional[str]:
+    """The commit `branch` pointed at when it was created; None without its reflog."""
+    fields = creation_record(repo, branch).split("\n", 1)[0].split()
+    return fields[1] if len(fields) > 1 and COMMIT.fullmatch(fields[1]) else None
 
 
 def branch_base(repo: str, branch: str, default: str) -> str:
@@ -115,12 +125,7 @@ def branch_base(repo: str, branch: str, default: str) -> str:
     code, out, _ = run(["git", "-C", repo, "config", "--get", f"branch.{branch}.nestUnder"], timeout=10)
     if code == 0 and out.strip() and has_ref(repo, f"refs/heads/{out.strip()}"):
         return out.strip()
-    code, common, _ = run(["git", "-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"], timeout=10)
-    try:
-        record = (Path(common.strip()) / "logs" / "refs" / "heads" / branch).read_text(encoding="utf-8") if code == 0 else ""
-    except OSError:
-        record = ""
-    m = CREATED_FROM.search(record)
+    m = CREATED_FROM.search(creation_record(repo, branch))
     name = m[1] if m else ""
     for prefix in ("refs/heads/", "refs/remotes/origin/", "origin/"):
         if name.startswith(prefix):

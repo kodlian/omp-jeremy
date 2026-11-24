@@ -1,10 +1,10 @@
 # omp-jeremy
 
-Four plugins for [omp](https://github.com/can1357/oh-my-pi): run coding tasks in their own worktrees from Mission Control, comment on their plans right in omp's plan review, review their changes in the browser, and audit changes with reviewer subagents and shell checks.
+Four plugins for [omp](https://github.com/can1357/oh-my-pi): see every worktree of a project and every omp running in it with Mission Control, comment on plans right in omp's plan review, review changes in the browser, and audit changes with reviewer subagents and shell checks.
 
 ## Mission Control
 
-See every worktree of a repository with its agent, what it waits for, its tags and its pull request. A task is a worktree whose omp plans your prompt first; tasks build on each other's branches, wait for each other, and land by merging into their parent branch or through a pull request. Tasks are plain JSON in `~/.mission-control`, and open Orchestrator cards are imported once. See [plugins/mission-control](plugins/mission-control/README.md).
+See every checkout of a repository, its main checkout and each worktree, with every omp running in it (what it is doing, its run clock, its to-do progress, the question it asks), its changes and its pull request. It only watches: open a worktree's terminal, resume an asleep session, create the pull request, or remove a merged worktree, from the same buttons on every card. See [plugins/mission-control](plugins/mission-control/README.md).
 
 ## Git Diff Review
 
@@ -12,7 +12,7 @@ Open a browser-based diff viewer from omp with `/review`. Browse changed files, 
 
 ## Control
 
-Pick checks and reviewers with `/control` and run them on the session's change, once or after every change: the agent runs the shell checks, spawns read-only reviewer subagents, fixes what they find (or asks you first), then runs a second pass to confirm. Controls and the sets that group them live in `.omp/control` (project) and `~/.omp/control` (user). With Mission Control also installed, a task picks a set that its session runs after every change. See [plugins/control](plugins/control/README.md).
+Pick checks and reviewers with `/control` and run them on the session's change, once or after every change: the agent runs the shell checks, spawns read-only reviewer subagents, fixes what they find (or asks you first), then runs a second pass to confirm. Controls and the sets that group them live in `.omp/control` (project) and `~/.omp/control` (user). See [plugins/control](plugins/control/README.md).
 
 ## Plan Review
 
@@ -34,7 +34,7 @@ Install each plugin independently. Restart omp after installing extensions.
 
 omp only picks up a new release when its version in `.omp-plugin/marketplace.json` goes up. To have omp install new releases when it starts, run `omp config set marketplace.autoUpdate auto`; the default, `notify`, only writes to omp's debug log. To update by hand, run `omp plugin marketplace update omp-jeremy`, then `omp plugin upgrade`, and restart omp.
 
-Mission Control needs Python 3, Git and tmux (`brew install tmux`); `gh` adds pull requests. It replaces the Orchestrator plugin: uninstall that one (`omp plugin uninstall orchestrator@omp-jeremy`) before installing it.
+Mission Control needs Python 3 and Git; `gh` adds pull requests, and cmux lets it bring a terminal forward. It replaces the Orchestrator plugin: uninstall that one (`omp plugin uninstall orchestrator@omp-jeremy`) before installing it.
 
 ## Local development
 

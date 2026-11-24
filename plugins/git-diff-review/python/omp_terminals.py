@@ -1,11 +1,10 @@
-"""Terminal presentation adapters (cmux workspace, tmux window, plain attach command); standard library only."""
+"""Terminal adapters: find, focus and open cmux workspaces and tmux windows, and pages in cmux; standard library only."""
 from __future__ import annotations
 
 import argparse
 import json
 import os
 import re
-import shlex
 import shutil
 import stat
 import subprocess
@@ -18,9 +17,6 @@ from urllib.parse import urlsplit
 KINDS = ("cmux", "tmux", "plain")
 OVERRIDES = ("auto",) + KINDS
 OVERRIDE_ENVS = ("OMP_TERMINAL",)
-# A detached process (no terminal of its own) names a JSON file {"env": {...}} with the identity of the terminal showing it.
-PRESENTER_ENV = "OMP_TERMINAL_PRESENTER"
-IDENTITY_ENV = ("CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID", "CMUX_SOCKET_PATH", "CMUX_BUNDLED_CLI_PATH", "TMUX", "TMUX_PANE")
 DEFAULT_CMUX_SOCKET = str(Path.home() / ".local/state/cmux/cmux.sock")
 CMUX_HANDLE = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|(?:workspace|surface|window):\d+")
 CMUX_BUNDLED = re.compile(r"\.app/Contents/Resources/bin/cmux$")
@@ -119,46 +115,9 @@ def normalize_context(value: Any) -> Dict[str, Any]:
     return context
 
 
-def legacy_context(workspace: Any = None, origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """A context from bare cmux workspace/surface handles recorded before terminal contexts, else plain."""
-    origin = origin or {}
-    if isinstance(workspace, dict):
-        workspace = workspace.get("id") or workspace.get("ref")
-    cli = _which("cmux")
-    handle = origin.get("workspace") or workspace
-    if not cli or not handle:
-        return {"kind": "plain"}
-    try:
-        part = {"cli": cli, "socket": DEFAULT_CMUX_SOCKET, "workspace": handle, "surface": origin.get("surface")}
-        return normalize_context({"kind": "cmux" if part["surface"] else "plain", "cmux": part})
-    except ValueError:
-        return {"kind": "plain"}
-
-
-def legacy_attachment(workspace: Dict[str, Any], cwd: str) -> Optional[Dict[str, Any]]:
-    """An attachment for a cmux workspace record whose program runs directly in it; None when unusable."""
-    cli = _which("cmux")
-    handle = workspace.get("id") or workspace.get("ref")
-    if not cli or not handle:
-        return None
-    try:
-        part = _cmux_part({"cli": cli, "socket": DEFAULT_CMUX_SOCKET, "workspace": handle}, False)
-    except ValueError:
-        return None
-    return _attachment("cmux", str(workspace.get("ref") or handle), cwd, None, bool(workspace.get("alive")), cmux=part)
-
-
-def capabilities(target: Dict[str, Any]) -> Dict[str, bool]:
-    """What a context or attachment can present: focus/close its terminal, a cmux diff panel, the board in cmux's browser."""
-    kind = target.get("kind")
-    browser = bool(target.get("cmux"))
-    return {"focus": kind in ("cmux", "tmux"), "close": kind in ("cmux", "tmux"), "diff": browser, "board": browser}
-
-
 def _attachment(kind: str, name: str, cwd: str, command: Optional[str], alive: bool, **parts: Any) -> Dict[str, Any]:
     att: Dict[str, Any] = {"kind": kind, "name": name, "cwd": cwd, "command": command, "alive": alive}
     att.update({k: v for k, v in parts.items() if v})
-    att["capabilities"] = capabilities(att)
     return att
 
 
@@ -207,7 +166,8 @@ def _created(out: str, kind: str) -> Optional[str]:
 
 def _open_cmux(context: Dict[str, Any], name: str, cwd: str, command: str) -> Dict[str, Any]:
     part = context["cmux"]
-    window = _cmux_target(part).get("window_id")
+    # The context's workspace may have closed since it was reported: its window, else cmux's current one.
+    window = (_cmux_panels(part) or {}).get("window_id") or part.get("window")
     args = ["--json", "--id-format", "uuids", "new-workspace", "--name", name, "--cwd", cwd, "--command", command,
             "--focus", "false"]
     if window:
@@ -254,11 +214,6 @@ def _open_tmux(context: Dict[str, Any], name: str, cwd: str, command: str) -> Di
         raise RuntimeError(f"tmux didn't report the window it created: {out.strip()[:200]}")
     tmux = {"socket": part["socket"], "session": ids[0], "window": ids[1], "pane": ids[2]}
     return _attachment("tmux", name, cwd, command, True, tmux=tmux, cmux=context.get("cmux"))
-
-
-def _tmux_alive(att: Dict[str, Any]) -> bool:
-    part = att["tmux"]
-    return _tmux_show(part, part["pane"], "#{window_id}") == part["window"]
 
 
 # --- existing terminals
@@ -333,86 +288,6 @@ def find_terminal(context: Dict[str, Any], cwd: str) -> Optional[Dict[str, Any]]
     return None
 
 
-def _cmux_servers(contexts: List[Any]) -> List[Dict[str, str]]:
-    """The distinct, validated cmux CLIs and sockets of `contexts`, then cmux's default socket."""
-    found: Dict[str, Dict[str, str]] = {}
-    parts = [c.get("cmux") for c in contexts if isinstance(c, dict)] + [{"cli": _which("cmux"), "socket": DEFAULT_CMUX_SOCKET}]
-    for part in parts:
-        try:
-            server = {"cli": _cmux_cli(part.get("cli")), "socket": _socket(part.get("socket"), "cmux socket")}
-        except (ValueError, AttributeError):
-            continue
-        found.setdefault(os.path.realpath(server["socket"]), server)
-    return list(found.values())
-
-
-def _tmux_servers(contexts: List[Any]) -> List[Dict[str, str]]:
-    """The distinct, validated tmux sockets of `contexts`."""
-    found: Dict[str, Dict[str, str]] = {}
-    for context in contexts:
-        try:
-            socket = _socket((context.get("tmux") or {}).get("socket"), "tmux socket")
-        except (ValueError, AttributeError):
-            continue
-        found.setdefault(os.path.realpath(socket), {"socket": socket})
-    return list(found.values())
-
-
-def _cmux_workspaces_in(server: Dict[str, str], root: str) -> List[str]:
-    """The ids of the workspaces, in every window of `server`, whose current directory is `root` or inside it."""
-    code, out, _ = _cmux(server, ["--json", "--id-format", "uuids", "list-windows"])
-    try:
-        windows = json.loads(out) if code == 0 else []
-    except ValueError:
-        return []
-    ids: List[str] = []
-    for window in windows if isinstance(windows, list) else []:
-        handle = window.get("id") if isinstance(window, dict) else None
-        if not isinstance(handle, str) or not CMUX_HANDLE.fullmatch(handle):
-            continue
-        code, out, _ = _cmux(server, ["--json", "--id-format", "uuids", "list-workspaces", "--window", handle])
-        try:
-            workspaces = (json.loads(out).get("workspaces") or []) if code == 0 else []
-        except (ValueError, AttributeError):
-            continue
-        for ws in workspaces:
-            wid = ws.get("id") if isinstance(ws, dict) else None
-            if isinstance(wid, str) and CMUX_HANDLE.fullmatch(wid) and _within(ws.get("current_directory"), root) >= 0:
-                ids.append(wid)
-    return ids
-
-
-def _tmux_panes_in(server: Dict[str, str], root: str) -> List[str]:
-    """The ids of the panes, in every session of `server`, whose current path is `root` or inside it."""
-    code, out, _ = _tmux(server, ["list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_path}"])
-    if code != 0:
-        return []
-    panes = (line.split("\t", 1) for line in out.splitlines())
-    return [p[0] for p in panes if len(p) == 2 and TMUX_PANE.fullmatch(p[0]) and _within(p[1], root) >= 0]
-
-
-def close_terminals(cwd: str, contexts: List[Any], spare: Optional[Dict[str, Any]] = None) -> int:
-    """Closes every cmux workspace (in any window) and tmux pane whose current directory is `cwd` or inside it, on the cmux
-    and tmux servers of `contexts` and cmux's default socket, except the terminal of the `spare` context; returns how many."""
-    root = os.path.realpath(cwd)
-    spare = spare if isinstance(spare, dict) else {}
-    spare_workspace = str((spare.get("cmux") or {}).get("workspace") or "").upper()
-    spare_tmux = spare.get("tmux") or {}
-    spare_pane = (os.path.realpath(spare_tmux["socket"]), spare_tmux.get("pane")) if spare_tmux.get("socket") else None
-    closed = 0
-    for server in _tmux_servers(contexts):
-        for pane in _tmux_panes_in(server, root):
-            if (os.path.realpath(server["socket"]), pane) != spare_pane and _tmux(server, ["kill-pane", "-t", pane])[0] == 0:
-                closed += 1
-    for server in _cmux_servers(contexts):
-        for workspace in _cmux_workspaces_in(server, root):
-            if workspace.upper() != spare_workspace and _cmux(server, ["workspace", "close", "--force", "--workspace", workspace])[0] == 0:
-                closed += 1
-    return closed
-
-
-# --- attachments
-
 def open_terminal(context: Dict[str, Any], name: str, cwd: str, command: str) -> Dict[str, Any]:
     """Opens `command` in a new unfocused terminal of the context's presentation; plain opens nothing."""
     name = (name or "agent")[:NAME_LIMIT]
@@ -423,22 +298,8 @@ def open_terminal(context: Dict[str, Any], name: str, cwd: str, command: str) ->
     return _attachment("plain", name, cwd, command, False, cmux=context.get("cmux"))
 
 
-def attach_command(att: Dict[str, Any]) -> Optional[str]:
-    """The shell command that attaches any terminal to the agent; None for a legacy attachment."""
-    return f"cd {shlex.quote(att['cwd'])} && {att['command']}" if att.get("command") else None
-
-
-def alive(att: Dict[str, Any]) -> bool:
-    """Whether the attachment's terminal is still open; says nothing about the agent."""
-    if att.get("kind") == "cmux":
-        return _cmux_panels(att["cmux"]) is not None
-    if att.get("kind") == "tmux":
-        return _tmux_alive(att)
-    return False
-
-
 def focus(target: Dict[str, Any]) -> bool:
-    """Brings an attachment's or a context's terminal forward, for an explicit user open."""
+    """Brings a found, opened or reported terminal forward, for an explicit user open."""
     if target.get("kind") == "cmux":
         part = target["cmux"]
         if _cmux(part, ["select-workspace", "--workspace", part["workspace"]])[0] != 0:
@@ -451,14 +312,6 @@ def focus(target: Dict[str, Any]) -> bool:
             return False
         return _tmux(part, ["select-window", "-t", window])[0] == 0 and _tmux(part, ["select-pane", "-t", part["pane"]])[0] == 0
     return False
-
-
-def close(att: Dict[str, Any]) -> None:
-    """Closes the attachment's terminal; a managed agent keeps running in its host."""
-    if att.get("kind") == "cmux":
-        _cmux(att["cmux"], ["workspace", "close", "--force", "--workspace", att["cmux"]["workspace"]])
-    elif att.get("kind") == "tmux" and _tmux_alive(att):
-        _tmux(att["tmux"], ["kill-window", "-t", att["tmux"]["window"]])
 
 
 # --- browser panels
@@ -535,19 +388,6 @@ def close_tab(tab: Dict[str, str]) -> bool:
     return _cmux(tab, ["close-surface", "--surface", tab["surface"], "--workspace", tab["workspace"]])[0] == 0
 
 
-def open_diff(target: Dict[str, Any], path: str, base: str, title: str) -> bool:
-    """Opens cmux's diff panel for `path` against `base` in the target's cmux workspace; False when it has no cmux."""
-    part = target.get("cmux")
-    if not part:
-        return False
-    args = ["diff", "--source", "branch", "--cwd", path, "--base", base, "--title", title, "--workspace", part["workspace"],
-            "--focus", "true"]
-    code, out, err = _cmux(part, args, timeout=20)
-    if code != 0:
-        raise RuntimeError((err or out).strip() or "cmux diff failed")
-    return True
-
-
 # --- caller detection (runs in the caller's process, never in the server)
 
 def _detect_cmux(environ: Mapping[str, str]) -> Tuple[Optional[Dict[str, str]], str]:
@@ -562,36 +402,6 @@ def _detect_cmux(environ: Mapping[str, str]) -> Tuple[Optional[Dict[str, str]], 
     except (ValueError, RuntimeError) as e:
         return None, str(e)
     return part, ""
-
-
-def terminal_identity(environ: Any) -> Dict[str, str]:
-    """The variables of `environ` that detection reads to identify its terminal."""
-    if not isinstance(environ, Mapping):
-        return {}
-    return {k: v for k in IDENTITY_ENV if isinstance(v := environ.get(k), str) and v and len(v) <= 1024}
-
-
-def presenter_cmux(environ: Mapping[str, str]) -> Optional[Dict[str, str]]:
-    """The validated cmux part of the workspace now showing this detached process (PRESENTER_ENV); None without one.
-    A presenter names a workspace, and a surface only when one terminal shows the process."""
-    path = environ.get(PRESENTER_ENV)
-    if not path:
-        return None
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    ident = terminal_identity(data.get("env") if isinstance(data, dict) else None)
-    if not ident.get("CMUX_WORKSPACE_ID"):
-        return None
-    try:
-        part = _cmux_part({"cli": ident.get("CMUX_BUNDLED_CLI_PATH") or _which("cmux"),
-                           "socket": ident.get("CMUX_SOCKET_PATH") or DEFAULT_CMUX_SOCKET,
-                           "workspace": ident["CMUX_WORKSPACE_ID"], "surface": ident.get("CMUX_SURFACE_ID")}, False)
-        _cmux_target(part)
-    except (ValueError, RuntimeError):
-        return None
-    return part
 
 
 def _detect_tmux(environ: Mapping[str, str]) -> Tuple[Optional[Dict[str, str]], str]:
@@ -657,7 +467,7 @@ def detect_context(environ: Mapping[str, str], override_envs: Tuple[str, ...] = 
         raise ValueError(f"{name} must be one of {', '.join(OVERRIDES)}, not {override}")
     cmux, cmux_why = _detect_cmux(environ)
     tmux, tmux_why = _detect_tmux(environ) if override in ("auto", "tmux") or not cmux else (None, "")
-    # A tmux pane without cmux identity of its own (cmux's local tmux, a detached task) is shown by the cmux terminal of its client.
+    # A tmux pane without cmux identity of its own (cmux's local tmux) is shown by the cmux terminal of its client.
     if not cmux and tmux:
         cmux = _tmux_client_cmux(tmux, environ)
     if override not in ("auto", "tmux"):
@@ -681,8 +491,7 @@ def main(argv: List[str]) -> int:
                         help=f"env var forcing auto|cmux|tmux|plain, first set wins (repeatable; default {', '.join(OVERRIDE_ENVS)})")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("detect", help="print this terminal's validated context as JSON")
-    board = sub.add_parser("board", help="open a URL in the cmux workspace of this terminal (or of the terminal showing "
-                                          "this detached process), else the default browser")
+    board = sub.add_parser("board", help="open a URL in the cmux workspace of this terminal, else the default browser")
     board.add_argument("url")
     board.add_argument("--focus", action=argparse.BooleanOptionalAction, default=True)
     board.add_argument("--context", help="a context JSON from detect, instead of detecting this terminal")
@@ -711,10 +520,6 @@ def main(argv: List[str]) -> int:
     if args.command == "detect":
         print(json.dumps(context))
         return 0
-    if not given and not context.get("cmux"):
-        presenter = presenter_cmux(os.environ)
-        if presenter:
-            context = {**context, "cmux": presenter}
     if args.command == "tab":
         opened = open_tab(context, args.url)
         if opened:

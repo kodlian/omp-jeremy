@@ -8,21 +8,21 @@
   "plugins": [
     {
       "name": "mission-control",
-      "description": "Mission Control: worktrees, agents, linked tasks and pull requests of a project",
+      "description": "Mission Control: every worktree of a project on a board and a dependency canvas, every omp running in it, and its pull request",
       "source": "./plugins/mission-control",
-      "version": "0.1.0"
+      "version": "0.2.0"
     },
     {
       "name": "git-diff-review",
       "description": "Browser-based diff review with agent feedback and terminal appearance",
       "source": "./plugins/git-diff-review",
-      "version": "1.3.2"
+      "version": "1.3.3"
     },
     {
       "name": "control",
       "description": "Controls: pick reviewers and checks that audit a change, once or after every change",
       "source": "./plugins/control",
-      "version": "0.5.0"
+      "version": "0.6.0"
     },
     {
       "name": "plan-review",

@@ -1,11 +1,10 @@
 // @bun
 // plugins/mission-control/omp/mission-control.ts
 import { spawn, spawnSync } from "child_process";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "fs";
+import { closeSync, mkdirSync, openSync, readdirSync, realpathSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import * as omp from "@oh-my-pi/pi-coding-agent";
-import { truncateToWidth } from "@oh-my-pi/pi-tui";
 
 // packages/integrations/src/terminal.ts
 import { fileURLToPath } from "url";
@@ -45,20 +44,6 @@ var PLAN_APPROVALS = { execute: true, compact: true, keep: true };
 var errorText = (e) => e instanceof Error ? e.message : String(e);
 var toolReply = (text, isError = false) => ({ content: [{ type: "text", text }], isError });
 
-// packages/integrations/src/bus.ts
-function busAsk(events, event, request, timeoutMs, unavailable) {
-  const { promise, resolve } = Promise.withResolvers();
-  const timer = setTimeout(() => resolve({ ok: false, message: unavailable }), timeoutMs);
-  events.emit(event, {
-    ...request,
-    reply: (r) => {
-      clearTimeout(timer);
-      resolve(r);
-    }
-  });
-  return promise;
-}
-
 // packages/integrations/src/fonts.ts
 var fonts = new Map;
 
@@ -87,10 +72,6 @@ function resolveTheme(theme, terminal) {
 }
 var GHOSTTY_FONT_SIZE = process.platform === "darwin" ? 13 : 12;
 
-// packages/integrations/src/control.ts
-var CONTROL_ASK_EVENT = "control:ask";
-var CONTROL_SETS_EVENT = "control:sets";
-
 // plugins/mission-control/omp/mission-control.ts
 var BASE = `http://127.0.0.1:${process.env.MISSION_CONTROL_PORT || "4747"}`;
 var HOME = process.env.MISSION_CONTROL_HOME || join(homedir(), ".mission-control");
@@ -98,22 +79,14 @@ var PYTHON = process.env.MISSION_CONTROL_PYTHON || "python3";
 var SERVER = join(dirname(realpathSync(import.meta.path)), "..", "server.py");
 var SERVER_ROOT = dirname(SERVER);
 var START_TIMEOUT_MS = 30000;
-var RECONNECT_MS = 3000;
-var STREAM_IDLE_MS = 1e4;
 var STEP_MS = 2000;
-var CLEANUP_ENTRY = "mission-control.cleanup";
-var ENGAGED_ENTRY = "mission-control.engaged";
-var MERGE_REMOVE = "Merge and remove the worktree";
-var MERGE_KEEP = "Merge and keep the worktree";
-var DELETE_REMOVE = "Delete and remove the worktree";
-var DELETE_KEEP = "Delete and keep the worktree";
-var CANCEL = "Cancel";
-var DIFF_TOOL_LIMIT = 60000;
-var SHARING = "Record a concise finding other tasks need (a decision, contract, gotcha, where something lives) with mission_control_publish as you learn it, and your outcome (what changed, where, how dependents use it) once the work is committed, before finishing. Read what a dependency recorded, newer than your brief, with mission_control_context.";
-var CONTROL_ASK_MS = 2000;
-function isControl(data) {
-  return typeof data === "object" && data !== null && "id" in data && typeof data.id === "string" && "task" in data && typeof data.task === "string" && "action" in data && typeof data.action === "string";
-}
+var RETRY_MS = 3000;
+var UNKNOWN_CHECKOUT_MS = 60000;
+var HEARTBEAT_MS = 20000;
+var HOLD_POLL_MS = 1e4;
+var FOLLOW_POLL_MS = 5000;
+var HOLD_ENTRY = "mission-control.hold";
+var FOLLOW_ENTRY = "mission-control.follow";
 
 class BoardError extends Error {
   status;
@@ -123,19 +96,6 @@ class BoardError extends Error {
   }
 }
 var tilde = (path) => path.startsWith(homedir()) ? `~${path.slice(homedir().length)}` : path;
-var cardNumbers = new Map;
-var CARD_ID = /(?<![\w/-])(?:MC|KB)-\d+(?:\.\d+)*\b/g;
-var lastBoard = null;
-function rememberNumbers(board) {
-  lastBoard = board;
-  for (const t of board.tasks)
-    cardNumbers.set(t.id, t.number);
-}
-var taskNumber = (id) => {
-  const n = cardNumbers.get(id);
-  return n ? `#${n}` : id;
-};
-var withNumbers = (text) => text.replace(CARD_ID, taskNumber);
 var serverCwd = process.cwd();
 var starting;
 async function health() {
@@ -146,40 +106,12 @@ async function health() {
     return null;
   }
 }
-async function prepare(env) {
-  const child = spawn(PYTHON, [SERVER, "--prepare"], { cwd: serverCwd, env, stdio: ["ignore", "pipe", "pipe"] });
-  let output = "";
-  let stderr = "";
-  child.stdout.setEncoding("utf8").on("data", (chunk) => {
-    output += chunk;
-  });
-  child.stderr.setEncoding("utf8").on("data", (chunk) => {
-    output += chunk;
-    stderr += chunk;
-  });
-  const exited = Promise.withResolvers();
-  child.on("error", exited.reject);
-  child.on("close", exited.resolve);
-  const code = await exited.promise.catch((e) => {
-    throw new Error(`Mission Control didn't start: ${errorText(e)}`);
-  });
-  mkdirSync(HOME, { recursive: true });
-  if (output)
-    appendFileSync(join(HOME, "server.log"), output);
-  if (code !== 0) {
-    const reason = stderr.trim().split(`
-`).pop() || `server.py --prepare exited with ${code}`;
-    throw new Error(`Mission Control can't start: ${reason}`);
-  }
-}
 async function launch() {
-  const env = { ...process.env };
-  delete env.MISSION_CONTROL_TASK;
-  await prepare(env);
+  mkdirSync(HOME, { recursive: true });
   const log = openSync(join(HOME, "server.log"), "a");
   const spawned = {};
   try {
-    const child = spawn(PYTHON, [SERVER], { cwd: serverCwd, env, detached: true, stdio: ["ignore", log, log] });
+    const child = spawn(PYTHON, [SERVER], { cwd: serverCwd, env: process.env, detached: true, stdio: ["ignore", log, log] });
     child.on("error", (e) => {
       spawned.error = e;
     });
@@ -206,10 +138,7 @@ function exclusive(job) {
   });
   return starting;
 }
-async function refreshBoard() {
-  const running = await health();
-  if (!running)
-    return;
+async function refreshBoard(running) {
   const mtimes = readdirSync(SERVER_ROOT).filter((name) => name.endsWith(".py")).map((name) => statSync(join(SERVER_ROOT, name)).mtimeMs / 1000);
   if (!mtimes.length)
     return;
@@ -229,8 +158,9 @@ async function refreshBoard() {
   });
 }
 async function ensureBoard() {
-  if (await health())
-    await refreshBoard();
+  const running = await health();
+  if (running)
+    await refreshBoard(running);
   else
     await exclusive(launch);
 }
@@ -259,37 +189,7 @@ async function api(method, path, body, autostart = true) {
     const error = data && typeof data === "object" && "error" in data && typeof data.error === "string" ? data.error : "";
     throw new BoardError(res.status, error || `${res.status} ${res.statusText}`);
   }
-  if (method === "GET" && path === "/api/state")
-    rememberNumbers(data);
-  else if (data && typeof data === "object" && "id" in data && "number" in data)
-    cardNumbers.set(String(data.id), String(data.number));
   return data;
-}
-async function* serverEvents(body) {
-  let buffer = "";
-  for await (const chunk of body.pipeThrough(new TextDecoderStream)) {
-    buffer += chunk;
-    for (let end = buffer.indexOf(`
-
-`);end >= 0; end = buffer.indexOf(`
-
-`)) {
-      const block = buffer.slice(0, end);
-      buffer = buffer.slice(end + 2);
-      let event = "message";
-      const data = [];
-      for (const line of block.split(`
-`)) {
-        if (line.startsWith("event:"))
-          event = line.slice(6).trim();
-        else if (line.startsWith("data:"))
-          data.push(line.slice(5).replace(/^ /, ""));
-      }
-      if (data.length)
-        yield { event, data: data.join(`
-`) };
-    }
-  }
 }
 function git(args, cwd) {
   return (spawnSync("git", args, { cwd, encoding: "utf8" }).stdout ?? "").trim();
@@ -301,25 +201,14 @@ function realpath(path) {
     return null;
   }
 }
-function linkedWorktree(cwd) {
-  const [gitDir, commonDir] = git(["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"], cwd).split(`
-`);
-  return Boolean(gitDir && commonDir && gitDir !== commonDir);
-}
-var checkoutRoot = (cwd) => git(["rev-parse", "--show-toplevel"], cwd) || cwd;
 function mainCheckout(cwd) {
   const common = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd);
   return common ? realpath(dirname(common)) : null;
 }
-function worktreeTask(board, cwd) {
-  const root = realpath(checkoutRoot(cwd));
-  return root ? board.tasks.find((t) => t.worktree && realpath(t.worktree) === root) : undefined;
-}
 function stepText(event) {
   if (event.intent)
     return event.intent;
-  const args = event.args && typeof event.args === "object" ? event.args : {};
-  const detail = [args.path, args.pattern, args.query].find((v) => typeof v === "string") ?? "";
+  const detail = [field(event.args, "path"), field(event.args, "pattern"), field(event.args, "query")].find((v) => typeof v === "string") ?? "";
   return `${event.toolName} ${detail}`.trim();
 }
 function field(value, key) {
@@ -374,201 +263,146 @@ function callerTerminal() {
   terminal ??= detectTerminalContext({ python: PYTHON, overrideEnvs: TERMINAL_OVERRIDES }).then((context) => ({ context }), (e) => ({ error: errorText(e) }));
   return terminal;
 }
-async function originTerminal() {
-  const found = await callerTerminal();
-  if ("error" in found)
-    throw new Error(found.error);
-  return found.context;
-}
-async function requestTerminal() {
-  const found = await callerTerminal();
-  return "context" in found ? found.context : undefined;
-}
-async function showBoard(url, focus) {
-  await openBoard(url, { focus, python: PYTHON, overrideEnvs: TERMINAL_OVERRIDES });
-}
-function presentationText(t) {
-  const p = t.presentation;
-  if (p?.alive && p.kind !== "plain")
-    return `in its ${p.kind} ${p.kind === "tmux" ? "window" : "workspace"}`;
-  return t.attachCommand ? `after attaching with: ${t.attachCommand}` : "in its omp session";
-}
-var columnTitle = (board, column) => board.columns.find((c) => c.id === column)?.title ?? column;
 var plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
-var numbers = (ids) => ids.map(taskNumber).join(", ");
-function prText(pr) {
-  const marks = [pr.checks && `checks ${pr.checks}`, pr.review && pr.review.replace("_", " "), pr.conflicts && "conflicts"].filter(Boolean);
-  return `PR #${pr.number} ${pr.state}${marks.length ? ` (${marks.join(", ")})` : ""}`;
-}
-function waitsUntil(t) {
-  const own = t.blockedBy.filter((b) => t.dependsOn.includes(b));
-  const inherited = t.blockedBy.filter((b) => !t.dependsOn.includes(b));
-  return [
-    own.length && `${numbers(own)} ${own.length === 1 ? "is" : "are"} done`,
-    inherited.length && `the block on its parent tree (${numbers(inherited)}) clears`
-  ].filter(Boolean).join(" and ");
-}
-function listTasks(board, projects, self) {
-  const hidden = (x) => !!x.branch && projects.some((p) => p.id === x.project && p.hidden.includes(x.branch));
-  const ids = new Set(projects.map((p) => p.id));
-  const several = projects.length > 1;
-  const listed = board.tasks.filter((t) => ids.has(t.project));
-  const tags = [...new Set(projects.flatMap((p) => p.tags))].sort();
-  const lines = [`Tags in use: ${tags.join(", ") || "none"}`];
-  for (const p of projects)
-    lines.push(`Project ${p.id} (${tilde(p.repo)}, default branch ${p.defaultBranch})`);
-  lines.push("");
-  const open = listed.filter((t) => t.column !== "done");
-  for (const t of open) {
-    let line = `${t.id} \xB7 ${columnTitle(board, t.column)} \xB7 ${t.title} \xB7 ${t.branch} from ${t.base}`;
-    if (t.id === self)
-      line += " \xB7 this task";
-    if (t.tags.length)
-      line += ` \xB7 tags ${t.tags.join(", ")}`;
-    if (t.dependsOn.length)
-      line += ` \xB7 depends on ${t.dependsOn.join(", ")}`;
-    if (t.parent)
-      line += ` \xB7 child of ${t.parent}`;
-    if (t.children.length)
-      line += ` \xB7 ${plural(t.children.length, "child card")}`;
-    if (t.held)
-      line += " \xB7 paused until moved to In Progress";
-    else if (t.paused)
-      line += " \xB7 paused";
-    if (t.blockedBy.length)
-      line += ` \xB7 waits until ${waitsUntil(t)}`;
-    if (t.agent && t.agent.state !== "idle")
-      line += ` \xB7 ${t.agent.state.replace("_", " ")}`;
-    if (t.agents.length)
-      line += ` \xB7 also ${plural(t.agents.length, "other omp")} running in its worktree`;
-    if (t.worktree && (t.presentation || t.attachCommand))
-      line += ` \xB7 reach it ${presentationText(t)}`;
-    if (t.health?.worktreeMissing)
-      line += " \xB7 worktree missing";
-    if (t.land.mergeInto)
-      line += ` \xB7 merges into ${t.land.mergeInto}`;
-    if (t.pr)
-      line += ` \xB7 ${prText(t.pr)}`;
-    if (t.controlSet)
-      line += ` \xB7 controls ${t.controlSet}`;
-    if (t.ticket)
-      line += ` \xB7 ticket ${t.ticket}`;
-    if (several)
-      line += ` \xB7 project ${t.project}`;
-    if (hidden(t))
-      line += " \xB7 hidden on the page";
-    lines.push(line);
+var COLUMNS = { planning: "Planning", waiting: "Waiting", doing: "In Progress", review: "Review", pr: "Pull Request", idle: "Idle", done: "Done" };
+var columnName = (column) => COLUMNS[column] ?? column;
+var named = (w) => w.folder ? `${w.title} (${w.folder})` : w.title;
+var isStrings = (value) => Array.isArray(value) && value.every((v) => typeof v === "string");
+function checkoutAt(board, cwd) {
+  const paths = [cwd, realpath(cwd) ?? cwd];
+  let found;
+  for (const w of board.worktrees) {
+    if (!paths.some((p) => p === w.path || p.startsWith(`${w.path}/`)))
+      continue;
+    if (!found || w.path.length > found.path.length)
+      found = w;
   }
-  if (!open.length)
-    lines.push("No open cards");
-  const done = listed.filter((t) => t.column === "done");
-  if (done.length) {
-    lines.push("", "Done, still on the board (depend on one when new work builds on it; it doesn't block):");
-    for (const t of done)
-      lines.push(`${t.id} \xB7 ${t.title}${several ? ` \xB7 project ${t.project}` : ""}`);
-  }
-  const others = board.worktrees.filter((w) => ids.has(w.project));
-  if (others.length) {
-    lines.push("", "Other checkouts (no card; mission_control_adopt tracks a linked worktree on a branch):");
-    for (const w of others) {
-      const work = w.git ? ` \xB7 ${plural(w.git.commits, "commit")}${w.git.dirty ? `, ${w.git.dirty} uncommitted` : ""}` : "";
-      const tags2 = w.tags.length ? ` \xB7 tags ${w.tags.join(", ")}` : "";
-      const a = w.agent;
-      const title = a.title ? ` "${a.title}"` : "";
-      const running = w.agents.map((r) => `${r.state === "running" ? "omp" : r.state.replace("_", " ")}${r.title ? ` "${r.title}"` : ""}`);
-      const agent = running.length ? ` \xB7 running: ${running.join("; ")}` : a.state === "asleep" ? ` \xB7 omp asleep since ${a.at?.slice(0, 10)}, session ${a.session?.id}${title}` : " \xB7 no omp session";
-      const on = w.branch ? `${w.branch} from ${w.base}` : `detached at ${w.detached}`;
-      const name = w.main ? `main checkout on ${w.branch ?? `detached ${w.detached}`}` : on;
-      lines.push(`${name} \xB7 ${tilde(w.path)} \xB7 ${columnTitle(board, w.column)}${work}${w.pr ? ` \xB7 ${prText(w.pr)}` : ""}${agent}${tags2}${hidden(w) ? " \xB7 hidden on the page" : ""}`);
-    }
-  }
-  return lines.join(`
-`);
+  return found;
 }
-function findTask(board, id) {
-  const t = board.tasks.find((x) => x.id === id);
-  if (!t)
-    throw new Error(`Unknown task ${id}`);
-  return t;
+function findCheckout(board, ref, project) {
+  const pool = board.worktrees.filter((w) => !project || w.project === project);
+  const exact = pool.filter((w) => w.key === ref);
+  const lower = ref.toLowerCase();
+  const matches = exact.length ? exact : pool.filter((w) => w.key.toLowerCase() === lower || w.title.toLowerCase() === lower);
+  if (matches.length === 1)
+    return matches[0];
+  if (!matches.length)
+    throw new Error(`No checkout named ${ref}${project ? ` in ${project}` : ""}`);
+  throw new Error(`${ref} names several checkouts: ${matches.map((w) => `${w.key} (${w.project})`).join(", ")}`);
 }
-async function addDependencies(id, deps) {
-  const t = findTask(await api("GET", "/api/state"), id);
-  const dependsOn = [...new Set([...t.dependsOn, ...deps])];
-  await api("PATCH", `/api/tasks/${id}`, { dependsOn });
-  return dependsOn;
+var checkoutOf = (board, project, key) => board.worktrees.find((w) => w.project === project && w.key === key);
+function withColumns(board, project, keys) {
+  return keys.map((key) => {
+    const w = checkoutOf(board, project, key);
+    return w ? `${key} (${columnName(w.column)})` : key;
+  }).join(", ");
 }
-function mergeSummary(t) {
-  const commits = t.git?.commits ?? 0;
-  const dirty = t.git?.dirty ?? 0;
-  const pending = dirty ? `, ${dirty} uncommitted file${dirty === 1 ? "" : "s"} will be committed` : "";
-  return `${plural(commits, "commit")} on ${t.branch}, +${t.git?.added ?? 0} \u2212${t.git?.removed ?? 0}${pending}`;
-}
-function landsText(t) {
-  return t.land.mergeInto ? `When the work is complete and verified, tell the user; do not push: /land (mission_control_land when the user says to merge) merges this branch into ${t.base}, removes this worktree and ends this session.` : `When the work is complete and verified, commit it, push the branch and open a pull request into ${t.base} (/land or mission_control_land does it).`;
-}
-function taskContext(id, board) {
-  const t = board?.tasks.find((x) => x.id === id);
-  if (!board || !t)
-    return `This session works on Mission Control task ${id}. Read the other cards with mission_control_tasks; don't do their part. ${SHARING}`;
-  const builders = board.tasks.filter((o) => o.dependsOn.includes(id)).map((o) => o.id);
-  return `This session works on Mission Control task ${taskNumber(t.id)}: ${t.title}, on ${t.branch} from ${t.base}. ${landsText(t)} It waits for: ${t.blockedBy.length ? numbers(t.blockedBy) : "nothing"}. Tasks that build on it: ${builders.length ? numbers(builders) : "none"}. Read another card with mission_control_tasks; don't do its part. If your work touches another product area, add its tag with mission_control_edit. ${SHARING}`;
-}
-function contextText(c) {
-  const head = `${c.id} \xB7 revision ${c.revision}${c.updatedAt ? ` \xB7 updated ${c.updatedAt}` : ""}`;
-  if (!c.entries.length)
-    return `${head}
-Nothing recorded yet.`;
-  const blocks = c.entries.map((e) => {
-    const stamp = [e.source, e.ref, e.at].filter(Boolean).join(" \xB7 ");
-    return `## ${e.kind}${stamp ? ` (${stamp})` : ""}
-${e.text}`;
+var titlesOf = (board, project, keys) => keys.map((key) => checkoutOf(board, project, key)?.title ?? key);
+function openPrerequisites(board, w, keys) {
+  return keys.filter((key) => {
+    const prerequisite = checkoutOf(board, w.project, key);
+    return w.dependsOn.includes(key) && prerequisite !== undefined && prerequisite.column !== "done";
   });
-  let shown = blocks.length;
-  while (shown > 1 && blocks.slice(blocks.length - shown).join(`
-
-`).length > DIFF_TOOL_LIMIT)
-    shown--;
-  const cut = shown < blocks.length ? `
-
-[${blocks.length - shown} older entries not shown]` : "";
-  return `${head}
-
-${blocks.slice(blocks.length - shown).join(`
-
-`)}${cut}`;
 }
-function cardLine(board, id) {
-  const t = board.tasks.find((x) => x.id === id);
-  if (!t)
-    return `${id} (not on the board)`;
-  const state = t.merged ? `merged into ${t.merged.into}` : t.paused ? "paused" : t.blockedBy.length ? `waits until ${waitsUntil(t)}` : t.agent && t.agent.state !== "idle" ? t.agent.state.replace("_", " ") : "";
-  return `${t.id} \xB7 ${columnTitle(board, t.column)} \xB7 ${t.title}${state ? ` \xB7 ${state}` : ""}`;
-}
-function childrenText(board, t) {
-  const lines = [`${t.id}: ${t.title} (${columnTitle(board, t.column)})`];
-  lines.push(t.parent ? `Parent: ${cardLine(board, t.parent)}` : "No parent");
-  if (t.children.length)
-    lines.push(`Children (${t.children.length}):`, ...t.children.map((c) => `- ${cardLine(board, c)}`));
-  else
-    lines.push("No children");
-  lines.push("Parent groups cards; use dependsOn for ordering. Children also wait for what their parent tree depends on.");
+function dependencies(board, w) {
+  const lines = [`${named(w)} depends on ${w.dependsOn.length ? withColumns(board, w.project, w.dependsOn) : "nothing"}`];
+  if (w.waitingFor.length)
+    lines.push(`waiting for ${w.waitingFor.join(", ")}`);
+  lines.push(`needed by ${w.neededBy.length ? withColumns(board, w.project, w.neededBy) : "nothing"}`);
   return lines.join(`
 `);
+}
+function tagsText(w) {
+  const ruled = w.tags.filter((t) => !w.ownTags.includes(t));
+  const own = w.ownTags.length ? `${named(w)} tags: ${w.ownTags.join(", ")}` : `${named(w)} has no tags of its own`;
+  return ruled.length ? `${own} \xB7 from tag rules: ${ruled.join(", ")}` : own;
+}
+function editTags(current, add, remove) {
+  const drop = new Set(remove.map((t) => t.toLowerCase()));
+  return [...new Set([...current, ...add.map((t) => t.toLowerCase())])].filter((t) => !drop.has(t.toLowerCase()));
+}
+function checkoutLine(board, w) {
+  const parts = [`${named(w)}${w.main ? " (main checkout)" : ""}`, w.branch ?? `detached ${w.detached}`, tilde(w.path), columnName(w.column)];
+  if (w.dependsOn.length)
+    parts.push(`depends on ${withColumns(board, w.project, w.dependsOn)}`);
+  if (w.neededBy.length)
+    parts.push(`needed by ${withColumns(board, w.project, w.neededBy)}`);
+  if (w.waitingFor.length)
+    parts.push(`waiting for ${w.waitingFor.join(", ")}`);
+  if (w.git) {
+    const work = [`+${w.git.added} \u2212${w.git.removed} in ${plural(w.git.files, "file")}`, plural(w.git.commits, "commit")];
+    if (w.git.dirty)
+      work.push(`${w.git.dirty} uncommitted`);
+    parts.push(work.join(", "));
+  }
+  if (w.pr) {
+    const pr = [`PR #${w.pr.number} ${w.pr.state}`];
+    if (w.pr.checks)
+      pr.push(`checks ${w.pr.checks}`);
+    if (w.pr.review)
+      pr.push(w.pr.review.replace("_", " "));
+    if (w.pr.unresolved)
+      pr.push(plural(w.pr.unresolved, "unresolved comment"));
+    parts.push(pr.join(", "));
+  }
+  if (w.tags.length)
+    parts.push(`tags ${w.tags.join(", ")}`);
+  if (w.agents.length) {
+    const running = w.agents.map((a) => {
+      const bits = [a.title ? `"${a.title}"` : "omp", a.state.replace("_", " ")];
+      if (a.step)
+        bits.push(a.step);
+      if (a.todo)
+        bits.push(`to-do ${a.todo.done}/${a.todo.total}`);
+      if (a.waitingFor.length)
+        bits.push(`holds its plan for ${a.waitingFor.join(", ")}`);
+      return bits.join(", ");
+    });
+    parts.push(`running: ${running.join("; ")}`);
+  } else if (w.agent.state === "asleep") {
+    parts.push(`asleep since ${w.agent.at?.slice(0, 10) ?? "?"} (session ${w.agent.session?.id ?? "?"})`);
+  } else {
+    parts.push("no omp session");
+  }
+  return parts.join(" \xB7 ");
+}
+function listCheckouts(board, projects) {
+  const lines = [];
+  for (const p of projects) {
+    if (lines.length)
+      lines.push("");
+    lines.push(`Project ${p.id} (${tilde(p.repo)}, default branch ${p.defaultBranch})`);
+    const checkouts = board.worktrees.filter((w) => w.project === p.id);
+    for (const w of checkouts)
+      lines.push(`- ${checkoutLine(board, w)}`);
+    if (!checkouts.length)
+      lines.push("- no checkouts");
+  }
+  return lines.length ? lines.join(`
+`) : "No projects registered: /mission registers this one";
+}
+function completeLast(prefix, items) {
+  const at = prefix.lastIndexOf(" ") + 1;
+  const head = prefix.slice(0, at);
+  const word = prefix.slice(at).toLowerCase();
+  const matches = items.filter((v) => v.value.toLowerCase().startsWith(word) || v.also?.toLowerCase().startsWith(word)).map((v) => ({ label: v.label, value: head + v.value, description: v.description }));
+  return matches.length ? matches : null;
+}
+function asHold(value) {
+  const keys = field(value, "keys");
+  const titles = field(value, "titles");
+  return isStrings(keys) && isStrings(titles) && keys.length ? { keys, titles } : null;
+}
+function asFollowed(value) {
+  if (!Array.isArray(value))
+    return [];
+  return value.flatMap((f) => {
+    const project = field(f, "project");
+    const key = field(f, "key");
+    return typeof project === "string" && typeof key === "string" ? [{ project, key }] : [];
+  });
 }
 var themeApi = hasThemeApi(omp);
-var WIDGET = "mission-control";
-var BOARD_GLYPH = { nerd: "\uF135", unicode: "\uD83D\uDE80", ascii: "[mc]" };
-var AGENT_LOOK = {
-  needs_input: ["warning", "needs input"],
-  plan_ready: ["warning", "plan ready for review"],
-  planning: ["accent", "planning"],
-  thinking: ["accent", "thinking"],
-  working: ["accent", "working"],
-  idle: ["muted", "idle"],
-  disconnected: ["muted", "omp disconnected"],
-  stopped: ["muted", "stopped"]
-};
-var CONTROL = /\p{Cc}/gu;
 var THEME_VARS = {
   "--bg": "pageBg",
   "--fg": "text",
@@ -579,43 +413,6 @@ var THEME_VARS = {
   "--warning": "warning",
   "--cyan": "borderAccent"
 };
-function intentText(t) {
-  const i = t.intent;
-  if (!i)
-    return null;
-  const text = { start: "starting", resume: "resuming", stop: "stopping", merge: `merging into ${t.base}`, remove: "removing worktree", delete: "deleting" }[i.op] ?? i.op;
-  return i.attempt > 0 ? `${text} (retrying: ${i.lastError ?? "unknown error"})` : text;
-}
-function cardLook(t) {
-  const busy = intentText(t);
-  if (busy)
-    return ["accent", busy];
-  if (t.spawn.state === "failed")
-    return ["error", "didn't start"];
-  if (t.merged)
-    return ["success", `merged into ${t.merged.into}`];
-  if (t.column === "review")
-    return ["success", t.land.mergeInto ? `ready to merge into ${t.land.mergeInto}` : "ready for pull request"];
-  if (t.column === "pr" && t.pr)
-    return [t.pr.checks === "failing" || t.pr.review === "changes_requested" || t.pr.conflicts ? "warning" : "success", prText(t.pr)];
-  if (t.column === "waiting")
-    return ["warning", t.held || t.paused ? "paused" : "waiting"];
-  return t.agent && AGENT_LOOK[t.agent.state] || null;
-}
-function widgetLines(p, board, id) {
-  const icon = p.fg("accent", BOARD_GLYPH[p.getSymbolPreset()] ?? BOARD_GLYPH.unicode);
-  const sep = p.fg("dim", " \xB7 ");
-  const head = ` ${icon} ${p.bold(p.fg("accent", taskNumber(id)))}`;
-  const t = board?.tasks.find((x) => x.id === id);
-  if (!t)
-    return [head];
-  const commits = t.git?.commits ?? 0;
-  const work = commits ? `${p.fg("muted", plural(commits, "commit"))} ${p.fg("success", `+${t.git?.added ?? 0}`)} ${p.fg("error", `\u2212${t.git?.removed ?? 0}`)}` : p.fg("dim", "no commits yet");
-  const look = cardLook(t);
-  const state = look ? `${sep}${p.fg(look[0], look[1])}` : "";
-  const waits = t.blockedBy.length ? `${sep}${p.fg("muted", `waits for ${numbers(t.blockedBy)}`)}` : "";
-  return [`${head} ${t.title.replace(CONTROL, " ")} ${p.fg("muted", `from ${t.base}`)}${sep}${work}${state}${waits}`];
-}
 async function themeAppearance() {
   const theme = resolveTheme(await currentTheme(omp), null);
   const vars = {};
@@ -628,26 +425,14 @@ async function themeAppearance() {
     vars["--accent-fg"] = isLightColor(vars["--accent"]) ? "#000000" : "#ffffff";
   return { scheme: theme.scheme, vars };
 }
-function completeLast(prefix, values) {
-  const at = prefix.lastIndexOf(" ") + 1;
-  const head = prefix.slice(0, at);
-  const word = prefix.slice(at).toLowerCase();
-  const matches = values.filter((v) => v.value.toLowerCase().startsWith(word)).map((v) => ({ ...v, value: head + v.value }));
-  return matches.length ? matches : null;
-}
 function missionControl(pi) {
   const z = pi.zod;
-  let engaged = false;
   let projectId = null;
   let sessionId = "";
-  let lastCard = null;
-  let lastCleanup = true;
-  let task = null;
-  let taskLookup = false;
+  let sessionFile = null;
+  let reportPath = "";
   let reporting;
-  let reportRetryAt = 0;
   let shuttingDown = false;
-  const handledControls = [];
   let reported = "";
   let current = "";
   let planning = false;
@@ -658,52 +443,26 @@ function missionControl(pi) {
   let todo = null;
   let said = null;
   let question = null;
+  let lastMessage = null;
   let reportedDetail = "";
-  const detailKey = () => JSON.stringify([runStart, todo, said, question]);
+  const detailKey = () => JSON.stringify([runStart, todo, said, question, hold?.keys]);
   let stepTimer;
+  let resendTimer;
+  let retryAt = 0;
   let sentAt = 0;
   let reports = Promise.resolve();
-  let sessionFile = null;
-  let lastMessage = null;
-  let terminalWarned = false;
-  let stream = null;
-  let seen = null;
-  let latest = null;
-  let repaint = null;
   let themeEpoch = null;
   let themeTimer;
   let sessionCtx = null;
-  let autoMerging = false;
-  const showWidget = (ctx) => {
-    if (!task)
-      return ctx.ui.setWidget(WIDGET, undefined);
-    const ui = ctx.ui;
-    ui.setWidget(WIDGET, (tui) => {
-      let rows = [];
-      let width = -1;
-      const mine = () => {
-        width = -1;
-        tui.requestRender();
-      };
-      repaint = mine;
-      return {
-        render(w) {
-          if (w !== width) {
-            width = w;
-            rows = widgetLines(ui.theme, latest, task ?? "").map((line) => truncateToWidth(line, w));
-          }
-          return rows;
-        },
-        invalidate() {
-          width = -1;
-        },
-        dispose() {
-          if (repaint === mine)
-            repaint = null;
-        }
-      };
-    }, { placement: "belowEditor" });
-  };
+  let lastBoard = null;
+  let boardAt = 0;
+  let hold = null;
+  let stopRun = false;
+  let carryHold = false;
+  let holdTimer;
+  let followed = [];
+  const seen = new Map;
+  let followTimer;
   const syncTheme = () => {
     if (!themeApi || !projectId)
       return;
@@ -714,101 +473,237 @@ function missionControl(pi) {
     const project = projectId;
     themeAppearance().then((look) => themeEpoch === epoch ? api("POST", "/api/appearance", { project, ...look }, false) : undefined).catch(() => {});
   };
-  const sessionProject = (board, ctx) => {
-    const id = (task ? board.tasks.find((t) => t.id === task)?.project : undefined) ?? projectId;
-    const named = id ? board.projects.find((p) => p.id === id) : undefined;
-    if (named)
-      return named;
-    const repo = mainCheckout(ctx.cwd);
-    return repo ? board.projects.find((p) => realpath(p.repo) === repo) : undefined;
-  };
-  const registerProject = async (ctx) => {
-    const r = await api("POST", "/api/projects", { path: ctx.cwd });
-    projectId = r.project.id;
-    return r.project;
-  };
-  const cardId = async (raw, ctx) => {
-    const ref = raw.trim().replace(/^#(?=\d)/, "");
-    if (/^(mc|kb)-\d+(\.\d+)*$/i.test(ref))
-      return ref.toUpperCase();
-    if (!/^\d+(\.\d+)*$/.test(ref))
-      return ref;
-    const board = await api("GET", "/api/state");
-    const project = sessionProject(board, ctx);
-    const found = board.tasks.filter((t) => t.number === ref && (!project || t.project === project.id));
-    if (found.length === 1)
-      return found[0].id;
-    throw new Error(found.length ? `#${ref} names cards in several projects` : `No card #${ref}${project ? ` in ${project.name}` : ""}`);
-  };
-  const cardIds = (refs, ctx) => Promise.all(refs.map((ref) => cardId(ref, ctx)));
-  const ownCard = async (ctx) => {
-    if (task)
-      return findTask(await api("GET", "/api/state"), task);
-    if (!linkedWorktree(ctx.cwd))
-      throw new Error("This is the main checkout: run it in a task's worktree");
-    return api("POST", "/api/worktrees/adopt", { path: checkoutRoot(ctx.cwd) });
-  };
-  const tell = async (ctx, work) => {
-    try {
-      ctx.ui.notify(withNumbers(await work), "info");
-    } catch (e) {
-      ctx.ui.notify(withNumbers(errorText(e)), "error");
-    }
-  };
-  const answer = async (work) => {
-    try {
-      return toolReply(withNumbers(await work));
-    } catch (e) {
-      return toolReply(withNumbers(errorText(e)), true);
-    }
-  };
-  const send = (path) => {
+  const clearTimers = () => {
     clearTimeout(stepTimer);
-    stepTimer = undefined;
+    clearTimeout(resendTimer);
+    clearInterval(themeTimer);
+    clearInterval(holdTimer);
+    clearInterval(followTimer);
+    stepTimer = resendTimer = themeTimer = holdTimer = followTimer = undefined;
+  };
+  const send = () => {
+    clearTimeout(stepTimer);
+    clearTimeout(resendTimer);
+    stepTimer = resendTimer = undefined;
     const state = current;
     const step = currentStep;
     reported = state;
     reportedStep = step;
     reportedDetail = detailKey();
     sentAt = Date.now();
-    reports = reports.then(() => api("POST", "/api/agent", { path, task: task ?? process.env.MISSION_CONTROL_TASK ?? null, state, step, sessionId, sessionFile, message: lastMessage, startedAt: runStart || null, todo, said, question }, false).then(() => {}, (e) => {
-      reported = "";
-      if (e instanceof BoardError && e.status === 404)
-        reportRetryAt = Date.now() + (process.env.MISSION_CONTROL_TASK ? 3000 : 30000);
-    }));
+    const body = {
+      path: reportPath,
+      sessionId,
+      sessionFile,
+      state,
+      step,
+      message: lastMessage,
+      startedAt: runStart || null,
+      todo,
+      said,
+      question,
+      waitingFor: state === "waiting" && hold ? hold.keys : []
+    };
+    reports = reports.then(async () => {
+      const found = await callerTerminal();
+      const ok = await api("POST", "/api/agent", { ...body, terminal: "context" in found ? found.context : null }, false).then(() => true, (e) => {
+        reported = "";
+        retryAt = Date.now() + (!(e instanceof BoardError) ? HEARTBEAT_MS : e.status === 404 ? UNKNOWN_CHECKOUT_MS : RETRY_MS);
+        return false;
+      });
+      if (shuttingDown || state === "exited")
+        return;
+      clearTimeout(resendTimer);
+      resendTimer = setTimeout(() => {
+        resendTimer = undefined;
+        send();
+      }, ok ? HEARTBEAT_MS : retryAt - Date.now());
+    });
     return reports;
   };
   const report = (ctx, state, step = null) => {
-    if (ctx.agent?.kind === "sub")
+    if (ctx.agent?.kind === "sub" || shuttingDown)
       return reports;
     current = state;
     currentStep = step;
+    reportPath = ctx.cwd;
     if (state === reported && step === reportedStep && detailKey() === reportedDetail)
       return reports;
-    reporting ??= Boolean(process.env.MISSION_CONTROL_TASK) || mainCheckout(ctx.cwd) !== null;
-    if (!reporting || Date.now() < reportRetryAt)
+    reporting ??= mainCheckout(ctx.cwd) !== null;
+    if (!reporting || Date.now() < retryAt)
       return reports;
-    const path = ctx.cwd;
     const wait = sentAt + STEP_MS - Date.now();
     if (state === reported && wait > 0) {
       stepTimer ??= setTimeout(() => {
         stepTimer = undefined;
         if (current !== reported || currentStep !== reportedStep || detailKey() !== reportedDetail)
-          send(path);
+          send();
       }, wait);
       return reports;
     }
-    return send(path);
+    return send();
   };
-  let holding = null;
+  const resting = () => hold ? "waiting" : reviewOpen ? "plan_ready" : "idle";
+  const readBoard = async (autostart = true) => {
+    lastBoard = await api("GET", "/api/state", undefined, autostart);
+    boardAt = Date.now();
+    return lastBoard;
+  };
+  const ownCheckout = async (ctx) => {
+    const board = await readBoard();
+    const own = checkoutAt(board, ctx.cwd);
+    if (!own)
+      throw new Error(`${tilde(ctx.cwd)} is in no checkout of a registered project: /mission registers it`);
+    return { board, own };
+  };
+  const syncPolls = () => {
+    if (hold)
+      holdTimer ??= setInterval(() => void checkHold(), HOLD_POLL_MS);
+    else {
+      clearInterval(holdTimer);
+      holdTimer = undefined;
+    }
+    if (followed.length)
+      followTimer ??= setInterval(() => void checkFollowed(), FOLLOW_POLL_MS);
+    else {
+      clearInterval(followTimer);
+      followTimer = undefined;
+    }
+  };
+  const setHold = (next) => {
+    hold = next;
+    pi.appendEntry(HOLD_ENTRY, { hold: next });
+    syncPolls();
+  };
   const stopHeld = (ctx) => {
-    const waits = holding;
-    if (!waits)
-      return;
-    holding = null;
+    stopRun = false;
     ctx.abort();
-    report(ctx, "idle");
-    ctx.ui.notify(`Plan approved \xB7 ${waits}`, "info");
+    report(ctx, "waiting");
+  };
+  const holdApproved = async (ctx) => {
+    const board = await readBoard(false);
+    const own = checkoutAt(board, ctx.cwd);
+    const keys = own ? openPrerequisites(board, own, own.waitingFor) : [];
+    if (!own || !keys.length)
+      return;
+    const titles = titlesOf(board, own.project, keys);
+    carryHold = true;
+    setHold({ keys, titles });
+    ctx.ui.notify(`Plan approved \xB7 waiting for ${titles.join(", ")}`, "info");
+    const live = sessionCtx ?? ctx;
+    if (live.isIdle()) {
+      stopRun = true;
+      report(live, "waiting");
+    } else {
+      stopHeld(live);
+    }
+  };
+  const checkHold = async () => {
+    const ctx = sessionCtx;
+    const board = ctx && hold ? await readBoard(false).catch(() => null) : null;
+    const own = board && ctx ? checkoutAt(board, ctx.cwd) : undefined;
+    if (!ctx || !hold || !board || !own)
+      return;
+    const open = openPrerequisites(board, own, hold.keys);
+    if (open.length === hold.keys.length)
+      return;
+    if (open.length) {
+      setHold({ keys: open, titles: hold.titles });
+      if (current === "waiting")
+        report(ctx, "waiting");
+      return;
+    }
+    const text = `${hold.titles.join(", ")} landed: rebase on ${own.base} if it moved, then implement the approved plan.`;
+    setHold(null);
+    stopRun = false;
+    if (current === "waiting")
+      report(ctx, resting());
+    if (ctx.isIdle())
+      pi.sendUserMessage(text);
+    else
+      pi.sendUserMessage(text, { deliverAs: "followUp" });
+  };
+  const saveFollowed = (next) => {
+    followed = next;
+    pi.appendEntry(FOLLOW_ENTRY, { followed });
+    syncPolls();
+  };
+  const checkFollowed = async () => {
+    const ctx = sessionCtx;
+    const board = ctx && followed.length ? await readBoard(false).catch(() => null) : null;
+    if (!ctx || !board)
+      return;
+    const keep = [];
+    for (const f of followed) {
+      const id = `${f.project}
+${f.key}`;
+      const w = checkoutOf(board, f.project, f.key);
+      if (!w) {
+        seen.delete(id);
+        continue;
+      }
+      const before = seen.get(id);
+      const now = { column: w.column, states: w.agents.map((a) => a.state), checks: w.pr?.checks ?? null, review: w.pr?.review ?? null };
+      seen.set(id, now);
+      if (w.column === "done")
+        seen.delete(id);
+      else
+        keep.push(f);
+      if (!before)
+        continue;
+      const n = named(w);
+      const entered = (state) => now.states.includes(state) && !before.states.includes(state);
+      if (entered("plan_ready"))
+        ctx.ui.notify(`${n}: plan ready for review`, "warning");
+      if (entered("needs_input")) {
+        const asked = w.agents.find((a) => a.state === "needs_input")?.question;
+        ctx.ui.notify(`${n} needs your input${asked ? `: ${asked}` : ""}`, "warning");
+      }
+      if (now.column !== before.column) {
+        if (now.column === "waiting")
+          ctx.ui.notify(`${n} is waiting for ${titlesOf(board, w.project, w.waitingFor).join(", ")}`, "info");
+        else if (now.column === "review")
+          ctx.ui.notify(`${n} is in review: ready for a pull request`, "info");
+        else if (now.column === "done")
+          ctx.ui.notify(w.pr?.state === "merged" ? `${n}: PR #${w.pr.number} merged` : `${n} is done: it landed`, "info");
+      }
+      if (w.pr && now.checks === "failing" && before.checks !== "failing")
+        ctx.ui.notify(`${n}: PR #${w.pr.number} checks failing`, "warning");
+      if (w.pr && now.review === "changes_requested" && before.review !== "changes_requested")
+        ctx.ui.notify(`${n}: PR #${w.pr.number} changes requested`, "warning");
+    }
+    if (keep.length !== followed.length)
+      saveFollowed(keep);
+  };
+  const newWorktree = async (ctx, prompt, stack, branch) => {
+    if (!prompt)
+      throw new Error(`Say what to plan: /${stack ? "next" : "task"} <prompt>`);
+    const { own } = await ownCheckout(ctx);
+    if (stack && !own.branch)
+      throw new Error(`${named(own)} is on a detached HEAD: nothing can stack on it`);
+    const from = stack ? { after: own.key } : own.branch ? { base: own.branch } : {};
+    const made = await api("POST", "/api/worktrees/new", {
+      project: own.project,
+      prompt,
+      branch: branch || undefined,
+      ...from
+    });
+    saveFollowed([...followed.filter((f) => f.project !== own.project || f.key !== made.key), { project: own.project, key: made.key }]);
+    const where = stack ? `stacked on ${own.key}, which it waits for` : `from ${own.branch ?? "the default branch"}`;
+    const run = made.opened ? "Its omp opened in its own terminal and plans the prompt." : made.command ? `No terminal opened: run ${made.command}` : "No terminal opened.";
+    return `Created ${made.key} at ${tilde(made.path)}, ${where}.
+${run}
+This session is told when it moves along.`;
+  };
+  const link = async (board, dependent, prerequisite, remove) => {
+    const from = remove && dependent.dependsOn.includes(prerequisite) ? prerequisite : findCheckout(board, prerequisite, dependent.project).key;
+    await api("PATCH", "/api/projects/links", { id: dependent.project, from, to: dependent.key, linked: !remove });
+  };
+  const saveTags = async (w, tags) => {
+    await api("PATCH", "/api/projects/tags", { id: w.project, key: w.key, tags });
+    const board = await readBoard();
+    const now = checkoutOf(board, w.project, w.key);
+    return now ? tagsText(now) : `${named(w)} tags: ${tags.join(", ")}`;
   };
   pi.on("before_agent_start", (event, ctx) => {
     if (ctx.agent?.kind === "sub")
@@ -821,7 +716,7 @@ function missionControl(pi) {
   pi.on("turn_start", (_event, ctx) => {
     if (ctx.agent?.kind === "sub")
       return;
-    if (holding) {
+    if (stopRun) {
       stopHeld(ctx);
       return;
     }
@@ -847,8 +742,6 @@ function missionControl(pi) {
   pi.on("tool_execution_start", (event, ctx) => {
     if (ctx.agent?.kind === "sub")
       return;
-    if (event.toolName.startsWith("mission_control_"))
-      engage(ctx);
     if (event.toolName === "ask")
       question = askQuestion(event.args);
     report(ctx, event.toolName === "ask" ? "needs_input" : planning ? "planning" : "working", stepText(event));
@@ -874,268 +767,23 @@ function missionControl(pi) {
       return;
     runStart = 0;
     question = null;
-    report(ctx, reviewOpen ? "plan_ready" : "idle");
-    if (task)
-      autoMerge(ctx);
+    report(ctx, resting());
   });
-  const controlAsk = (command2) => busAsk(pi.events, CONTROL_ASK_EVENT, command2, CONTROL_ASK_MS, "The Control plugin isn't loaded in this omp");
-  pi.events.on(CONTROL_SETS_EVENT, (data) => {
-    if (!engaged || !projectId || !Array.isArray(data))
+  pi.on("plan_review_requested", (_event, ctx) => {
+    if (ctx.agent?.kind === "sub")
       return;
-    api("PATCH", "/api/projects/control-sets", { id: projectId, sets: data }, false).catch(() => {});
+    reviewOpen = true;
+    report(ctx, "plan_ready");
   });
-  const syncControl = async () => {
-    if (!engaged || !projectId)
+  pi.on("plan_review_resolved", (event, ctx) => {
+    if (ctx.agent?.kind === "sub")
       return;
-    const id = projectId;
-    const r = await controlAsk({ type: "sets" });
-    await api("PATCH", "/api/projects/control-sets", { id, sets: r.ok ? r.sets ?? null : null }, false).catch(() => {});
-  };
-  const autoMerge = async (ctx) => {
-    if (!task || autoMerging)
-      return;
-    const id = task;
-    const r = await controlAsk({ type: "status" });
-    if (!r.ok || !r.passed || !r.autonomous)
-      return;
-    autoMerging = true;
-    try {
-      const t = findTask(await api("GET", "/api/state"), id);
-      if (!t.land.mergeInto || t.merged || !t.worktree)
-        return;
-      ctx.ui.notify(`Controls passed: merging ${taskNumber(id)} into ${t.land.mergeInto}`, "info");
-      await api("POST", `/api/tasks/${id}/merge`, { cleanup: true, commit: true, terminal: await requestTerminal() });
-    } catch (e) {
-      const message = errorText(e);
-      if (!message.includes(" is still "))
-        ctx.ui.notify(`Couldn't merge ${taskNumber(id)} automatically: ${message}`, "error");
-    } finally {
-      autoMerging = false;
-    }
-  };
-  const watch = (ctx, board) => {
-    const next = new Map;
-    for (const t of board.tasks) {
-      if (t.origin?.session !== sessionId)
-        continue;
-      const before = seen?.get(t.id);
-      next.set(t.id, !t.agent && before?.agent ? { ...t, agent: before.agent } : t);
-      if (!before)
-        continue;
-      const n = `${taskNumber(t.id)} \xB7 ${t.title}`;
-      if (t.spawn.state === "failed" && before.spawn.state !== "failed") {
-        ctx.ui.notify(`${taskNumber(t.id)} didn't start: ${t.spawn.error ?? "unknown error"}`, "error");
-      }
-      if (t.agent?.state === "needs_input" && before.agent?.state !== "needs_input") {
-        ctx.ui.notify(`${taskNumber(t.id)} needs your input ${presentationText(t)}`, "warning");
-      }
-      if (t.agent?.state === "plan_ready" && before.agent?.state !== "plan_ready") {
-        ctx.ui.notify(`${taskNumber(t.id)}'s plan is ready: review it ${presentationText(t)}`, "warning");
-      }
-      if (t.column === "doing" && before.column === "waiting")
-        ctx.ui.notify(`${n}
-Resumed: what it waited for has landed`, "info");
-      if (t.column === "review" && before.column !== "review") {
-        ctx.ui.notify(t.land.mergeInto ? `${n}
-Ready to merge ${t.branch} \u2192 ${t.land.mergeInto}` : `${n}
-Ready for a pull request ${t.branch} \u2192 ${t.base}`, "info");
-      }
-      if (t.pr?.checks === "failing" && before.pr?.checks !== "failing")
-        ctx.ui.notify(`${n}
-PR #${t.pr.number}: checks failing`, "warning");
-      if (t.pr?.state === "merged" && before.pr?.state !== "merged") {
-        ctx.ui.notify(`${n}
-PR #${t.pr.number} merged: ${t.branch} \u2192 ${t.pr.base}`, "info");
-      } else if (t.merged && !before.merged) {
-        ctx.ui.notify(`${n}
-Merged ${t.branch} \u2192 ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info");
-      }
-    }
-    seen = next;
-  };
-  const answerControl = (id, ok, message) => api("POST", `/api/control/${id}`, { ok, message }, false).then(() => {}, () => {});
-  const runControl = async (ctx, c) => {
-    if (handledControls.includes(c.id))
-      return answerControl(c.id, true, "Already handled");
-    handledControls.push(c.id);
-    if (handledControls.length > 50)
-      handledControls.shift();
-    let ok = true;
-    let message;
-    try {
-      const review = ctx.getPendingPlanReview();
-      if (c.action === "pause") {
-        const running = !ctx.isIdle();
-        if (running)
-          ctx.abort();
-        report(ctx, review ? "plan_ready" : "idle");
-        message = running ? "Interrupted its turn" : "It was idle";
-        ctx.ui.notify(`Mission Control paused ${taskNumber(c.task)}; moving its card back to In Progress resumes it`, "warning");
-      } else if (c.action === "message") {
-        if (review) {
-          ok = false;
-          message = "Its plan is waiting for review in its omp";
-        } else {
-          holding = null;
-          const idle = ctx.isIdle();
-          pi.sendUserMessage(c.text ?? "");
-          message = idle ? "It started a turn with it" : "It gets it at its next step";
-        }
-      } else if (c.action === "stop") {
-        if (!ctx.isIdle())
-          ctx.abort();
-        await answerControl(c.id, true, "Its omp session is exiting");
-        ctx.shutdown();
-        return;
-      } else {
-        ok = false;
-        message = `Unknown command ${c.action}`;
-      }
-    } catch (e) {
-      ok = false;
-      message = errorText(e);
-    }
-    await answerControl(c.id, ok, message);
-  };
-  const onEvent = (ctx, e) => {
-    try {
-      const data = JSON.parse(e.data);
-      if (e.event === "snapshot") {
-        latest = data;
-        rememberNumbers(latest);
-        watch(ctx, latest);
-        repaint?.();
-      } else if (e.event === "control" && isControl(data) && data.task === task) {
-        runControl(ctx, data);
-      }
-    } catch {}
-  };
-  const stopStream = () => {
-    stream?.abort();
-    stream = null;
-    clearInterval(themeTimer);
-    themeTimer = undefined;
-  };
-  const syncStream = (ctx) => {
-    if (!engaged && !task)
-      return stopStream();
-    if (stream)
-      return;
-    const ctl = new AbortController;
-    stream = ctl;
-    seen = null;
-    if (themeApi)
-      themeTimer = setInterval(syncTheme, 1000);
-    const cwd = ctx.cwd;
-    (async () => {
-      while (!ctl.signal.aborted) {
-        try {
-          const query = new URLSearchParams({ session: sessionId });
-          if (task)
-            query.set("task", task);
-          if (engaged) {
-            projectId = await api("POST", "/api/projects", { path: cwd }, false).then((r) => r.project.id, (e) => {
-              if (e instanceof BoardError)
-                return null;
-              throw e;
-            });
-            if (projectId)
-              query.set("project", projectId);
-          }
-          const where = await callerTerminal();
-          if ("context" in where)
-            query.set("terminal", JSON.stringify(where.context));
-          else if (!terminalWarned) {
-            terminalWarned = true;
-            ctx.ui.notify(`Mission Control: ${where.error}`, "warning");
-          }
-          const conn = new AbortController;
-          const cancel = () => conn.abort();
-          ctl.signal.addEventListener("abort", cancel, { once: true });
-          let watchdog;
-          const arm = () => {
-            clearTimeout(watchdog);
-            watchdog = setTimeout(cancel, STREAM_IDLE_MS);
-          };
-          try {
-            arm();
-            const res = await fetch(`${BASE}/api/events?${query}`, { signal: conn.signal });
-            if (res.ok && res.body) {
-              themeEpoch = null;
-              syncTheme();
-              reported = "";
-              report(ctx, current || "idle", currentStep);
-              syncControl();
-              const body = res.body.pipeThrough(new TransformStream({
-                transform(chunk, out) {
-                  arm();
-                  out.enqueue(chunk);
-                }
-              }));
-              for await (const e of serverEvents(body))
-                onEvent(ctx, e);
-            } else
-              await res.body?.cancel();
-          } finally {
-            clearTimeout(watchdog);
-            ctl.signal.removeEventListener("abort", cancel);
-          }
-        } catch {}
-        if (!ctl.signal.aborted)
-          await Bun.sleep(RECONNECT_MS);
-      }
-    })();
-  };
-  function engage(ctx) {
-    if (engaged)
-      return;
-    engaged = true;
-    pi.appendEntry(ENGAGED_ENTRY, { engaged: true });
-    stopStream();
-    syncStream(ctx);
-  }
-  const nudge = (id) => {
-    const file = process.env.MISSION_CONTROL_RESUME_FILE;
-    if (!file || !existsSync(file))
-      return;
-    let text;
-    try {
-      const data = JSON.parse(readFileSync(file, "utf8"));
-      if (!data || typeof data !== "object" || !("text" in data) || typeof data.text !== "string" || !data.text)
-        return;
-      text = data.text;
-    } catch {
-      return;
-    }
-    setTimeout(async () => {
-      pi.sendUserMessage(text);
-      await api("POST", `/api/tasks/${id}/resumed`, {}, false).catch(() => {});
-    }, 1500);
-  };
-  const enterTask = (ctx, id) => {
-    task = id;
-    showWidget(ctx);
-    stopStream();
-    syncStream(ctx);
-    nudge(id);
-  };
-  const detectTask = async (ctx) => {
-    const env = process.env.MISSION_CONTROL_TASK;
-    if (!env && !linkedWorktree(ctx.cwd))
-      return;
-    if (env)
-      return enterTask(ctx, env);
-    while (!shuttingDown) {
-      try {
-        const found = worktreeTask(await api("GET", "/api/state", undefined, false), ctx.cwd);
-        if (found && !shuttingDown)
-          enterTask(ctx, found.id);
-        return;
-      } catch {
-        await Bun.sleep(RECONNECT_MS);
-      }
-    }
-  };
+    reviewOpen = false;
+    if (!event.choice || event.choice === "save")
+      report(ctx, resting());
+    if (event.choice && PLAN_APPROVALS[event.choice])
+      holdApproved(ctx).catch(() => {});
+  });
   const restore = (_event, ctx) => {
     if (ctx.agent?.kind === "sub")
       return;
@@ -1143,183 +791,65 @@ Merged ${t.branch} \u2192 ${t.merged.into} (${t.merged.sha.slice(0, 7)})`, "info
     sessionCtx = ctx;
     sessionId = ctx.sessionManager.getSessionId();
     sessionFile = ctx.sessionManager.getSessionFile() ?? null;
-    lastCleanup = true;
-    engaged = false;
+    let savedHold;
+    let savedFollowed = [];
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type !== "custom")
         continue;
-      if (entry.customType === CLEANUP_ENTRY)
-        lastCleanup = entry.data?.cleanup !== false;
-      else if (entry.customType === ENGAGED_ENTRY)
-        engaged = true;
+      if (entry.customType === HOLD_ENTRY)
+        savedHold = asHold(field(entry.data, "hold"));
+      else if (entry.customType === FOLLOW_ENTRY)
+        savedFollowed = asFollowed(field(entry.data, "followed"));
     }
-    if (!engaged)
-      projectId = null;
-    showWidget(ctx);
-    stopStream();
-    syncStream(ctx);
-    if (engaged && !process.env.MISSION_CONTROL_TASK)
-      ensureBoard().catch((e) => ctx.ui.notify(errorText(e), "warning"));
-    if (!taskLookup) {
-      taskLookup = true;
-      detectTask(ctx);
-    }
+    if (savedHold === undefined && carryHold && hold)
+      pi.appendEntry(HOLD_ENTRY, { hold });
+    else
+      hold = savedHold ?? null;
+    carryHold = false;
+    followed = savedFollowed;
+    seen.clear();
+    syncPolls();
+    reported = "";
+    retryAt = 0;
+    const busy = ["planning", "thinking", "working", "needs_input"].includes(current);
+    report(ctx, busy ? current : resting(), currentStep);
+    readBoard(false).then(() => hold ? checkHold() : undefined, () => {});
   };
   pi.on("session_start", restore);
   pi.on("session_switch", restore);
-  pi.on("session_branch", restore);
-  pi.on("session_tree", restore);
   pi.on("session_shutdown", async (_event, ctx) => {
-    if (ctx.agent?.kind === "sub")
+    if (ctx.agent?.kind === "sub" || shuttingDown)
       return;
     shuttingDown = true;
-    stopStream();
-    await report(ctx, "exited");
+    clearTimers();
+    if (!reporting)
+      return;
+    current = "exited";
+    currentStep = null;
+    await send();
+    clearTimers();
   });
-  const createTask = async (ctx, body) => {
-    const t = await api("POST", "/api/tasks", {
-      ...body,
-      repo: ctx.cwd,
-      origin: { session: ctx.sessionManager.getSessionId(), terminal: await originTerminal() }
-    });
-    lastCard = t.id;
-    return t;
-  };
-  const createdText = (t, from) => `${t.id} ${t.title} \xB7 planning on ${t.branch}${from ? ` (from ${from})` : ` from ${t.base}`}${t.blockedBy.length ? ` \xB7 waits for ${t.blockedBy.join(", ")}` : ""}`;
-  const createPr = async (id) => {
-    const r = await api("POST", `/api/tasks/${id}/pr`, {});
-    return r.via === "agent" ? `Asked ${id}'s agent to commit, push and open the pull request` : `Opened a pull request for ${id}${r.url ? `: ${r.url}` : ""}`;
-  };
-  const merge = async (ctx, t, own) => {
-    const id = t.id;
-    if (!ctx.hasUI)
-      throw new Error(`Merging needs the user's confirmation: ask them to run /land in ${id}'s worktree`);
-    if (t.merged)
-      throw new Error(`${id} is already merged into ${t.merged.into}`);
-    if (!t.worktree)
-      throw new Error(`${id} has no worktree, so there is nothing to merge`);
-    if (!t.land.mergeInto)
-      throw new Error(`${id} branches from ${t.base}, the default branch: it lands through a pull request`);
-    let cleanup;
-    if (own) {
-      cleanup = true;
-    } else {
-      const options = lastCleanup ? [MERGE_REMOVE, MERGE_KEEP, CANCEL] : [MERGE_KEEP, MERGE_REMOVE, CANCEL];
-      const pick = await ctx.ui.select(`Merge ${taskNumber(id)} into ${t.base}? ${mergeSummary(t)}`, options);
-      if (pick !== MERGE_REMOVE && pick !== MERGE_KEEP)
-        return "Merge cancelled";
-      cleanup = pick === MERGE_REMOVE;
-      if (cleanup !== lastCleanup) {
-        lastCleanup = cleanup;
-        pi.appendEntry(CLEANUP_ENTRY, { cleanup });
+  pi.registerCommand("mission", {
+    description: "Open Mission Control on this project",
+    handler: async (_args, ctx) => {
+      if (ctx.agent?.kind === "sub")
+        return;
+      serverCwd = ctx.cwd;
+      try {
+        await ensureBoard();
+        const { project } = await api("POST", "/api/projects", { path: ctx.cwd });
+        projectId = project.id;
+        themeEpoch = null;
+        syncTheme();
+        if (themeApi)
+          themeTimer ??= setInterval(syncTheme, 1000);
+        await openBoard(`${BASE}/?project=${encodeURIComponent(project.id)}`, { focus: true, python: PYTHON, overrideEnvs: TERMINAL_OVERRIDES });
+        ctx.ui.notify(`Mission Control on ${project.name} (${project.defaultBranch})`, "info");
+      } catch (e) {
+        ctx.ui.notify(errorText(e), "error");
       }
     }
-    const r = await api("POST", `/api/tasks/${id}/merge`, {
-      cleanup,
-      commit: true,
-      terminal: await requestTerminal()
-    });
-    const ends = own && task === id;
-    if (ends) {
-      const text = `Merged ${t.branch} \u2192 ${t.base} (${r.merged?.sha.slice(0, 7) ?? "?"}) \xB7 this session ends${r.pending ? "; the worktree is removed once this session has exited" : ""}`;
-      setTimeout(() => {
-        ctx.ui.notify(text, "info");
-        ctx.shutdown();
-      }, 0);
-    }
-    if (!r.pending || ends)
-      return r.output;
-    return `${r.output}
-${taskNumber(id)} ${cleanup ? "has its worktree removed once its agent has stopped" : "is stopping its agent"}`;
-  };
-  const land = async (ctx, raw, how) => {
-    let t;
-    let own;
-    if (raw?.trim()) {
-      const board = await api("GET", "/api/state");
-      t = findTask(board, await cardId(raw, ctx));
-      own = t.id === (task ?? worktreeTask(board, ctx.cwd)?.id);
-    } else {
-      t = await ownCard(ctx);
-      own = true;
-    }
-    const mode = how ?? (t.land.mergeInto ? "merge" : "pr");
-    return mode === "merge" ? merge(ctx, t, own) : createPr(t.id);
-  };
-  const deleteCard = async (ctx, raw) => {
-    const id = await cardId(raw, ctx);
-    if (!ctx.hasUI)
-      throw new Error(`Deleting needs the user's confirmation: ask them to delete ${id} on the board`);
-    const board = await api("GET", "/api/state");
-    const t = findTask(board, id);
-    const column = columnTitle(board, t.column);
-    const dependents = board.tasks.filter((o) => o.column !== "done" && o.dependsOn.includes(id)).map((o) => o.id);
-    const links = [
-      t.children.length && `${t.children.join(", ")} lose${t.children.length === 1 ? "s" : ""} its parent`,
-      dependents.length && `${dependents.join(", ")} no longer wait${dependents.length === 1 ? "s" : ""} for it and may resume`
-    ].filter(Boolean);
-    const unlinks = links.length ? ` ${links.join("; ")}.` : "";
-    let cleanup = false;
-    if (t.worktree) {
-      const working = t.moveRequiresConfirmation ? " It may still be working: keeping the worktree leaves its omp running." : "";
-      const pick = await ctx.ui.select(`Delete ${taskNumber(id)}? ${t.title} (${column}). Removing its worktree ${tilde(t.worktree)} also deletes the branch ${t.branch} and ends its omp and terminal.${working}${unlinks}`, [DELETE_REMOVE, DELETE_KEEP, CANCEL]);
-      if (pick !== DELETE_REMOVE && pick !== DELETE_KEEP)
-        return `${id} kept`;
-      cleanup = pick === DELETE_REMOVE;
-    } else if (!await ctx.ui.confirm(`Delete ${taskNumber(id)}?`, `${t.title} (${column})
-
-It has no worktree.${unlinks}`))
-      return `${id} kept`;
-    const terminal2 = await requestTerminal();
-    const r = await api("DELETE", `/api/tasks/${id}`, { confirmWorking: t.moveRequiresConfirmation, cleanup, terminal: terminal2 });
-    if (r.pending)
-      return r.message ?? `${id} is deleted once its worktree is gone`;
-    return r.output ? `Deleted ${id}
-${r.output}` : `Deleted ${id}`;
-  };
-  const moveCard = async (ctx, raw, column, force) => {
-    const id = await cardId(raw, ctx);
-    const before = findTask(await api("GET", "/api/state"), id);
-    const t = await api("POST", `/api/tasks/${id}/move`, { column, confirmWorking: true, force });
-    if (t.column === "waiting") {
-      return `${before.column === "waiting" ? `${id} stays paused` : `Paused ${id}: ${t.note ?? "its agent stopped"}`}. Its worktree and session stay; moving it to In Progress resumes it.`;
-    }
-    if (t.column === "doing") {
-      if (before.spawn.state === "failed")
-        return `${id} starting again`;
-      if (before.column === "doing")
-        return `${id} continues in In Progress`;
-      return `Resumed ${id}: its agent continues${before.session?.connected ? "" : " once omp reopens on its session"}.`;
-    }
-    return `Moved ${id} to Done`;
-  };
-  const cleanupCard = async (ctx, raw) => {
-    const id = await cardId(raw, ctx);
-    if (!ctx.hasUI)
-      throw new Error(`Removing a worktree needs the user's confirmation: ask them to remove ${id}'s on the board`);
-    const t = findTask(await api("GET", "/api/state"), id);
-    if (!t.worktree)
-      throw new Error(`${id} has no worktree`);
-    const keeps = t.merged || t.column === "done" ? "The card stays." : "The card goes with it: the task isn't done.";
-    const sure = await ctx.ui.confirm(`Remove ${taskNumber(id)}'s worktree?`, `Deletes ${tilde(t.worktree)} and the branch ${t.branch}, ending its omp and terminal. ${keeps}`);
-    if (!sure)
-      return `${id}'s worktree kept`;
-    const terminal2 = await requestTerminal();
-    const r = await api("POST", `/api/tasks/${id}/cleanup`, { terminal: terminal2 });
-    const output = r.output ? `${r.output}
-` : "";
-    if (r.pending)
-      return `${output}${id}'s worktree is removed once its agent has stopped`;
-    return r.deleted ? `${output}Removed ${id}'s worktree and its card` : r.output;
-  };
-  const openBoard2 = async (ctx, focus) => {
-    const project = await registerProject(ctx);
-    const board = await api("GET", "/api/state");
-    const own = worktreeTask(board, ctx.cwd);
-    const card = own?.project === project.id ? own.id : lastCard ?? undefined;
-    await showBoard(`${BASE}/?project=${encodeURIComponent(project.id)}${card ? `#${card}` : ""}`, focus);
-    return `Mission Control on ${project.name} (${project.defaultBranch})`;
-  };
+  });
   const command = (name, description, run, complete) => {
     pi.registerCommand(name, {
       description,
@@ -1328,332 +858,126 @@ ${r.output}` : `Deleted ${id}`;
         if (ctx.agent?.kind === "sub")
           return;
         serverCwd = ctx.cwd;
-        engage(ctx);
-        await tell(ctx, run(args.trim(), ctx));
+        try {
+          ctx.ui.notify(await run(args.trim(), ctx), "info");
+        } catch (e) {
+          ctx.ui.notify(errorText(e), "error");
+        }
       }
     });
   };
-  const cardItems = () => (lastBoard?.tasks ?? []).filter((t) => t.column !== "done" && (!projectId || t.project === projectId)).map((t) => ({ label: `#${t.number}`, value: `#${t.number}`, description: t.title }));
-  const tagItems = () => {
-    const tags = (lastBoard?.projects ?? []).filter((p) => !projectId || p.id === projectId).flatMap((p) => p.tags);
-    return [...new Set(tags)].map((tag) => ({ label: tag, value: tag }));
+  const completionCheckout = () => {
+    if (Date.now() - boardAt > 5000)
+      readBoard(false).catch(() => {});
+    const own = lastBoard && sessionCtx ? checkoutAt(lastBoard, sessionCtx.cwd) : undefined;
+    return lastBoard && own ? { board: lastBoard, own } : null;
   };
-  command("mission", "Open Mission Control on this project", async (_args, ctx) => {
-    await refreshBoard();
-    return openBoard2(ctx, true);
-  });
-  command("task", "Start a task in a new worktree from this branch: its omp plans the prompt", async (prompt, ctx) => {
-    if (!prompt)
-      throw new Error("Say what to plan: /task <prompt>");
-    return createdText(await createTask(ctx, { prompt }));
-  });
-  command("next", "Start a task that builds on this worktree's card: branches from it and waits for it", async (prompt, ctx) => {
-    if (!prompt)
-      throw new Error("Say what to plan: /next <prompt>");
-    if (!task && !linkedWorktree(ctx.cwd))
-      throw new Error("Run /next in a worktree; /task starts independent work");
-    const own = await ownCard(ctx);
-    return createdText(await createTask(ctx, { prompt, after: own.id }), own.branch);
-  });
-  command("link", "Make this worktree's card wait for other cards: /link #n\u2026, /link none clears, /link lists", async (args, ctx) => {
-    const own = await ownCard(ctx);
+  const checkoutItems = (sign, only) => {
+    const found = completionCheckout();
+    if (!found)
+      return [];
+    return found.board.worktrees.filter((w) => w.project === found.own.project && w.key !== found.own.key && (!only || only.includes(w.key))).map((w) => ({ value: sign + w.key, label: sign + w.key, description: `${named(w)} \xB7 ${columnName(w.column)}`, also: sign + w.title }));
+  };
+  command("link", "Make this checkout depend on others: /link <branch|title>\u2026 adds, /link -<branch> removes, /link lists both directions", async (args, ctx) => {
+    const { board, own } = await ownCheckout(ctx);
     if (!args)
-      return own.dependsOn.length ? `${own.id} depends on ${own.dependsOn.join(", ")}${own.blockedBy.length ? ` \xB7 waits for ${own.blockedBy.join(", ")}` : " \xB7 all landed"}` : `${own.id} depends on nothing`;
-    if (/^none$/i.test(args)) {
-      await api("PATCH", `/api/tasks/${own.id}`, { dependsOn: [] });
-      return `${own.id} no longer depends on any card`;
-    }
-    const deps = await addDependencies(own.id, await cardIds(args.split(/\s+/), ctx));
-    return `${own.id} now depends on ${deps.join(", ")}`;
-  }, (prefix) => completeLast(prefix, [{ label: "none", value: "none", description: "Clear its links" }, ...cardItems()]));
-  command("tag", "Tag this worktree's card: /tag a b adds, /tag -a removes, /tag lists", async (args, ctx) => {
-    const own = await ownCard(ctx);
+      return dependencies(board, own);
+    for (const word of args.split(/\s+/))
+      await link(board, own, word.replace(/^-/, ""), word.startsWith("-"));
+    const after = await ownCheckout(ctx);
+    return dependencies(after.board, after.own);
+  }, (prefix) => completeLast(prefix, [...checkoutItems(""), ...checkoutItems("-", completionCheckout()?.own.dependsOn ?? [])]));
+  command("task", "Start work in a new worktree from this checkout's branch: its omp plans the prompt", (prompt, ctx) => newWorktree(ctx, prompt, false), () => null);
+  command("next", "Start work that builds on this checkout: a new worktree stacked on its branch, waiting for it", (prompt, ctx) => newWorktree(ctx, prompt, true), () => null);
+  command("tag", "Tag this checkout: /tag a b adds, /tag -a removes, /tag lists", async (args, ctx) => {
+    const { own } = await ownCheckout(ctx);
     if (!args)
-      return own.tags.length ? `${own.id} tags: ${own.tags.join(", ")}` : `${own.id} has no tags`;
+      return tagsText(own);
     const words = args.split(/\s+/);
-    const drop = new Set(words.filter((w) => w.startsWith("-")).map((w) => w.slice(1).toLowerCase()));
-    const tags = [...new Set([...own.tags, ...words.filter((w) => !w.startsWith("-"))])].filter((tag) => !drop.has(tag.toLowerCase()));
-    const t = await api("PATCH", `/api/tasks/${own.id}`, { tags });
-    return t.tags.length ? `${t.id} tags: ${t.tags.join(", ")}` : `${t.id} has no tags`;
-  }, (prefix) => completeLast(prefix, tagItems()));
-  command("land", "Land this worktree's card: merge into its parent branch when stacked, else open a pull request (/land pr|merge forces one)", async (args, ctx) => {
-    const how = args.toLowerCase();
-    if (how && how !== "pr" && how !== "merge")
-      throw new Error("Usage: /land [pr|merge]");
-    return land(ctx, undefined, how ? how : undefined);
-  }, (prefix) => completeLast(prefix, [
-    { label: "merge", value: "merge", description: "Merge into its parent branch" },
-    { label: "pr", value: "pr", description: "Open a pull request" }
-  ]));
-  pi.on("before_agent_start", async (_event, ctx) => {
-    if (ctx.agent?.kind === "sub" || !task)
-      return;
-    serverCwd = ctx.cwd;
-    const board = await api("GET", "/api/state", undefined, false).catch(() => latest);
-    return { message: { customType: "mission-control.context", content: taskContext(task, board), display: false, attribution: "agent" } };
+    const remove = words.filter((w) => w.startsWith("-")).map((w) => w.slice(1));
+    return saveTags(own, editTags(own.ownTags, words.filter((w) => !w.startsWith("-")), remove));
+  }, (prefix) => {
+    const found = completionCheckout();
+    if (!found)
+      return null;
+    const tags = found.board.projects.find((p) => p.id === found.own.project)?.tags ?? [];
+    return completeLast(prefix, [...tags.map((tag) => ({ value: tag, label: tag })), ...found.own.ownTags.map((tag) => ({ value: `-${tag}`, label: `-${tag}`, description: "Remove" }))]);
   });
-  pi.on("plan_review_requested", (_event, ctx) => {
-    if (ctx.agent?.kind === "sub")
-      return;
-    reviewOpen = true;
-    if (task)
-      report(ctx, "plan_ready");
-  });
-  pi.on("plan_review_resolved", (event, ctx) => {
-    if (ctx.agent?.kind === "sub")
-      return;
-    reviewOpen = false;
-    if (!event.choice || event.choice === "save")
-      report(ctx, "idle");
-    if (!task || !event.choice || !PLAN_APPROVALS[event.choice])
-      return;
-    const id = task;
-    api("POST", `/api/tasks/${id}/planned`, {}, false).then((r) => {
-      if (!r.hold)
-        return;
-      holding = `waiting for ${r.waitingFor.join(", ")}`;
-      const current2 = sessionCtx ?? ctx;
-      if (!current2.isIdle())
-        stopHeld(current2);
-    }, (e) => ctx.ui.notify(`${taskNumber(id)}: the board didn't record the approved plan: ${errorText(e)}`, "warning"));
-  });
+  const toolCheckout = (board, ctx, ref) => {
+    const here = checkoutAt(board, ctx.cwd);
+    const w = ref ? findCheckout(board, ref, here?.project ?? null) : here;
+    if (!w)
+      throw new Error(`${tilde(ctx.cwd)} is in no checkout of a registered project: /mission registers it`);
+    return w;
+  };
+  const answer = async (work) => {
+    try {
+      return toolReply(await work);
+    } catch (e) {
+      return toolReply(errorText(e), true);
+    }
+  };
   pi.registerTool({
-    name: "mission_control_tasks",
-    label: "Mission Control tasks",
-    description: "List the Mission Control cards of this project: first the tags in use, then each open card with column, title, branch and base, tags, links (depends on, parent, children), what it waits for, agent state and pull request (number, state, checks, review, conflicts); then its done cards; then the project's other worktrees that have no card. all lists every project.",
+    name: "mission_control_checkouts",
+    label: "Mission Control checkouts",
+    description: "Read-only: list the checkouts Mission Control shows for this project (all: every registered project). For each, its title (folder), branch (or detached commit, or the main checkout), path, column (Planning, Waiting, In Progress, Review, Pull Request, Idle, Done), what it depends on and what needs it with their columns, what it waits for, diff, commits and uncommitted files, pull request with checks, review and unresolved comments, tags, and every omp running there (title, state, step, to-do progress), else its latest asleep session.",
     parameters: z.object({ all: z.boolean().optional() }),
     approval: "read",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      return answer(readBoard().then((board) => {
+        const here = checkoutAt(board, ctx.cwd)?.project ?? projectId;
+        const project = board.projects.find((p) => p.id === here);
+        if (params.all !== true && !project)
+          throw new Error(`${tilde(ctx.cwd)} is in no registered project: /mission registers it, all lists every project`);
+        return listCheckouts(board, params.all === true || !project ? board.projects : [project]);
+      }));
+    }
+  });
+  pi.registerTool({
+    name: "mission_control_link",
+    label: "Mission Control link",
+    description: "Make a checkout (dependent, default this one) depend on another checkout of its project (prerequisite), or remove that dependency with remove. Both take a branch (checkout key) or a title. While a prerequisite isn't Done the dependent waits: an omp there holds its approved plan until it lands. Replies with what the dependent then depends on and what needs it.",
+    parameters: z.object({ prerequisite: z.string(), dependent: z.string().optional(), remove: z.boolean().optional() }),
+    approval: "write",
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       return answer((async () => {
-        const board = await api("GET", "/api/state");
-        const project = sessionProject(board, ctx);
-        const projects = params.all === true || !project ? board.projects : [project];
-        return listTasks(board, projects, task ?? undefined);
+        const board = await readBoard();
+        const dependent = toolCheckout(board, ctx, params.dependent);
+        await link(board, dependent, params.prerequisite, params.remove === true);
+        const after = await readBoard();
+        const now = checkoutOf(after, dependent.project, dependent.key);
+        return now ? dependencies(after, now) : `${dependent.key} is gone`;
       })());
     }
   });
   pi.registerTool({
     name: "mission_control_task",
     label: "Mission Control task",
-    description: "Start separate work in its own worktree: its omp plans the prompt and the user reviews that plan there. Use `after` (a card number) when it builds on a card: it branches from that card's branch and waits for it. Give one to three tags naming the product area, reusing `mission_control_tasks`' tags. Call it when the user asks for a task or to split work, never for work you do in this session.",
-    parameters: z.object({
-      prompt: z.string().min(1),
-      title: z.string().optional(),
-      tags: z.array(z.string()).optional(),
-      after: z.string().optional(),
-      base: z.string().optional(),
-      controlSet: z.string().optional()
-    }),
-    approval: "read",
+    description: "Start separate work in a new worktree whose omp plans prompt for the user to review. It branches from this checkout's branch; after: true stacks it on this checkout instead (branched from it and waiting for it to land). branch names it (default feature/<slug of the prompt>). Replies with its branch, path and whether its terminal opened (else the command to run); this session is then told when its plan is ready, it needs input, waits, is ready for a pull request, its PR fails checks or gets changes requested, and when it's done.",
+    parameters: z.object({ prompt: z.string(), branch: z.string().optional(), after: z.boolean().optional() }),
+    approval: "write",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return answer((async () => {
-        const after = params.after?.trim() ? await cardId(params.after, ctx) : undefined;
-        const t = await createTask(ctx, { ...params, after });
-        return `Created ${createdText(t)}`;
-      })());
-    }
-  });
-  pi.registerTool({
-    name: "mission_control_adopt",
-    label: "Mission Control adopt",
-    description: "Track a linked git worktree on a branch (default: this checkout) as a Mission Control card, with an optional title and tags. Returns its card when it already has one. An omp running there becomes its agent; otherwise none starts until the card is moved to In Progress, which reopens `session` (an asleep worktree's session from mission_control_tasks) when given, else omp's latest session there.",
-    parameters: z.object({ path: z.string().optional(), title: z.string().optional(), tags: z.array(z.string()).optional(), session: z.string().optional() }),
-    approval: "read",
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return answer(api("POST", "/api/worktrees/adopt", { ...params, path: params.path ?? checkoutRoot(ctx.cwd) }).then((t) => `${t.id} ${t.title} \xB7 ${t.branch} from ${t.base} \xB7 ${t.column}`));
+      return answer(newWorktree(ctx, params.prompt.trim(), params.after === true, params.branch));
     }
   });
   pi.registerTool({
     name: "mission_control_edit",
     label: "Mission Control edit",
-    description: `Change a Mission Control card's title, replace its tags or dependencies ([] clears), or set its parent (a card of the same project, or "none" to clear it; it groups cards, use dependsOn for ordering, though a child also waits for its parent tree's dependencies). The prompt is fixed once the task exists: tell its agent with mission_control_message.`,
+    description: "Edit a checkout's own tags (checkout: a branch or title, default this one): tags replaces them, add and remove change them; none of them lists its tags. Replies with its tags, and those its project's tag rules add.",
     parameters: z.object({
-      id: z.string(),
-      title: z.string().optional(),
       tags: z.array(z.string()).optional(),
-      dependsOn: z.array(z.string()).optional(),
-      parent: z.string().optional()
+      add: z.array(z.string()).optional(),
+      remove: z.array(z.string()).optional(),
+      checkout: z.string().optional()
     }),
-    approval: "read",
+    approval: "write",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const fields = ["title", "tags", "dependsOn", "parent"].filter((k) => params[k] !== undefined);
-      if (!fields.length)
-        return toolReply("Nothing to change: pass title, tags, dependsOn or parent", true);
-      return answer((async () => {
-        const id = await cardId(params.id, ctx);
-        const changes = {};
-        if (params.title !== undefined)
-          changes.title = params.title;
-        if (params.tags !== undefined)
-          changes.tags = params.tags;
-        if (params.dependsOn !== undefined)
-          changes.dependsOn = await cardIds(params.dependsOn, ctx);
-        if (params.parent !== undefined)
-          changes.parent = /^(none)?$/i.test(params.parent.trim()) ? null : await cardId(params.parent, ctx);
-        const t = await api("PATCH", `/api/tasks/${id}`, changes);
-        return `Updated ${id}: ${fields.map((k) => k === "parent" ? t.parent ? `parent ${t.parent}` : "parent cleared" : k === "tags" ? `tags ${t.tags.join(", ") || "none"}` : k).join(", ")}`;
-      })());
-    }
-  });
-  pi.registerTool({
-    name: "mission_control_link",
-    label: "Mission Control link",
-    description: "Make a Mission Control card depend on other cards: once its plan is approved it waits until every open dependsOn card is done. A done card can be a dependency too: it doesn't block, and its recorded outcome goes into the card's brief.",
-    parameters: z.object({ task: z.string(), dependsOn: z.array(z.string()).min(1) }),
-    approval: "read",
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return answer((async () => {
-        const id = await cardId(params.task, ctx);
-        const deps = await addDependencies(id, await cardIds(params.dependsOn, ctx));
-        return `${id} now depends on ${deps.join(", ")}`;
-      })());
-    }
-  });
-  pi.registerTool({
-    name: "mission_control_children",
-    label: "Mission Control children",
-    description: "Show a Mission Control card's hierarchy: its parent and its direct children, each with column and what it waits on.",
-    parameters: z.object({ id: z.string() }),
-    approval: "read",
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return answer((async () => {
-        const board = await api("GET", "/api/state");
-        return childrenText(board, findTask(board, await cardId(params.id, ctx)));
-      })());
-    }
-  });
-  pi.registerTool({
-    name: "mission_control_move",
-    label: "Mission Control move",
-    description: "Move a Mission Control card as dragging it on the board does. waiting pauses its agent (worktree and session stay) until it's moved to doing (In Progress), which resumes it now; doing is refused while it waits for open dependencies unless force; doing also starts again a card whose start failed. done records it as done without merging. Other columns are reached on their own. Use it when the user asks to pause, hold, resume or finish a card.",
-    parameters: z.object({ id: z.string(), column: z.enum(["waiting", "doing", "done"]), force: z.boolean().optional() }),
-    approval: "read",
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return answer(moveCard(ctx, params.id, params.column, params.force === true));
-    }
-  });
-  pi.registerTool({
-    name: "mission_control_stop",
-    label: "Mission Control stop",
-    description: "Stop a Mission Control card's agent when the user asks: its omp session exits and its terminal closes, while its worktree, branch and session stay. A planning or In Progress card waits in Waiting until moved to In Progress, which reopens omp on the same session. To only pause it, use mission_control_move to waiting.",
-    parameters: z.object({ id: z.string() }),
-    approval: "read",
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return answer((async () => {
-        const id = await cardId(params.id, ctx);
-        const t = await api("POST", `/api/tasks/${id}/stop`, {});
-        return `Stopped ${id}: its omp session ended; its worktree and branch ${t.branch} stay${t.column === "waiting" ? ", and it waits in Waiting" : ""}.${t.note ? ` ${t.note}.` : ""}`;
-      })());
-    }
-  });
-  pi.registerTool({
-    name: "mission_control_message",
-    label: "Mission Control message",
-    description: "Send a message to a Mission Control card's agent, as if typed in its omp: an idle agent starts a turn with it, a working one gets it at its next step. Refuses paused cards, disconnected agents, and agents waiting for plan review or an answer (the user answers in its terminal; mission_control_tasks shows how to reach it).",
-    parameters: z.object({ id: z.string(), text: z.string() }),
-    approval: "read",
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return answer((async () => {
-        const id = await cardId(params.id, ctx);
-        const r = await api("POST", `/api/tasks/${id}/message`, { text: params.text });
-        return `Sent to ${id}'s agent: ${r.message}`;
-      })());
-    }
-  });
-  pi.registerTool({
-    name: "mission_control_screen",
-    label: "Mission Control screen",
-    description: "Read the last lines of a Mission Control card's agent terminal: what it is doing, asking or showing now.",
-    parameters: z.object({ id: z.string() }),
-    approval: "read",
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return answer((async () => {
-        const id = await cardId(params.id, ctx);
-        const r = await api("GET", `/api/tasks/${id}/screen`);
-        return r.text || `${id}'s screen is empty`;
-      })());
-    }
-  });
-  pi.registerTool({
-    name: "mission_control_diff",
-    label: "Mission Control diff",
-    description: "Show a Mission Control card's changes against its base branch: the diffstat, then the diff (long diffs are cut).",
-    parameters: z.object({ id: z.string() }),
-    approval: "read",
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return answer((async () => {
-        const id = await cardId(params.id, ctx);
-        const d = await api("GET", `/api/tasks/${id}/diff`);
-        const cut = d.truncated || d.diff.length > DIFF_TOOL_LIMIT;
-        const diff = d.diff.slice(0, DIFF_TOOL_LIMIT);
-        return `${id} compared with ${d.base}
-${d.stat || "No changes"}${diff ? `
-
-${diff}` : ""}${cut ? `
-
-[diff cut; the board's Diff view shows all of it]` : ""}`;
-      })());
-    }
-  });
-  pi.registerTool({
-    name: "mission_control_context",
-    label: "Mission Control context",
-    description: "Read the shared context a Mission Control card recorded: reusable findings and its outcome, each with the source task, branch@commit and time, plus the revision. Without id, this session's own task. Use it for a dependency or sibling whose work yours builds on, or to see what changed since the revision your brief shows.",
-    parameters: z.object({ id: z.string().optional() }),
-    approval: "read",
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return answer((async () => {
-        const id = params.id ? await cardId(params.id, ctx) : task;
-        if (!id)
-          throw new Error("Name the card to read: this session has no task of its own");
-        return contextText(await api("GET", `/api/tasks/${id}/context`));
-      })());
-    }
-  });
-  pi.registerTool({
-    name: "mission_control_publish",
-    label: "Mission Control publish",
-    description: "Record shared context on a Mission Control card, stamped with the source task, its branch@commit and the time. kind finding: a concise, reusable fact other tasks need (a decision, contract, gotcha, where something lives). kind outcome: what this task delivered, where, and how dependents use it; record it before finishing. Cards that depend on it get the latest outcome and findings in their brief; any task reads them with mission_control_context. Not a log: no progress updates, transcripts or diffs. Without id, this session's own task.",
-    parameters: z.object({ kind: z.enum(["finding", "outcome"]), text: z.string().min(1), id: z.string().optional() }),
-    approval: "read",
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return answer((async () => {
-        const id = params.id ? await cardId(params.id, ctx) : task;
-        if (!id)
-          throw new Error("Name the card to record on: this session has no task of its own");
-        const c = await api("POST", `/api/tasks/${id}/context`, { kind: params.kind, text: params.text, source: task ?? "mission-control" });
-        return `Recorded a ${params.kind} on ${id} (revision ${c.revision}, ${c.entries.length} entr${c.entries.length === 1 ? "y" : "ies"})`;
-      })());
-    }
-  });
-  pi.registerTool({
-    name: "mission_control_land",
-    label: "Mission Control land",
-    description: "Land a Mission Control card when the user says to merge, ship it or that it's done (that request is the approval; never because you judge the work finished). A card branched from another task's branch merges into that branch (committing pending changes); other cards get a pull request (its live agent is asked to commit, push and open it). how forces merge or pr. Without id, this session's own card: a merge then removes its worktree and ends this session. With another card's id, the user chooses whether to keep its worktree.",
-    parameters: z.object({ id: z.string().optional(), how: z.enum(["merge", "pr"]).optional() }),
-    approval: "read",
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return answer(land(ctx, params.id, params.how));
-    }
-  });
-  pi.registerTool({
-    name: "mission_control_cleanup",
-    label: "Mission Control cleanup",
-    description: "Remove a Mission Control card's worktree after the user confirms: deletes the worktree and its branch and ends its omp and terminal. A card that isn't done goes with it.",
-    parameters: z.object({ id: z.string() }),
-    approval: "read",
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return answer(cleanupCard(ctx, params.id));
-    }
-  });
-  pi.registerTool({
-    name: "mission_control_delete",
-    label: "Mission Control delete",
-    description: "Delete a Mission Control card after the user confirms; for a card with a worktree the user also chooses whether its worktree and branch go with it.",
-    parameters: z.object({ id: z.string() }),
-    approval: "read",
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return answer(deleteCard(ctx, params.id));
+      return answer(readBoard().then((board) => {
+        const w = toolCheckout(board, ctx, params.checkout);
+        if (!params.tags && !params.add && !params.remove)
+          return tagsText(w);
+        return saveTags(w, editTags(params.tags ?? w.ownTags, params.add ?? [], params.remove ?? []));
+      }));
     }
   });
 }

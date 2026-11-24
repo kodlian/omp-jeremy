@@ -11,7 +11,7 @@ omp plugin marketplace add kodlian/omp-jeremy
 omp plugin install plan-review@omp-jeremy
 ```
 
-Restart omp. Nothing else to set up: it works in each plan review omp shows, including Mission Control task sessions.
+Restart omp. Nothing else to set up: it works in each plan review omp shows.
 
 ### Local development
 

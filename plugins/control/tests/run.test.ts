@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { empty, line, onReport, onStop, restored, type Selection, type State, status } from "../src/run";
+import { empty, line, onReport, onStop, restored, type Selection, type State } from "../src/run";
 
 const review: Selection = { label: "Review", controls: ["quality-reviewer"], approval: "apply" };
 
@@ -9,8 +9,6 @@ test("auto starts a run on an unchecked change, and a reported pass settles it",
 	expect(line(state)).toBe("Control · running Review · auto");
 	expect(onReport(state, "fp1", true)).toBe(review);
 	expect(onStop(state, "fp1", "fp0")).toEqual({ kind: "allow" });
-	expect(status(state, "fp1")).toEqual({ passed: true, autonomous: true });
-	expect(status({ ...state, auto: { ...review, approval: "ask" } }, "fp1")).toEqual({ passed: true, autonomous: false });
 	expect(line(state)).toBe("Control · auto · Review · ✓ passed");
 });
 
@@ -40,8 +38,7 @@ test("a run whose prompt is still queued lets the turn stop and starts no auto r
 test("a pass stops counting once the tree changes", () => {
 	const state: State = { ...empty(), run: { selection: review, nudges: 0, delivered: true } };
 	onReport(state, "fp1", true);
-	expect(status(state, "fp1").passed).toBe(true);
-	expect(status(state, "fp2").passed).toBe(false);
+	expect(state.settled).toEqual({ fingerprint: "fp1", passed: true });
 	expect(onReport(state, "fp2", true)).toBeNull();
 });
 

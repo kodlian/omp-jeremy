@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { loadLibrary, summarize } from "../src/library";
+import { loadLibrary } from "../src/library";
 
 let home: string;
 let repo: string;
@@ -71,7 +71,7 @@ test("a set's approval defaults to apply; any other value is an error", async ()
 test("the built-in library loads cleanly with the review and quality sets", async () => {
 	const library = await loadLibrary(null);
 	expect(library.errors).toEqual([]);
-	expect(summarize(library).map((s) => [s.id, s.controls, s.approval])).toEqual([
+	expect([...library.sets.values()].map((s) => [s.id, s.controls.map((id) => library.controls.get(id)?.name), s.approval]).sort()).toEqual([
 		["quality", ["Quality"], "apply"],
 		["review", ["Quality", "Conventions", "Project rules"], "apply"],
 	]);
