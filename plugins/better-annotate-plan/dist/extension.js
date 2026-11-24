@@ -1,15 +1,15 @@
 // @bun
-// plugins/plan-review-better-comments/src/extension.ts
+// plugins/better-annotate-plan/src/extension.ts
 import { isNativeRendering } from "@oh-my-pi/pi-tui";
 
 // packages/integrations/src/text.ts
 var errorText = (e) => e instanceof Error ? e.message : String(e);
 
-// plugins/plan-review-better-comments/src/layer.ts
+// plugins/better-annotate-plan/src/layer.ts
 import { formatKeyHint, formatKeyHints } from "@oh-my-pi/pi-coding-agent";
 import { getKeybindings, Input, matchesKey, sliceByColumn, theme, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 
-// plugins/plan-review-better-comments/src/anchor.ts
+// plugins/better-annotate-plan/src/anchor.ts
 var MIN_PROBE = 8;
 var WORD = /[\p{L}\p{N}]/u;
 var NOTE_BAR = "\u258E";
@@ -140,7 +140,7 @@ function titleLine(text) {
   return shallowest.length === 1 && shallowest[0] === first ? { start: first.start, length: first.length } : null;
 }
 
-// plugins/plan-review-better-comments/src/layer.ts
+// plugins/better-annotate-plan/src/layer.ts
 var ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[PX^_][^\x1b]*\x1b\\|\x1b[@-Z\\-_]/g;
 var MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
 function selectionHint() {
@@ -149,12 +149,12 @@ function selectionHint() {
     `${formatKeyHints(["shift+up", "shift+down"])} extend`,
     `${formatKeyHints(["alt+up", "alt+down"])} scroll`,
     `${formatKeyHints(["super+up", "super+down"])} first/last line`,
-    `${formatKeyHints(["a", "c", "enter"])} comment`,
+    `${formatKeyHint("a")} annotate`,
     `${formatKeyHint("escape")} clear`
   ].join(" \xB7 ");
 }
 function unplacedNotice() {
-  return `This line isn't text from the plan, so it can't take a comment \xB7 ${formatKeyHint("escape")} clear`;
+  return `This line isn't text from the plan, so it can't take a note \xB7 ${formatKeyHint("escape")} clear`;
 }
 var OMP_EDITING = /^(?:Annotate|Edit annotation)\b/;
 var MAX_SCROLLS = 500;
@@ -220,7 +220,7 @@ class ReviewLayer {
       const quote = box.target.quote.split(`
 `);
       const more = quote.length > 1 ? ` and ${quote.length - 1} more line${quote.length > 2 ? "s" : ""}` : "";
-      lines[count - 3] = boxRule(theme.boxRound.teeRight, theme.boxRound.teeLeft, theme.fg("accent", `Comment on \u201C${quote[0]}\u201D${more}`), width);
+      lines[count - 3] = boxRule(theme.boxRound.teeRight, theme.boxRound.teeLeft, theme.fg("accent", `Annotate \u201C${quote[0]}\u201D${more}`), width);
       lines[count - 2] = boxRow(box.input.render(width - 4)[0] ?? "", width);
       lines[count - 1] = boxRule(theme.boxRound.bottomLeft, theme.boxRound.bottomRight, theme.fg("dim", `${formatKeyHint("enter")} save \xB7 ${formatKeyHint("escape")} cancel`), width);
     } else if (this.#selection) {
@@ -284,7 +284,7 @@ class ReviewLayer {
       this.#clear();
       return;
     }
-    if (matchesKey(data, "a") || matchesKey(data, "c") || matchesKey(data, "enter")) {
+    if (matchesKey(data, "a")) {
       this.#openBox(selection);
       return;
     }
@@ -512,7 +512,7 @@ function boxRule(left, right, label, width) {
   return `${theme.fg("border", left + theme.boxRound.horizontal)}${text}${theme.fg("border", theme.boxRound.horizontal.repeat(fill) + right)}`;
 }
 
-// plugins/plan-review-better-comments/src/extension.ts
+// plugins/better-annotate-plan/src/extension.ts
 var FULLSCREEN = { anchor: "bottom-center", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true };
 function planReview(pi) {
   let open = null;

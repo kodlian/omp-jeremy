@@ -23,6 +23,14 @@
       "name": "omp-web-design-system",
       "version": "0.1.0",
     },
+    "plugins/better-annotate-plan": {
+      "name": "omp-better-annotate-plan",
+      "version": "0.4.0",
+      "devDependencies": {
+        "@types/bun": "latest",
+        "omp-integrations": "workspace:*",
+      },
+    },
     "plugins/control": {
       "name": "omp-control",
       "version": "0.6.0",
@@ -46,14 +54,6 @@
       "name": "omp-mission-control",
       "version": "0.2.0",
       "devDependencies": {
-        "omp-integrations": "workspace:*",
-      },
-    },
-    "plugins/plan-review-better-comments": {
-      "name": "omp-plan-review-better-comments",
-      "version": "0.4.0",
-      "devDependencies": {
-        "@types/bun": "latest",
         "omp-integrations": "workspace:*",
       },
     },
@@ -121,6 +121,8 @@
 
     "micromark-util-types": ["micromark-util-types@2.0.3", "", {}, "sha512-oxB2Ik03hI0gv+VNn9tnh1t1YEe9MDPptViAEgfdf3YQHsn0pzGTgCdlSCJXcwhqm8phaEuM7zeEu3QQzVBrPg=="],
 
+    "omp-better-annotate-plan": ["omp-better-annotate-plan@workspace:plugins/better-annotate-plan"],
+
     "omp-control": ["omp-control@workspace:plugins/control"],
 
     "omp-git-diff-review": ["omp-git-diff-review@workspace:plugins/git-diff-review"],
@@ -128,8 +130,6 @@
     "omp-integrations": ["omp-integrations@workspace:packages/integrations"],
 
     "omp-mission-control": ["omp-mission-control@workspace:plugins/mission-control"],
-
-    "omp-plan-review-better-comments": ["omp-plan-review-better-comments@workspace:plugins/plan-review-better-comments"],
 
     "omp-web-client": ["omp-web-client@workspace:packages/web-client"],
 
@@ -175,16 +175,16 @@
 
     "@types/node/undici-types": ["undici-types@8.9.0", "", {}, "sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg=="],
 
+    "omp-better-annotate-plan/@types/bun": ["@types/bun@1.4.5", "", { "dependencies": { "bun-types": "1.4.5" } }, "sha512-DpgwNI9z0L1S0gtb45QLCWgwCUcMLnsHYMJHQvpNj7erGiCGBvpggltAIeARrtobNMKMuy0UP7i56tKKgwFs/Q=="],
+
     "omp-control/@types/bun": ["@types/bun@1.4.5", "", { "dependencies": { "bun-types": "1.4.5" } }, "sha512-DpgwNI9z0L1S0gtb45QLCWgwCUcMLnsHYMJHQvpNj7erGiCGBvpggltAIeARrtobNMKMuy0UP7i56tKKgwFs/Q=="],
 
     "omp-git-diff-review/@types/bun": ["@types/bun@1.4.5", "", { "dependencies": { "bun-types": "1.4.5" } }, "sha512-DpgwNI9z0L1S0gtb45QLCWgwCUcMLnsHYMJHQvpNj7erGiCGBvpggltAIeARrtobNMKMuy0UP7i56tKKgwFs/Q=="],
 
-    "omp-plan-review-better-comments/@types/bun": ["@types/bun@1.4.5", "", { "dependencies": { "bun-types": "1.4.5" } }, "sha512-DpgwNI9z0L1S0gtb45QLCWgwCUcMLnsHYMJHQvpNj7erGiCGBvpggltAIeARrtobNMKMuy0UP7i56tKKgwFs/Q=="],
+    "omp-better-annotate-plan/@types/bun/bun-types": ["bun-types@1.4.5", "", { "dependencies": { "@types/node": "*", "undici-types": "*" } }, "sha512-ECHn+9dhL3wv0G6u0+7dQvrnaimXiRDxxerYBmhTaLyJEEuvTPWk2Fye3XIf5Y++JIIiHKfQw4Z7V5D8KuiXbg=="],
 
     "omp-control/@types/bun/bun-types": ["bun-types@1.4.5", "", { "dependencies": { "@types/node": "*", "undici-types": "*" } }, "sha512-ECHn+9dhL3wv0G6u0+7dQvrnaimXiRDxxerYBmhTaLyJEEuvTPWk2Fye3XIf5Y++JIIiHKfQw4Z7V5D8KuiXbg=="],
 
     "omp-git-diff-review/@types/bun/bun-types": ["bun-types@1.4.5", "", { "dependencies": { "@types/node": "*", "undici-types": "*" } }, "sha512-ECHn+9dhL3wv0G6u0+7dQvrnaimXiRDxxerYBmhTaLyJEEuvTPWk2Fye3XIf5Y++JIIiHKfQw4Z7V5D8KuiXbg=="],
-
-    "omp-plan-review-better-comments/@types/bun/bun-types": ["bun-types@1.4.5", "", { "dependencies": { "@types/node": "*", "undici-types": "*" } }, "sha512-ECHn+9dhL3wv0G6u0+7dQvrnaimXiRDxxerYBmhTaLyJEEuvTPWk2Fye3XIf5Y++JIIiHKfQw4Z7V5D8KuiXbg=="],
   }
 }

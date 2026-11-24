@@ -25,9 +25,9 @@
       "version": "0.6.0"
     },
     {
-      "name": "plan-review-better-comments",
-      "description": "Click or drag to select lines of omp's own plan review and comment on them",
-      "source": "./plugins/plan-review-better-comments",
+      "name": "better-annotate-plan",
+      "description": "Click or drag to select lines of omp's own plan review and annotate them",
+      "source": "./plugins/better-annotate-plan",
       "version": "0.4.0"
     }
   ]

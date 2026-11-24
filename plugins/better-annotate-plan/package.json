@@ -1,9 +1,9 @@
 {
-  "name": "omp-plan-review-better-comments",
+  "name": "omp-better-annotate-plan",
   "version": "0.4.0",
   "private": true,
   "type": "module",
-  "description": "Click or drag to select lines of omp's own plan review and comment on them",
+  "description": "Click or drag to select lines of omp's own plan review and annotate them",
   "omp": {
     "extensions": ["./dist/extension.js"]
   },

@@ -1,6 +1,6 @@
 // A layer over omp's own plan review: it draws the review exactly as omp renders it and passes it every click, and
-// every key but those that select plan lines, move or extend the selection, scroll the plan and comment on it. The
-// comment goes into omp's review through the event omp takes Tern's native comments with, so omp shows it under the
+// every key but those that select plan lines, move or extend the selection, scroll the plan and annotate it. The
+// note goes into omp's review through the event omp takes Tern's native comments with, so omp shows it under the
 // line and sends it with Refine.
 import { formatKeyHint, formatKeyHints } from "@oh-my-pi/pi-coding-agent";
 import type { Component, TUI } from "@oh-my-pi/pi-tui";
@@ -16,13 +16,13 @@ function selectionHint(): string {
 		`${formatKeyHints(["shift+up", "shift+down"])} extend`,
 		`${formatKeyHints(["alt+up", "alt+down"])} scroll`,
 		`${formatKeyHints(["super+up", "super+down"])} first/last line`,
-		`${formatKeyHints(["a", "c", "enter"])} comment`,
+		`${formatKeyHint("a")} annotate`,
 		`${formatKeyHint("escape")} clear`,
 	].join(" · ");
 }
 
 function unplacedNotice(): string {
-	return `This line isn't text from the plan, so it can't take a comment · ${formatKeyHint("escape")} clear`;
+	return `This line isn't text from the plan, so it can't take a note · ${formatKeyHint("escape")} clear`;
 }
 
 /** First footer line of omp's own note editor and note chooser, while they have the keyboard. */
@@ -135,7 +135,7 @@ export class ReviewLayer implements Component {
 		if (box) {
 			const quote = box.target.quote.split("\n");
 			const more = quote.length > 1 ? ` and ${quote.length - 1} more line${quote.length > 2 ? "s" : ""}` : "";
-			lines[count - 3] = boxRule(theme.boxRound.teeRight, theme.boxRound.teeLeft, theme.fg("accent", `Comment on “${quote[0]}”${more}`), width);
+			lines[count - 3] = boxRule(theme.boxRound.teeRight, theme.boxRound.teeLeft, theme.fg("accent", `Annotate “${quote[0]}”${more}`), width);
 			lines[count - 2] = boxRow(box.input.render(width - 4)[0] ?? "", width);
 			lines[count - 1] = boxRule(theme.boxRound.bottomLeft, theme.boxRound.bottomRight, theme.fg("dim", `${formatKeyHint("enter")} save · ${formatKeyHint("escape")} cancel`), width);
 		} else if (this.#selection) {
@@ -193,7 +193,7 @@ export class ReviewLayer implements Component {
 			this.#clear();
 			return;
 		}
-		if (matchesKey(data, "a") || matchesKey(data, "c") || matchesKey(data, "enter")) {
+		if (matchesKey(data, "a")) {
 			this.#openBox(selection);
 			return;
 		}

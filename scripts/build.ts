@@ -6,7 +6,7 @@ const designSystem = resolve(root, "packages/web-design-system/design-system.css
 for (const target of ["plugins/mission-control/design-system.css", "plugins/git-diff-review/web/design-system.css"]) {
   await copyFile(designSystem, resolve(root, target));
 }
-for (const [name, entry] of [["mission-control", "omp/mission-control.ts"], ["git-diff-review", "src/extension.ts"], ["control", "src/extension.ts"], ["plan-review-better-comments", "src/extension.ts"]]) {
+for (const [name, entry] of [["mission-control", "omp/mission-control.ts"], ["git-diff-review", "src/extension.ts"], ["control", "src/extension.ts"], ["better-annotate-plan", "src/extension.ts"]]) {
   const dir = resolve(root, "plugins", name);
   const result = await Bun.build({
     entrypoints: [resolve(dir, entry)],
@@ -16,7 +16,7 @@ for (const [name, entry] of [["mission-control", "omp/mission-control.ts"], ["gi
     external: ["@oh-my-pi/*"],
   });
   if (!result.success) throw new AggregateError(result.logs, `Could not build ${name}`);
-  if (name !== "control" && name !== "plan-review-better-comments") {
+  if (name !== "control" && name !== "better-annotate-plan") {
     await mkdir(resolve(dir, "python"), { recursive: true });
     await copyFile(resolve(root, "packages/integrations/python/omp_terminals.py"), resolve(dir, "python/omp_terminals.py"));
   }
