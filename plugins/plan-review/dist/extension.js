@@ -142,10 +142,10 @@ function titleLine(text) {
 // plugins/plan-review/src/layer.ts
 var ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[PX^_][^\x1b]*\x1b\\|\x1b[@-Z\\-_]/g;
 var MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
-var SELECTION_HINT = "\u2191/\u2193 move \xB7 shift+\u2191/\u2193 extend \xB7 a, c or enter comment \xB7 esc clear the selection";
+var SELECTION_HINT = "\u2191/\u2193 move \xB7 shift+\u2191/\u2193 extend \xB7 alt+\u2191/\u2193 scroll \xB7 a, c or enter comment \xB7 esc clear";
 var UNPLACED = "This line isn't text from the plan, so it can't take a comment \xB7 esc clear the selection";
 var OMP_EDITING = /^(?:Annotate|Edit annotation)\b/;
-var MAX_SCROLLS = 20;
+var MAX_SCROLLS = 500;
 function isReview(component) {
   return typeof component === "object" && component !== null && "handleNativeEvent" in component && typeof component.handleNativeEvent === "function" && "selectOption" in component && typeof component.selectOption === "function";
 }
@@ -246,6 +246,12 @@ class ReviewLayer {
       this.review.handleInput(data);
       return;
     }
+    const scroll = matchesKey(data, "alt+up") ? -1 : matchesKey(data, "alt+down") ? 1 : 0;
+    if (scroll !== 0 && this.#frame) {
+      this.#scroll(scroll);
+      this.tui.requestRender();
+      return;
+    }
     const selection = this.#selection;
     if (!selection) {
       if (matchesKey(data, "a") && this.#selectTop())
@@ -262,9 +268,13 @@ class ReviewLayer {
       this.#openBox(selection);
       return;
     }
+    if (matchesKey(data, "pageUp") || matchesKey(data, "pageDown")) {
+      this.review.handleInput(data);
+      return;
+    }
     const extend = matchesKey(data, "shift+up") || matchesKey(data, "shift+down");
     const direction = matchesKey(data, "up") || matchesKey(data, "shift+up") ? -1 : matchesKey(data, "down") || matchesKey(data, "shift+down") ? 1 : 0;
-    if (direction !== 0 && this.#locate()) {
+    if (direction !== 0 && this.#reveal()) {
       this.#notice = null;
       if (extend)
         this.#extend(selection, direction);
@@ -349,6 +359,23 @@ class ReviewLayer {
       return null;
     selection.row = best;
     return { first: best, last: best + count - 1 };
+  }
+  #reveal() {
+    const frame = this.#frame;
+    const selection = this.#selection;
+    if (!frame || !selection)
+      return null;
+    const toward = selection.row < (frame.first + frame.last) / 2 ? -1 : 1;
+    for (const direction of [toward, -toward]) {
+      for (let scrolls = 0;scrolls < MAX_SCROLLS; scrolls++) {
+        const span = this.#locate();
+        if (span)
+          return span;
+        if (!this.#scroll(direction))
+          break;
+      }
+    }
+    return this.#locate();
   }
   #move(direction) {
     const next = this.#beyond(direction > 0 ? "last" : "first", direction);

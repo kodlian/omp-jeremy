@@ -1,19 +1,19 @@
 // A layer over omp's own plan review: it draws the review exactly as omp renders it and passes keys and clicks
-// through, except that a click, a drag or `a` selects plan lines, the arrows move or extend the selection, and
-// a, c or Enter comments on it. The comment goes into omp's review through the event omp takes Tern's native
-// comments with, so omp shows it under the line and sends it with Refine.
+// through, except that a click, a drag or `a` selects plan lines, the arrows move or extend the selection, Alt+↑/↓
+// scroll the plan, and a, c or Enter comments on the selection. The comment goes into omp's review through the event
+// omp takes Tern's native comments with, so omp shows it under the line and sends it with Refine.
 import type { Component, TUI } from "@oh-my-pi/pi-tui";
 import { getKeybindings, Input, matchesKey, sliceByColumn, theme, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { type CommentTarget, isPlanText, PlanSource, quoteOf } from "./anchor";
 
 const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[PX^_][^\x1b]*\x1b\\|\x1b[@-Z\\-_]/g;
 const MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
-const SELECTION_HINT = "↑/↓ move · shift+↑/↓ extend · a, c or enter comment · esc clear the selection";
+const SELECTION_HINT = "↑/↓ move · shift+↑/↓ extend · alt+↑/↓ scroll · a, c or enter comment · esc clear";
 const UNPLACED = "This line isn't text from the plan, so it can't take a comment · esc clear the selection";
 /** First footer line of omp's own note editor and note chooser, while they have the keyboard. */
 const OMP_EDITING = /^(?:Annotate|Edit annotation)\b/;
-/** Wheel steps the arrows may scroll omp's review to reach the next plan line. */
-const MAX_SCROLLS = 20;
+/** Wheel steps the layer scrolls omp's review for one key at most: more than any plan needs, a stop should it never settle. */
+const MAX_SCROLLS = 500;
 
 /** omp's plan review screen, as far as the layer drives it. Not a published omp API: it is found by its shape. */
 export interface OmpReview {
@@ -154,6 +154,12 @@ export class ReviewLayer implements Component {
 			this.review.handleInput(data);
 			return;
 		}
+		const scroll = matchesKey(data, "alt+up") ? -1 : matchesKey(data, "alt+down") ? 1 : 0;
+		if (scroll !== 0 && this.#frame) {
+			this.#scroll(scroll);
+			this.tui.requestRender();
+			return;
+		}
 		const selection = this.#selection;
 		if (!selection) {
 			if (matchesKey(data, "a") && this.#selectTop()) this.tui.requestRender();
@@ -168,9 +174,14 @@ export class ReviewLayer implements Component {
 			this.#openBox(selection);
 			return;
 		}
+		// omp's page keys scroll its review; the selection stays on its line.
+		if (matchesKey(data, "pageUp") || matchesKey(data, "pageDown")) {
+			this.review.handleInput(data);
+			return;
+		}
 		const extend = matchesKey(data, "shift+up") || matchesKey(data, "shift+down");
 		const direction = matchesKey(data, "up") || matchesKey(data, "shift+up") ? -1 : matchesKey(data, "down") || matchesKey(data, "shift+down") ? 1 : 0;
-		if (direction !== 0 && this.#locate()) {
+		if (direction !== 0 && this.#reveal()) {
 			this.#notice = null;
 			if (extend) this.#extend(selection, direction);
 			else this.#move(direction);
@@ -259,6 +270,22 @@ export class ReviewLayer implements Component {
 		if (best === null) return null;
 		selection.row = best;
 		return { first: best, last: best + count - 1 };
+	}
+
+	/** The selection's rows, scrolling omp's review back to them when a scroll took them off screen; null when they're gone. */
+	#reveal(): Span | null {
+		const frame = this.#frame;
+		const selection = this.#selection;
+		if (!frame || !selection) return null;
+		const toward = selection.row < (frame.first + frame.last) / 2 ? -1 : 1;
+		for (const direction of [toward, -toward] as const) {
+			for (let scrolls = 0; scrolls < MAX_SCROLLS; scrolls++) {
+				const span = this.#locate();
+				if (span) return span;
+				if (!this.#scroll(direction)) break;
+			}
+		}
+		return this.#locate();
 	}
 
 	/** ↑/↓: the plan line past the selection becomes the selection. */

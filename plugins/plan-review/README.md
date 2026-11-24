@@ -36,11 +36,12 @@ The review looks and works as omp draws it: its keys, its sidebar and its answer
 | `a` with nothing selected | selects the first line at the top of the plan |
 | `↑` / `↓` | move the selection to the previous / next line; the review scrolls when that line is off screen |
 | `Shift+↑` / `Shift+↓` | grow the selection by a line, or shrink it back |
+| `Alt+↑` / `Alt+↓` | scroll the plan; the selection stays on its line |
 | `a`, `c` or `Enter` | opens a comment box on the selection |
 | `Enter` in the box | saves the comment |
 | `Esc` | closes the box, then clears the selection, then (with nothing selected) closes the review as omp does |
 
-While a selection is shown, any other key goes to omp's review and clears the selection; the mouse wheel scrolls and keeps it. With nothing selected, keys work as in omp's review except `a`: omp's own `a` comments on the top line at once, while here it selects that line so you can move it first.
+While a selection is shown, any other key goes to omp's review and clears the selection; the mouse wheel and `PgUp` / `PgDn` scroll and keep it, and `↑` / `↓` first scroll back to a selection that went off screen. With nothing selected, keys work as in omp's review except `a`: omp's own `a` comments on the top line at once, while here it selects that line so you can move it first.
 
 omp keeps these comments with its own: Refine sends them all, each quoting its lines, and after Tab moves into the plan, `u` undoes the last one. omp shows a comment under the first line of the selection.
 
