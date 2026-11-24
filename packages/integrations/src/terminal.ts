@@ -79,23 +79,3 @@ export async function openBoard(url: string, options: OpenBoardOptions = {}): Pr
 	if (options.context) args.push("--context", JSON.stringify(options.context));
 	await helper(args, options);
 }
-
-/** A browser tab openTab opened, for closeTab. */
-export interface PageTab {
-	cli: string;
-	socket: string;
-	workspace: string;
-	surface: string;
-}
-
-/** Opens `url` in a browser tab beside the calling terminal, in its cmux pane, focused only while its workspace is in front (selected in the key window); else the default browser, which leaves no tab to close (null). Rejects when nothing opens it. */
-export async function openTab(url: string, options: Omit<OpenBoardOptions, "focus"> = {}): Promise<PageTab | null> {
-	const args = ["tab", url];
-	if (options.context) args.push("--context", JSON.stringify(options.context));
-	return JSON.parse(await helper(args, options)) as PageTab | null;
-}
-
-/** Closes a tab openTab opened; one already closed is fine. */
-export async function closeTab(tab: PageTab, options: TerminalOptions = {}): Promise<void> {
-	await helper(["close-tab", JSON.stringify(tab)], options);
-}

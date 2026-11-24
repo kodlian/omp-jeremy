@@ -150,14 +150,13 @@ def _cmux_target(part: Dict[str, str]) -> Dict[str, Any]:
     return panels
 
 
-def _created(out: str, kind: str) -> Optional[str]:
-    """The handle of the `kind` (workspace or surface) a cmux create command reports."""
+def _created_workspace(out: str) -> Optional[str]:
     try:
         data = json.loads(out)
     except ValueError:
         data = None
     if isinstance(data, dict):
-        for key in (f"{kind}_id", f"{kind}_ref", kind, "id", "ref"):
+        for key in ("workspace_id", "workspace_ref", "workspace", "id", "ref"):
             if isinstance(data.get(key), str) and CMUX_HANDLE.fullmatch(data[key]):
                 return data[key]
     m = re.search(CMUX_HANDLE.pattern, out)
@@ -175,7 +174,7 @@ def _open_cmux(context: Dict[str, Any], name: str, cwd: str, command: str) -> Di
     code, out, err = _cmux(part, args, timeout=20)
     if code != 0:
         raise RuntimeError(f"cmux new-workspace failed: {(err or out).strip()}")
-    handle = _created(out, "workspace")
+    handle = _created_workspace(out)
     created = _cmux_panels(part, handle) if handle else None
     if not created:
         raise RuntimeError(f"cmux didn't report the workspace it created: {out.strip()[:200]}")
@@ -316,29 +315,24 @@ def focus(target: Dict[str, Any]) -> bool:
 
 # --- browser panels
 
-def _origin(url: str) -> str:
+def _board_surface(part: Dict[str, str], url: str) -> Optional[str]:
+    """The browser surface in the context's workspace that already shows this board."""
     split = urlsplit(url)
-    return f"{split.scheme}://{split.netloc}/"
-
-
-def _workspace(part: Dict[str, str]) -> Tuple[List[Dict[str, Any]], bool]:
-    """The context's workspace from cmux's tree (read-only): its panes with their surfaces, and whether it's in front,
-    selected in the key window; ([], False) when cmux doesn't answer."""
+    prefix = f"{split.scheme}://{split.netloc}/"
     code, out, _ = _cmux(part, ["--json", "--id-format", "uuids", "tree", "--workspace", part["workspace"]])
+    if code != 0:
+        return None
     try:
-        tree = json.loads(out) if code == 0 else {}
+        tree = json.loads(out)
     except ValueError:
-        return [], False
-    found = [(window, workspace) for window in tree.get("windows") or [] for workspace in window.get("workspaces") or []]
-    return ([pane for _, workspace in found for pane in workspace.get("panes") or []],
-            any(window.get("key") is True and workspace.get("selected") is True for window, workspace in found))
-
-
-def _page_surface(pane: Dict[str, Any], url: str) -> Optional[str]:
-    """The browser surface of `pane` already on `url`'s origin."""
-    prefix = _origin(url)
-    return next((s.get("id") or s.get("ref") for s in pane.get("surfaces") or []
-                 if s.get("type") == "browser" and str(s.get("url") or "").startswith(prefix)), None)
+        return None
+    for window in tree.get("windows") or []:
+        for workspace in window.get("workspaces") or []:
+            for pane in workspace.get("panes") or []:
+                for surface in pane.get("surfaces") or []:
+                    if surface.get("type") == "browser" and str(surface.get("url") or "").startswith(prefix):
+                        return surface.get("id") or surface.get("ref")
+    return None
 
 
 def open_board(context: Dict[str, Any], url: str, focus: bool = False) -> bool:
@@ -346,7 +340,7 @@ def open_board(context: Dict[str, Any], url: str, focus: bool = False) -> bool:
     part = context.get("cmux")
     if not part or _cmux_panels(part) is None:
         return False
-    surface = next((s for s in (_page_surface(p, url) for p in _workspace(part)[0]) if s), None)
+    surface = _board_surface(part, url)
     if surface:
         if _cmux(part, ["browser", "--surface", surface, "navigate", url])[0] != 0:
             return False
@@ -354,38 +348,6 @@ def open_board(context: Dict[str, Any], url: str, focus: bool = False) -> bool:
             _cmux(part, ["focus-panel", "--panel", surface, "--workspace", part["workspace"]])
         return True
     return _cmux(part, ["browser", "open-split", url, "--workspace", part["workspace"], "--focus", str(focus).lower()])[0] == 0
-
-
-def open_tab(context: Dict[str, Any], url: str) -> Optional[Dict[str, str]]:
-    """Shows `url` in a browser tab in the pane of the context's terminal (reusing one there on its origin), else in the
-    workspace's focused pane; returns the tab for close_tab, None without cmux. The tab takes the focus only while its
-    workspace is in front, so opening it never switches the user's workspace or brings cmux forward."""
-    part = context.get("cmux")
-    if not part or _cmux_panels(part) is None:
-        return None
-    panes, in_front = _workspace(part)
-    terminal = str(part.get("surface") or "").upper()
-    pane = next((p for p in panes
-                 if terminal and terminal in (str(s).upper() for s in p.get("surface_ids") or [])), None)
-    tab = _page_surface(pane, url) if pane else None
-    if tab:
-        if _cmux(part, ["browser", "--surface", tab, "navigate", url])[0] != 0:
-            return None
-        if in_front:
-            _cmux(part, ["focus-panel", "--panel", tab, "--workspace", part["workspace"]])
-    else:
-        args = ["--json", "--id-format", "uuids", "new-surface", "--type", "browser", "--workspace", part["workspace"],
-                "--url", url, "--focus", str(in_front).lower()] + (["--pane", pane["id"]] if pane else [])
-        code, out, _ = _cmux(part, args)
-        tab = _created(out, "surface") if code == 0 else None
-        if not tab:
-            return None
-    return {"cli": part["cli"], "socket": part["socket"], "workspace": part["workspace"], "surface": tab}
-
-
-def close_tab(tab: Dict[str, str]) -> bool:
-    """Closes a tab open_tab opened; False when it's gone already."""
-    return _cmux(tab, ["close-surface", "--surface", tab["surface"], "--workspace", tab["workspace"]])[0] == 0
 
 
 # --- caller detection (runs in the caller's process, never in the server)
@@ -495,21 +457,7 @@ def main(argv: List[str]) -> int:
     board.add_argument("url")
     board.add_argument("--focus", action=argparse.BooleanOptionalAction, default=True)
     board.add_argument("--context", help="a context JSON from detect, instead of detecting this terminal")
-    tab = sub.add_parser("tab", help="open a URL in a browser tab beside this terminal, focused while its workspace is in "
-                                      "front, else the default browser; prints the tab as JSON for close-tab (null for "
-                                      "the default browser)")
-    tab.add_argument("url")
-    tab.add_argument("--context", help="a context JSON from detect, instead of detecting this terminal")
-    close = sub.add_parser("close-tab", help="close a tab that tab opened")
-    close.add_argument("tab", help="the JSON tab printed")
     args = parser.parse_args(argv)
-    if args.command == "close-tab":
-        try:
-            close_tab(_cmux_part(json.loads(args.tab), True))
-        except ValueError as e:
-            print(f"terminals: {e}", file=sys.stderr)
-            return 2
-        return 0
     try:
         given = getattr(args, "context", None)
         envs = tuple(args.override_env) if args.override_env else OVERRIDE_ENVS
@@ -520,16 +468,9 @@ def main(argv: List[str]) -> int:
     if args.command == "detect":
         print(json.dumps(context))
         return 0
-    if args.command == "tab":
-        opened = open_tab(context, args.url)
-        if opened:
-            print(json.dumps(opened))
-            return 0
-    elif open_board(context, args.url, args.focus):
+    if open_board(context, args.url, args.focus):
         return 0
     if webbrowser.open(args.url):
-        if args.command == "tab":
-            print("null")
         return 0
     print(f"terminals: no browser to open; visit {args.url}", file=sys.stderr)
     return 1
