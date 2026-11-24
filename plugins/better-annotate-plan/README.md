@@ -37,7 +37,6 @@ The review looks and works as omp draws it: its keys, its sidebar and its answer
 | `↑` / `↓` | move the selection to the previous / next line; the review scrolls when that line is off screen |
 | `Shift+↑` / `Shift+↓` | grow the selection by a line, or shrink it back |
 | `Alt+↑` / `Alt+↓` | scroll the plan; the selection stays on its line |
-| `Cmd+↑` / `Cmd+↓` | move the selection to the plan's first / last line; with nothing selected, scroll to the top / bottom |
 | `a` with a selection | opens a note box on it, as omp's own `a` does |
 | `Enter` in the box | saves the note |
 | `Esc` | closes the box, then clears the selection, then (with nothing selected) closes the review as omp does |

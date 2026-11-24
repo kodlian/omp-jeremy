@@ -15,7 +15,6 @@ function selectionHint(): string {
 		`${formatKeyHints(["up", "down"])} move`,
 		`${formatKeyHints(["shift+up", "shift+down"])} extend`,
 		`${formatKeyHints(["alt+up", "alt+down"])} scroll`,
-		`${formatKeyHints(["super+up", "super+down"])} first/last line`,
 		`${formatKeyHint("a")} annotate`,
 		`${formatKeyHint("escape")} clear`,
 	].join(" · ");
@@ -176,16 +175,9 @@ export class ReviewLayer implements Component {
 			this.tui.requestRender();
 			return;
 		}
-		const end = matchesKey(data, "super+up") ? "top" : matchesKey(data, "super+down") ? "bottom" : null;
-		if (end && this.#frame) {
-			this.#scrollToEnd(end);
-			if (this.#selection) this.#selectEdge(end);
-			this.tui.requestRender();
-			return;
-		}
 		const selection = this.#selection;
 		if (!selection) {
-			if (matchesKey(data, "a") && this.#selectEdge("top")) this.tui.requestRender();
+			if (matchesKey(data, "a") && this.#selectTop()) this.tui.requestRender();
 			else this.review.handleInput(data);
 			return;
 		}
@@ -252,19 +244,11 @@ export class ReviewLayer implements Component {
 		return { lines: this.#rows.slice(first, last + 1), row: first, target: this.#source.target(this.#rows, first, last), moving: from <= to ? "last" : "first" };
 	}
 
-	/** Cmd+↑/↓: omp's review scrolled to the plan's top or bottom. */
-	#scrollToEnd(end: "top" | "bottom"): void {
-		for (let scrolls = 0; scrolls < MAX_SCROLLS; scrolls++) {
-			if (!this.#scroll(end === "top" ? -1 : 1)) return;
-		}
-	}
-
-	/** The plan line nearest the top or bottom of the plan on screen becomes the selection, and omp's plan gets the focus as a click there gives it. */
-	#selectEdge(end: "top" | "bottom"): boolean {
+	/** `a` with nothing selected: the first plan line on screen becomes the selection, and omp's plan gets the focus as a click there gives it. */
+	#selectTop(): boolean {
 		const frame = this.#frame;
 		if (!frame) return false;
-		for (let i = 0; i <= frame.last - frame.first; i++) {
-			const row = end === "top" ? frame.first + i : frame.last - i;
+		for (let row = frame.first; row <= frame.last; row++) {
 			if (isPlanText(this.#rows[row] ?? "")) {
 				this.#notice = null;
 				this.#selection = this.#select(row, row);

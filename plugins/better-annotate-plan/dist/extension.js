@@ -148,7 +148,6 @@ function selectionHint() {
     `${formatKeyHints(["up", "down"])} move`,
     `${formatKeyHints(["shift+up", "shift+down"])} extend`,
     `${formatKeyHints(["alt+up", "alt+down"])} scroll`,
-    `${formatKeyHints(["super+up", "super+down"])} first/last line`,
     `${formatKeyHint("a")} annotate`,
     `${formatKeyHint("escape")} clear`
   ].join(" \xB7 ");
@@ -264,17 +263,9 @@ class ReviewLayer {
       this.tui.requestRender();
       return;
     }
-    const end = matchesKey(data, "super+up") ? "top" : matchesKey(data, "super+down") ? "bottom" : null;
-    if (end && this.#frame) {
-      this.#scrollToEnd(end);
-      if (this.#selection)
-        this.#selectEdge(end);
-      this.tui.requestRender();
-      return;
-    }
     const selection = this.#selection;
     if (!selection) {
-      if (matchesKey(data, "a") && this.#selectEdge("top"))
+      if (matchesKey(data, "a") && this.#selectTop())
         this.tui.requestRender();
       else
         this.review.handleInput(data);
@@ -335,18 +326,11 @@ class ReviewLayer {
     const [first, last] = from <= to ? [from, to] : [to, from];
     return { lines: this.#rows.slice(first, last + 1), row: first, target: this.#source.target(this.#rows, first, last), moving: from <= to ? "last" : "first" };
   }
-  #scrollToEnd(end) {
-    for (let scrolls = 0;scrolls < MAX_SCROLLS; scrolls++) {
-      if (!this.#scroll(end === "top" ? -1 : 1))
-        return;
-    }
-  }
-  #selectEdge(end) {
+  #selectTop() {
     const frame = this.#frame;
     if (!frame)
       return false;
-    for (let i = 0;i <= frame.last - frame.first; i++) {
-      const row = end === "top" ? frame.first + i : frame.last - i;
+    for (let row = frame.first;row <= frame.last; row++) {
       if (isPlanText(this.#rows[row] ?? "")) {
         this.#notice = null;
         this.#selection = this.#select(row, row);
