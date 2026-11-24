@@ -16,7 +16,7 @@ Pick checks and reviewers with `/control` and run them on the session's change, 
 
 ## Plan Review
 
-When omp shows a plan for review, click or drag over any of its lines to select them, then press `c` or Enter to comment. The comment becomes one of omp's own plan comments: omp shows it under the line and sends it when you pick Refine. See [plugins/plan-review](plugins/plan-review/README.md).
+When omp shows a plan for review, select any of its lines with a click, a drag, or `a` and the arrow keys, then press `c` or Enter to comment. The comment becomes one of omp's own plan comments: omp shows it under the line and sends it when you pick Refine. See [plugins/plan-review](plugins/plan-review/README.md).
 
 ## Install from the marketplace
 

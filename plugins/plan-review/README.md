@@ -1,6 +1,6 @@
 # omp-plan-review
 
-Comment on any line of omp's own plan review. When omp shows a plan for review, click or drag over its lines to select them, then press `c` or Enter and type a note. The note becomes one of omp's own plan comments: omp shows it under the line, marks its section in the sidebar, and sends it when you pick **Refine plan**.
+Comment on any line of omp's own plan review. When omp shows a plan for review, select lines with a click or a drag, or press `a` and move with the arrow keys; then press `a`, `c` or Enter and type a note. The note becomes one of omp's own plan comments: omp shows it under the line, marks its section in the sidebar, and sends it when you pick **Refine plan**.
 
 ## Install
 
@@ -33,13 +33,16 @@ The review looks and works as omp draws it: its keys, its sidebar and its answer
 |---|---|
 | Click a line of the plan | selects it |
 | Drag over lines | selects all of them |
-| `c` or `Enter` | opens a comment box on the selection |
+| `a` with nothing selected | selects the first line at the top of the plan |
+| `↑` / `↓` | move the selection to the previous / next line; the review scrolls when that line is off screen |
+| `Shift+↑` / `Shift+↓` | grow the selection by a line, or shrink it back |
+| `a`, `c` or `Enter` | opens a comment box on the selection |
 | `Enter` in the box | saves the comment |
 | `Esc` | closes the box, then clears the selection, then (with nothing selected) closes the review as omp does |
 
-While a selection is shown, any other key goes to omp's review and clears the selection; the mouse wheel scrolls and keeps it.
+While a selection is shown, any other key goes to omp's review and clears the selection; the mouse wheel scrolls and keeps it. With nothing selected, keys work as in omp's review except `a`: omp's own `a` comments on the top line at once, while here it selects that line so you can move it first.
 
-omp keeps them with the comments its own `a` key adds: Refine sends them all, each quoting its lines, and after Tab moves into the plan, `u` undoes the last one. omp shows a comment under the first line of the selection.
+omp keeps these comments with its own: Refine sends them all, each quoting its lines, and after Tab moves into the plan, `u` undoes the last one. omp shows a comment under the first line of the selection.
 
 ## How it works
 

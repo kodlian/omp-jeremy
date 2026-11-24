@@ -9,6 +9,16 @@ const WORD = /[\p{L}\p{N}]/u;
 /** omp's callout rows under a commented line start with this bar. */
 export const NOTE_BAR = "▎";
 
+/** Whether a drawn row is a line of the plan: it has letters or digits and isn't one of omp's notes. */
+export function isPlanText(text: string): boolean {
+	return !text.startsWith(NOTE_BAR) && WORD.test(text);
+}
+
+/** The quote of a comment on drawn rows: their plan lines, without blank rows and omp's notes. */
+export function quoteOf(rows: readonly string[]): string {
+	return rows.filter(isPlanText).join("\n");
+}
+
 /** A comment for omp's native comment event: the quoted lines and their offset in omp's native document. */
 export interface CommentTarget {
 	quote: string;
@@ -54,15 +64,16 @@ export class PlanSource {
 	 * screen row); null when none of those rows is plan text (blank rows, borders, omp's notes).
 	 */
 	target(rows: readonly string[], first: number, last: number): CommentTarget | null {
-		const quoted: number[] = [];
-		for (let row = first; row <= last; row++) {
-			const text = rows[row] ?? "";
-			if (!text.startsWith(NOTE_BAR) && WORD.test(text)) quoted.push(row);
-		}
-		if (quoted.length === 0) return null;
-		const offset = this.locate(rows, quoted[0] as number);
-		if (offset === null) return null;
-		return { quote: quoted.map((row) => rows[row]).join("\n"), at: this.#docOffset(offset) };
+		const selected = rows.slice(first, last + 1);
+		const quote = quoteOf(selected);
+		const at = quote ? this.at(rows, first + selected.findIndex(isPlanText)) : null;
+		return at === null ? null : { quote, at };
+	}
+
+	/** Where drawn row `row` starts, as an offset in omp's native document; null when it can't be placed. */
+	at(rows: readonly string[], row: number): number | null {
+		const offset = this.locate(rows, row);
+		return offset === null ? null : this.#docOffset(offset);
 	}
 
 	/**

@@ -12,6 +12,13 @@ import { getKeybindings, Input, matchesKey, sliceByColumn, theme, truncateToWidt
 var MIN_PROBE = 8;
 var WORD = /[\p{L}\p{N}]/u;
 var NOTE_BAR = "\u258E";
+function isPlanText(text) {
+  return !text.startsWith(NOTE_BAR) && WORD.test(text);
+}
+function quoteOf(rows) {
+  return rows.filter(isPlanText).join(`
+`);
+}
 function lettersOf(text) {
   let letters = "";
   for (const char of text)
@@ -39,19 +46,14 @@ class PlanSource {
     this.#title = titleLine(text);
   }
   target(rows, first, last) {
-    const quoted = [];
-    for (let row = first;row <= last; row++) {
-      const text = rows[row] ?? "";
-      if (!text.startsWith(NOTE_BAR) && WORD.test(text))
-        quoted.push(row);
-    }
-    if (quoted.length === 0)
-      return null;
-    const offset = this.locate(rows, quoted[0]);
-    if (offset === null)
-      return null;
-    return { quote: quoted.map((row) => rows[row]).join(`
-`), at: this.#docOffset(offset) };
+    const selected = rows.slice(first, last + 1);
+    const quote = quoteOf(selected);
+    const at = quote ? this.at(rows, first + selected.findIndex(isPlanText)) : null;
+    return at === null ? null : { quote, at };
+  }
+  at(rows, row) {
+    const offset = this.locate(rows, row);
+    return offset === null ? null : this.#docOffset(offset);
   }
   locate(rows, target) {
     const keys = rows.map((row) => row.startsWith(NOTE_BAR) ? "" : lettersOf(row));
@@ -140,9 +142,10 @@ function titleLine(text) {
 // plugins/plan-review/src/layer.ts
 var ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[PX^_][^\x1b]*\x1b\\|\x1b[@-Z\\-_]/g;
 var MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
-var SELECTION_HINT = "c or enter comment on the selection \xB7 drag select more lines \xB7 esc clear the selection";
+var SELECTION_HINT = "\u2191/\u2193 move \xB7 shift+\u2191/\u2193 extend \xB7 a, c or enter comment \xB7 esc clear the selection";
 var UNPLACED = "This line isn't text from the plan, so it can't take a comment \xB7 esc clear the selection";
 var OMP_EDITING = /^(?:Annotate|Edit annotation)\b/;
+var MAX_SCROLLS = 20;
 function isReview(component) {
   return typeof component === "object" && component !== null && "handleNativeEvent" in component && typeof component.handleNativeEvent === "function" && "selectOption" in component && typeof component.selectOption === "function";
 }
@@ -172,6 +175,7 @@ class ReviewLayer {
   onGone;
   debugKind = "plan-review-layer";
   #source;
+  #width = 0;
   #frame = null;
   #rows = [];
   #selection = null;
@@ -188,13 +192,16 @@ class ReviewLayer {
     if (!this.tui.overlayStack.some((entry) => entry.component === this.review))
       queueMicrotask(this.onGone);
     const lines = [...this.review.render(width)];
-    const frame = readFrame(lines, width);
-    this.#frame = frame;
-    this.#rows = frame ? frame.lines.map((line, row) => row >= frame.first && row <= frame.last ? sliceByColumn(line, frame.start, frame.end - frame.start).trim() : "") : [];
+    this.#read(lines, width);
+    const frame = this.#frame;
     if (!frame)
       return lines;
-    for (const row of this.#selectedRows(frame))
-      lines[row] = this.#highlight(lines[row] ?? "", frame, width);
+    const span = this.#locate();
+    if (span) {
+      for (let row = Math.max(span.first, frame.first);row <= Math.min(span.last, frame.last); row++) {
+        lines[row] = this.#highlight(lines[row] ?? "", frame, width);
+      }
+    }
     const count = lines.length;
     const box = this.#box;
     if (box) {
@@ -235,21 +242,48 @@ class ReviewLayer {
       this.tui.requestRender();
       return;
     }
-    if (this.#selection) {
-      if (cancel) {
-        this.#clear();
-        return;
-      }
-      if (matchesKey(data, "c") || matchesKey(data, "enter")) {
-        this.#openBox(this.#selection);
-        return;
-      }
-      this.#clear();
+    if (this.#frame?.editing) {
+      this.review.handleInput(data);
+      return;
     }
+    const selection = this.#selection;
+    if (!selection) {
+      if (matchesKey(data, "a") && this.#selectTop())
+        this.tui.requestRender();
+      else
+        this.review.handleInput(data);
+      return;
+    }
+    if (cancel) {
+      this.#clear();
+      return;
+    }
+    if (matchesKey(data, "a") || matchesKey(data, "c") || matchesKey(data, "enter")) {
+      this.#openBox(selection);
+      return;
+    }
+    const extend = matchesKey(data, "shift+up") || matchesKey(data, "shift+down");
+    const direction = matchesKey(data, "up") || matchesKey(data, "shift+up") ? -1 : matchesKey(data, "down") || matchesKey(data, "shift+down") ? 1 : 0;
+    if (direction !== 0 && this.#locate()) {
+      this.#notice = null;
+      if (extend)
+        this.#extend(selection, direction);
+      else
+        this.#move(direction);
+      this.tui.requestRender();
+      return;
+    }
+    this.#clear();
     this.review.handleInput(data);
   }
   invalidate() {
     this.review.invalidate?.();
+  }
+  #read(styled, width) {
+    const frame = readFrame(styled, width);
+    this.#width = width;
+    this.#frame = frame;
+    this.#rows = frame ? frame.lines.map((line, row) => row >= frame.first && row <= frame.last ? sliceByColumn(line, frame.start, frame.end - frame.start).trim() : "") : [];
   }
   #mouse(button, col, row, release) {
     const frame = this.#frame;
@@ -258,9 +292,8 @@ class ReviewLayer {
     const left = (button & 3) === 0 && (button & 64) === 0;
     const drag = left && (button & 32) !== 0;
     if (left && !drag && !release && row >= frame.first && row <= frame.last && col >= frame.start && col < frame.end) {
-      const text = this.#rows[row] ?? "";
       this.#notice = null;
-      this.#anchor = text && !text.startsWith(NOTE_BAR) ? row : null;
+      this.#anchor = isPlanText(this.#rows[row] ?? "") ? row : null;
       this.#selection = this.#anchor === null ? null : this.#select(row, row);
       return true;
     }
@@ -276,22 +309,119 @@ class ReviewLayer {
   }
   #select(from, to) {
     const [first, last] = from <= to ? [from, to] : [to, from];
-    return { lines: this.#rows.slice(first, last + 1), row: first, target: this.#source.target(this.#rows, first, last) };
+    return { lines: this.#rows.slice(first, last + 1), row: first, target: this.#source.target(this.#rows, first, last), moving: from <= to ? "last" : "first" };
   }
-  #selectedRows(frame) {
-    const selection = this.#selection;
-    if (!selection)
-      return [];
-    let best = -1;
+  #selectTop() {
+    const frame = this.#frame;
+    if (!frame)
+      return false;
     for (let row = frame.first;row <= frame.last; row++) {
-      const fits = selection.lines.every((line, i) => row + i > frame.last || this.#rows[row + i] === line);
-      if (fits && (best < 0 || Math.abs(row - selection.row) < Math.abs(best - selection.row)))
-        best = row;
+      if (isPlanText(this.#rows[row] ?? "")) {
+        this.#selection = this.#select(row, row);
+        return true;
+      }
     }
-    if (best < 0)
-      return [];
+    return false;
+  }
+  #locate() {
+    const frame = this.#frame;
+    const selection = this.#selection;
+    if (!frame || !selection)
+      return null;
+    const count = selection.lines.length;
+    let best = null;
+    for (let start = frame.first - count + 1;start <= frame.last; start++) {
+      let shown = 0;
+      let fits = true;
+      for (let i = 0;i < count && fits; i++) {
+        const row = start + i;
+        if (row < frame.first || row > frame.last)
+          continue;
+        const line = selection.lines[i] ?? "";
+        fits = this.#rows[row] === line;
+        if (fits && isPlanText(line))
+          shown++;
+      }
+      if (fits && shown > 0 && (best === null || Math.abs(start - selection.row) < Math.abs(best - selection.row)))
+        best = start;
+    }
+    if (best === null)
+      return null;
     selection.row = best;
-    return selection.lines.map((_, i) => best + i).filter((row) => row <= frame.last);
+    return { first: best, last: best + count - 1 };
+  }
+  #move(direction) {
+    const next = this.#beyond(direction > 0 ? "last" : "first", direction);
+    if (next)
+      this.#selection = this.#select(next.row, next.row);
+  }
+  #extend(selection, direction) {
+    const single = selection.lines.filter(isPlanText).length === 1;
+    const moving = single ? direction > 0 ? "last" : "first" : selection.moving;
+    if (moving === "last" === direction > 0)
+      this.#grow(selection, moving, direction);
+    else
+      this.#shrink(selection, moving);
+  }
+  #grow(selection, moving, direction) {
+    const next = this.#beyond(moving, direction);
+    if (!next)
+      return;
+    const { span, row } = next;
+    const lines = direction > 0 ? [...selection.lines, ...this.#rows.slice(span.last + 1, row + 1)] : [...this.#rows.slice(row, span.first), ...selection.lines];
+    const first = direction > 0 ? span.first : row;
+    this.#selection = { lines, row: first, moving, target: this.#targetFor(lines, first, selection.target) };
+  }
+  #shrink(selection, moving) {
+    const span = this.#locate();
+    if (!span)
+      return;
+    const lines = [...selection.lines];
+    let first = span.first;
+    if (moving === "last") {
+      lines.pop();
+      while (lines.length > 0 && !isPlanText(lines.at(-1) ?? ""))
+        lines.pop();
+    } else {
+      do {
+        lines.shift();
+        first++;
+      } while (lines.length > 0 && !isPlanText(lines[0] ?? ""));
+    }
+    this.#selection = { lines, row: first, moving, target: this.#targetFor(lines, first, selection.target) };
+  }
+  #targetFor(lines, first, previous) {
+    const quote = quoteOf(lines);
+    const row = first + lines.findIndex(isPlanText);
+    const frame = this.#frame;
+    const at = frame && row >= frame.first && row <= frame.last ? this.#source.at(this.#rows, row) : previous?.at ?? null;
+    return quote && at !== null ? { quote, at } : null;
+  }
+  #beyond(end, direction) {
+    for (let scrolls = 0;scrolls <= MAX_SCROLLS; scrolls++) {
+      const frame = this.#frame;
+      const span = this.#locate();
+      if (!frame || !span)
+        return null;
+      for (let row = span[end] + direction;row >= frame.first && row <= frame.last; row += direction) {
+        if (isPlanText(this.#rows[row] ?? ""))
+          return { span, row };
+      }
+      if (!this.#scroll(direction))
+        return null;
+    }
+    return null;
+  }
+  #scroll(direction) {
+    const frame = this.#frame;
+    if (!frame)
+      return false;
+    const before = this.#rows.join(`
+`);
+    this.review.handleInput(`\x1B[<${direction > 0 ? 65 : 64};${frame.start + 1};${frame.first + 1}M`);
+    this.#read(this.review.render(this.#width), this.#width);
+    return this.#rows.join(`
+`) !== before;
   }
   #highlight(line, frame, width) {
     const body = sliceByColumn(line.replace(ANSI, ""), frame.start, frame.end - frame.start);

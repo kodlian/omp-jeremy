@@ -1,17 +1,19 @@
 // A layer over omp's own plan review: it draws the review exactly as omp renders it and passes keys and clicks
-// through, except that a click or drag on the plan selects lines, and c or Enter comments on them. The comment goes
-// into omp's review through the event omp takes Tern's native comments with, so omp shows it under the line and
-// sends it with Refine.
+// through, except that a click, a drag or `a` selects plan lines, the arrows move or extend the selection, and
+// a, c or Enter comments on it. The comment goes into omp's review through the event omp takes Tern's native
+// comments with, so omp shows it under the line and sends it with Refine.
 import type { Component, TUI } from "@oh-my-pi/pi-tui";
 import { getKeybindings, Input, matchesKey, sliceByColumn, theme, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
-import { type CommentTarget, NOTE_BAR, PlanSource } from "./anchor";
+import { type CommentTarget, isPlanText, PlanSource, quoteOf } from "./anchor";
 
 const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[PX^_][^\x1b]*\x1b\\|\x1b[@-Z\\-_]/g;
 const MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
-const SELECTION_HINT = "c or enter comment on the selection · drag select more lines · esc clear the selection";
+const SELECTION_HINT = "↑/↓ move · shift+↑/↓ extend · a, c or enter comment · esc clear the selection";
 const UNPLACED = "This line isn't text from the plan, so it can't take a comment · esc clear the selection";
 /** First footer line of omp's own note editor and note chooser, while they have the keyboard. */
 const OMP_EDITING = /^(?:Annotate|Edit annotation)\b/;
+/** Wheel steps the arrows may scroll omp's review to reach the next plan line. */
+const MAX_SCROLLS = 20;
 
 /** omp's plan review screen, as far as the layer drives it. Not a published omp API: it is found by its shape. */
 export interface OmpReview {
@@ -63,16 +65,25 @@ function readFrame(styled: readonly string[], width: number): Frame | null {
 }
 
 interface Selection {
-	/** The selected rows' text, top to bottom. */
+	/** The selected rows' text, top to bottom, blank rows between plan lines included. */
 	lines: string[];
-	/** Screen row of the first selected row when last drawn. */
+	/** Screen row of the first selected row when last drawn; off screen once it scrolled away. */
 	row: number;
 	target: CommentTarget | null;
+	/** The end Shift+↑/↓ moves; the other one stays put. */
+	moving: "first" | "last";
+}
+
+/** Screen rows of the selection in a frame; they may run past the plan body's edges. */
+interface Span {
+	first: number;
+	last: number;
 }
 
 export class ReviewLayer implements Component {
 	readonly debugKind = "plan-review-layer";
 	readonly #source: PlanSource;
+	#width = 0;
 	#frame: Frame | null = null;
 	/** Each screen row's plan text; empty outside the plan body. */
 	#rows: string[] = [];
@@ -95,13 +106,15 @@ export class ReviewLayer implements Component {
 	render(width: number): readonly string[] {
 		if (!this.tui.overlayStack.some((entry) => entry.component === this.review)) queueMicrotask(this.onGone);
 		const lines = [...this.review.render(width)];
-		const frame = readFrame(lines, width);
-		this.#frame = frame;
-		this.#rows = frame
-			? frame.lines.map((line, row) => (row >= frame.first && row <= frame.last ? sliceByColumn(line, frame.start, frame.end - frame.start).trim() : ""))
-			: [];
+		this.#read(lines, width);
+		const frame = this.#frame;
 		if (!frame) return lines;
-		for (const row of this.#selectedRows(frame)) lines[row] = this.#highlight(lines[row] ?? "", frame, width);
+		const span = this.#locate();
+		if (span) {
+			for (let row = Math.max(span.first, frame.first); row <= Math.min(span.last, frame.last); row++) {
+				lines[row] = this.#highlight(lines[row] ?? "", frame, width);
+			}
+		}
 		const count = lines.length;
 		const box = this.#box;
 		if (box) {
@@ -136,23 +149,50 @@ export class ReviewLayer implements Component {
 			this.tui.requestRender();
 			return;
 		}
-		if (this.#selection) {
-			if (cancel) {
-				this.#clear();
-				return;
-			}
-			if (matchesKey(data, "c") || matchesKey(data, "enter")) {
-				this.#openBox(this.#selection);
-				return;
-			}
-			// Any other key belongs to omp's review, and the selection goes.
-			this.#clear();
+		// omp's own note editor or note chooser has the keyboard: every key is its.
+		if (this.#frame?.editing) {
+			this.review.handleInput(data);
+			return;
 		}
+		const selection = this.#selection;
+		if (!selection) {
+			if (matchesKey(data, "a") && this.#selectTop()) this.tui.requestRender();
+			else this.review.handleInput(data);
+			return;
+		}
+		if (cancel) {
+			this.#clear();
+			return;
+		}
+		if (matchesKey(data, "a") || matchesKey(data, "c") || matchesKey(data, "enter")) {
+			this.#openBox(selection);
+			return;
+		}
+		const extend = matchesKey(data, "shift+up") || matchesKey(data, "shift+down");
+		const direction = matchesKey(data, "up") || matchesKey(data, "shift+up") ? -1 : matchesKey(data, "down") || matchesKey(data, "shift+down") ? 1 : 0;
+		if (direction !== 0 && this.#locate()) {
+			this.#notice = null;
+			if (extend) this.#extend(selection, direction);
+			else this.#move(direction);
+			this.tui.requestRender();
+			return;
+		}
+		// Any other key belongs to omp's review, and the selection goes.
+		this.#clear();
 		this.review.handleInput(data);
 	}
 
 	invalidate(): void {
 		this.review.invalidate?.();
+	}
+
+	#read(styled: readonly string[], width: number): void {
+		const frame = readFrame(styled, width);
+		this.#width = width;
+		this.#frame = frame;
+		this.#rows = frame
+			? frame.lines.map((line, row) => (row >= frame.first && row <= frame.last ? sliceByColumn(line, frame.start, frame.end - frame.start).trim() : ""))
+			: [];
 	}
 
 	/** A press or drag on the plan's text selects it; false leaves the report to omp (sidebar, answers, wheel). */
@@ -162,9 +202,8 @@ export class ReviewLayer implements Component {
 		const left = (button & 0b11) === 0 && (button & 64) === 0;
 		const drag = left && (button & 32) !== 0;
 		if (left && !drag && !release && row >= frame.first && row <= frame.last && col >= frame.start && col < frame.end) {
-			const text = this.#rows[row] ?? "";
 			this.#notice = null;
-			this.#anchor = text && !text.startsWith(NOTE_BAR) ? row : null;
+			this.#anchor = isPlanText(this.#rows[row] ?? "") ? row : null;
 			this.#selection = this.#anchor === null ? null : this.#select(row, row);
 			return true;
 		}
@@ -179,23 +218,120 @@ export class ReviewLayer implements Component {
 		return false;
 	}
 
+	/** Screen rows `from` to `to` of this frame as the selection; Shift+↑/↓ then move the `to` end. */
 	#select(from: number, to: number): Selection {
 		const [first, last] = from <= to ? [from, to] : [to, from];
-		return { lines: this.#rows.slice(first, last + 1), row: first, target: this.#source.target(this.#rows, first, last) };
+		return { lines: this.#rows.slice(first, last + 1), row: first, target: this.#source.target(this.#rows, first, last), moving: from <= to ? "last" : "first" };
 	}
 
-	/** Screen rows the selection occupies in this frame: where its text is drawn, nearest to where it was. */
-	#selectedRows(frame: Frame): number[] {
-		const selection = this.#selection;
-		if (!selection) return [];
-		let best = -1;
+	/** `a` with nothing selected: the first plan line at the top of the plan body, the one omp's own `a` would comment. */
+	#selectTop(): boolean {
+		const frame = this.#frame;
+		if (!frame) return false;
 		for (let row = frame.first; row <= frame.last; row++) {
-			const fits = selection.lines.every((line, i) => row + i > frame.last || this.#rows[row + i] === line);
-			if (fits && (best < 0 || Math.abs(row - selection.row) < Math.abs(best - selection.row))) best = row;
+			if (isPlanText(this.#rows[row] ?? "")) {
+				this.#selection = this.#select(row, row);
+				return true;
+			}
 		}
-		if (best < 0) return [];
+		return false;
+	}
+
+	/** Where the selection's rows are in this frame, nearest to where they were; they may run past the body's edges. */
+	#locate(): Span | null {
+		const frame = this.#frame;
+		const selection = this.#selection;
+		if (!frame || !selection) return null;
+		const count = selection.lines.length;
+		let best: number | null = null;
+		for (let start = frame.first - count + 1; start <= frame.last; start++) {
+			let shown = 0;
+			let fits = true;
+			for (let i = 0; i < count && fits; i++) {
+				const row = start + i;
+				if (row < frame.first || row > frame.last) continue;
+				const line = selection.lines[i] ?? "";
+				fits = this.#rows[row] === line;
+				if (fits && isPlanText(line)) shown++;
+			}
+			if (fits && shown > 0 && (best === null || Math.abs(start - selection.row) < Math.abs(best - selection.row))) best = start;
+		}
+		if (best === null) return null;
 		selection.row = best;
-		return selection.lines.map((_, i) => best + i).filter((row) => row <= frame.last);
+		return { first: best, last: best + count - 1 };
+	}
+
+	/** ↑/↓: the plan line past the selection becomes the selection. */
+	#move(direction: 1 | -1): void {
+		const next = this.#beyond(direction > 0 ? "last" : "first", direction);
+		if (next) this.#selection = this.#select(next.row, next.row);
+	}
+
+	/** Shift+↑/↓: the moving end takes in the next plan line, or gives back its last one when it heads for the other end. */
+	#extend(selection: Selection, direction: 1 | -1): void {
+		const single = selection.lines.filter(isPlanText).length === 1;
+		const moving = single ? (direction > 0 ? "last" : "first") : selection.moving;
+		if ((moving === "last") === direction > 0) this.#grow(selection, moving, direction);
+		else this.#shrink(selection, moving);
+	}
+
+	#grow(selection: Selection, moving: "first" | "last", direction: 1 | -1): void {
+		const next = this.#beyond(moving, direction);
+		if (!next) return;
+		const { span, row } = next;
+		const lines = direction > 0 ? [...selection.lines, ...this.#rows.slice(span.last + 1, row + 1)] : [...this.#rows.slice(row, span.first), ...selection.lines];
+		const first = direction > 0 ? span.first : row;
+		this.#selection = { lines, row: first, moving, target: this.#targetFor(lines, first, selection.target) };
+	}
+
+	#shrink(selection: Selection, moving: "first" | "last"): void {
+		const span = this.#locate();
+		if (!span) return;
+		const lines = [...selection.lines];
+		let first = span.first;
+		if (moving === "last") {
+			lines.pop();
+			while (lines.length > 0 && !isPlanText(lines.at(-1) ?? "")) lines.pop();
+		} else {
+			do {
+				lines.shift();
+				first++;
+			} while (lines.length > 0 && !isPlanText(lines[0] ?? ""));
+		}
+		this.#selection = { lines, row: first, moving, target: this.#targetFor(lines, first, selection.target) };
+	}
+
+	/** The comment on `lines` drawn from screen row `first`: placed by its first plan line while that line shows, else where it was placed before. */
+	#targetFor(lines: readonly string[], first: number, previous: CommentTarget | null): CommentTarget | null {
+		const quote = quoteOf(lines);
+		const row = first + lines.findIndex(isPlanText);
+		const frame = this.#frame;
+		const at = frame && row >= frame.first && row <= frame.last ? this.#source.at(this.#rows, row) : (previous?.at ?? null);
+		return quote && at !== null ? { quote, at } : null;
+	}
+
+	/** The selection's rows and the first plan line past its `end` going `direction`, scrolling omp's review until that line shows; null at the plan's end. */
+	#beyond(end: "first" | "last", direction: 1 | -1): { span: Span; row: number } | null {
+		for (let scrolls = 0; scrolls <= MAX_SCROLLS; scrolls++) {
+			const frame = this.#frame;
+			const span = this.#locate();
+			if (!frame || !span) return null;
+			for (let row = span[end] + direction; row >= frame.first && row <= frame.last; row += direction) {
+				if (isPlanText(this.#rows[row] ?? "")) return { span, row };
+			}
+			if (!this.#scroll(direction)) return null;
+		}
+		return null;
+	}
+
+	/** One wheel step of omp's review; false when its plan didn't move, at an end of the plan. */
+	#scroll(direction: 1 | -1): boolean {
+		const frame = this.#frame;
+		if (!frame) return false;
+		const before = this.#rows.join("\n");
+		this.review.handleInput(`\x1b[<${direction > 0 ? 65 : 64};${frame.start + 1};${frame.first + 1}M`);
+		this.#read(this.review.render(this.#width), this.#width);
+		return this.#rows.join("\n") !== before;
 	}
 
 	#highlight(line: string, frame: Frame, width: number): string {
