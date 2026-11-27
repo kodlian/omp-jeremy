@@ -24,7 +24,7 @@ omp plugin link plugins/mission-control
 
 ## Checkouts
 
-Every checkout of a registered repository is a card: the main checkout (marked **main checkout**), each linked worktree on a branch, and each worktree on a detached HEAD (**detached &lt;commit&gt;**, named by its folder). A card is named as the cmux kit's sidebar names its row: a worktree by its branch's last segment, with the other segments as a folder chip (`feature`), the main checkout by its branch. A card shows:
+Every checkout of a registered repository is a card: the main checkout (marked **main checkout**) and each linked worktree on a branch; worktrees on a detached HEAD stay off the board. A card is named as the cmux kit's sidebar names its row: a worktree by its branch's last segment, with the other segments as a folder chip (`feature`), the main checkout by its branch. A card shows:
 
 - **Its omp:** every omp running there (one holds the lease of one of its sessions): its state (Planning, Thinking, Working, Needs you, Plan ready, Idle) with its run clock since your prompt, its to-do progress (3/7), and what it is on: the question it asks, the to-do in progress, the latest sentence it thought or wrote, the step it takes, your latest prompt. Without a running omp, **Asleep** with when its latest session was last active and that session's title, else **No omp session**. Sessions come from omp's files under `~/.omp/agent/sessions`.
 - **Its work:** lines added and removed since the branch it was made from (its `branch.<name>.nestUnder` setting, else the branch its creation record names, else the default branch), uncommitted files, and its newest commit.
@@ -39,10 +39,11 @@ Columns follow from that, first match wins:
 | Waiting | its omp holds an approved plan until what it depends on lands, or it depends on a checkout that isn't Done and no omp there is planning, working or asking you something |
 | Planning | an omp there is in plan mode, or its plan waits for your review |
 | In Progress | an omp there is working, thinking or asking you something |
-| Review | it has commits of its own and nothing is at work there: ready for a pull request |
+| Uncommitted | it has uncommitted files and nothing is at work there, outside the main checkout: an omp that finished its turn without committing, or edits left in place |
+| Paused | it has commits of its own and nothing is at work there: work that started and stopped, from an omp idle after its turn to an exploration left for weeks |
 | Idle | anything else: a fresh, stale or abandoned worktree, and the main checkout when nothing works there |
 
-The board shows them in the order Planning, Waiting, In Progress, Review, Pull Request, Idle, Done.
+The board shows them in the order Idle, Planning, Waiting, In Progress, Uncommitted, Paused, Pull Request, Done.
 
 Every card, in every view, has the same buttons, in this order:
 
@@ -77,7 +78,7 @@ The three icons at the top left switch between **Board** (the columns), **Graph*
 
 ## Projects
 
-One server serves every project, and each page shows one (`?project=<id>`; the id is the main checkout's folder name, with a short hash when two registered repositories share it). `/mission` or the launcher registers the repository it runs in. The project menu holds **Tag rules** and the **Setup** and **Teardown** scripts.
+One server serves every project, and each page shows one (`?project=<id>`; the id is the main checkout's folder name, with a short hash when two registered repositories share it). `/mission` or the launcher registers the repository it runs in. The project menu holds **Tag rules**, the **Setup** and **Teardown** scripts, and **Restart Mission Control**, which runs the server's latest code again in the same process and reloads the page once it answers.
 
 ## Tags
 
@@ -97,7 +98,7 @@ Every omp session in a git checkout reports to the board at `POST /api/agent`: i
 | `/link <name> …` | makes this checkout depend on those (`/link -<name>` removes one); `/link` lists what it depends on, what depends on it and what it waits for |
 | `/tag a b -c` | adds tags to this checkout and removes `c`; `/tag` lists them |
 
-`/link` completes checkout names and `/tag` the project's tags. A session that created worktrees with `/task`, `/next` or `mission_control_task` follows them and is told when a plan is ready for review, an omp needs your input, one waits, is ready for a pull request, its checks fail or changes are requested, and when it lands.
+`/link` completes checkout names and `/tag` the project's tags. A session that created worktrees with `/task`, `/next` or `mission_control_task` follows them and is told when a plan is ready for review, an omp needs your input, one waits, one pauses with commits and no pull request, its checks fail or changes are requested, and when it lands.
 
 Tools: `mission_control_checkouts` (read-only: the checkouts of this project, or of all, with their column, dependencies, work, pull request, tags and omps), `mission_control_task` (a new worktree with a prompt; `after` stacks it on this checkout), `mission_control_link` and `mission_control_edit` (tags).
 
@@ -163,6 +164,8 @@ mission-control stop | restart | status | logs | serve             # serve: run 
 
 `server.py` uses only the Python standard library. It serves `index.html` and a JSON API and pushes a snapshot of the projects and their checkouts over server-sent events (`/api/events`) after each change. A full scan of every checkout (its work, base and whether it landed) runs every 15 seconds and after each change made from the page; which omp runs where is checked every 3 seconds, pull requests every minute.
 
-Module boundaries: `runtime.py` owns process, environment and file helpers, `gitops.py` Git queries, `sessions.py` omp's session files, `lease.py` omp's session leases, `integrations.py` the shared terminal adapters (`omp_terminals.py` from `omp-integrations`), and `cmux.py` the terminal's Ghostty appearance. `server.py` keeps the projects, the checkouts, the agent reports and the API. The page keeps the board in `index.html`, the branch tree in `pipeline.js` and Live in `workbench.js`; `design-system.css` is a copy of `packages/web-design-system/design-system.css` that `bun run build` refreshes.
+Module boundaries: `runtime.py` owns process, environment and file helpers, `gitops.py` Git queries, `sessions.py` omp's session files, `lease.py` omp's session leases, `integrations.py` the shared terminal adapters (`omp_terminals.py` from `omp-integrations`), and `cmux.py` the terminal's Ghostty appearance. `server.py` keeps the projects, the checkouts, the agent reports and the API. `design-system.css` is a copy of `packages/web-design-system/design-system.css` that `bun run build` refreshes.
+
+The page is a React app built with [Primer React](https://primer.style/react) (MIT) in `web/app`: `store.jsx` holds the board from `/api/events` and the actions, `Board.jsx`, `Graph.jsx` (with the layout math in `graph.js`) and `Live.jsx` are the three views, `Panel.jsx` the side panel, `Card.jsx` the worktree cards and graph nodes they share and `Dialogs.jsx` the forms. `bun run build` bundles it into `app.js` and `app.css`, which `index.html` loads; both are committed, so an install needs no build and works offline. The build also writes `app.LICENSES.txt`, the licenses of every package bundled with it (React, Primer and others). The page uses Primer's own light and dark palettes, picking the one that matches omp's scheme from `/appearance.css`; `primer-theme.css` from `omp-web-design-system` puts omp's fonts on Primer's tokens.
 
 The server listens on 127.0.0.1 only. It refuses requests with a foreign `Host` or a cross-site `Origin`, and accepts writes only as JSON.

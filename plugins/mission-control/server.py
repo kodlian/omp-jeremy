@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -42,6 +43,7 @@ THEME_VARS = {"--bg", "--fg", "--accent", "--accent-fg", "--muted", "--add", "--
 DEFAULT_BRANCH_TTL = 60.0
 SCAN_INTERVAL = 15.0
 PR_INTERVAL = 60.0
+SCAN_WORKERS = 8
 LIVE_SECONDS = 120.0
 MESSAGE_LIMIT = 2000
 AGENT_STATES = ("planning", "thinking", "working", "plan_ready", "needs_input", "waiting", "idle")
@@ -344,6 +346,7 @@ class Store:
         self.terminals: Dict[str, Dict[str, Any]] = {}
         self.themes: Dict[str, Dict[str, Any]] = {}
         self.theme_version = 0
+        self.scanned = threading.Event()
 
     def load(self) -> None:
         try:
@@ -386,6 +389,8 @@ class Store:
         return sorted(listed, key=lambda p: p["id"])
 
     def board(self) -> Dict[str, Any]:
+        """The board once the first scan has read every checkout, so a restarted server never shows an empty one."""
+        self.scanned.wait(timeout=30)
         with self.lock:
             return {"version": 3, "themeVersion": self.theme_version, "projects": self.project_list(),
                     "worktrees": copy.deepcopy(self.worktrees)}
@@ -606,7 +611,7 @@ def line(value: Any, limit: int) -> Optional[str]:
 
 def reported_detail(body: Dict[str, Any], state: str) -> Dict[str, Any]:
     """The run clock (Unix seconds), to-do progress, latest sentence and question an omp reports, validated; only while
-    they mean something for `state`."""
+    they mean something for `state`. Its running subagents count in any state, since a background job outlives the turn."""
     active = state in STEP_STATES
     started = body.get("startedAt")
     valid_start = isinstance(started, int) and not isinstance(started, bool) and 0 < started <= time.time() + 60
@@ -622,7 +627,10 @@ def reported_detail(body: Dict[str, Any], state: str) -> Dict[str, Any]:
             "said": line(body.get("said"), 300) if active else None,
             "question": line(body.get("question"), 300) if state == "needs_input" else None,
             "waitingFor": [k for k in body.get("waitingFor") or [] if isinstance(k, str) and k][:50]
-            if state == "waiting" and isinstance(body.get("waitingFor"), list) else []}
+            if state == "waiting" and isinstance(body.get("waitingFor"), list) else [],
+            "subagents": [{"name": line(s.get("name"), 60) or "subagent", "step": line(s.get("step"), 200)}
+                          for s in body["subagents"] if isinstance(s, dict)][:6]
+            if isinstance(body.get("subagents"), list) else []}
 
 
 CHECKOUTS: Dict[str, Tuple[str, str]] = {}
@@ -690,7 +698,8 @@ def agent_view(session_id: str, title: Optional[str], report: Dict[str, Any]) ->
     return {"id": session_id, "title": title or report.get("title"), "state": state, "step": report.get("step"),
             "since": report.get("since"), "startedAt": report.get("startedAt"), "todo": report.get("todo"),
             "said": report.get("said"), "question": report.get("question"), "message": report.get("message"),
-            "terminal": bool(report.get("terminal")), "waitingFor": report.get("waitingFor") or []}
+            "terminal": bool(report.get("terminal")), "waitingFor": report.get("waitingFor") or [],
+            "subagents": report.get("subagents") or []}
 
 
 def refresh_reported(session_id: str) -> bool:
@@ -766,8 +775,10 @@ def own_column(w: Dict[str, Any]) -> str:
         return "planning"
     if states & {"working", "thinking", "needs_input", "running"}:
         return "doing"
+    if not w["main"] and git.get("dirty"):
+        return "uncommitted"
     if w["branch"] and not w["main"] and git.get("commits"):
-        return "review"
+        return "paused"
     return "idle"
 
 
@@ -784,7 +795,7 @@ def arrange() -> None:
             w["neededBy"] = [x["to"] for x in links if x["from"] == key]
             held = [k for a in w["agents"] if a["state"] == "waiting" for k in a["waitingFor"]]
             w["waitingFor"] = list(dict.fromkeys([k for k in w["dependsOn"] if own[k] != "done"] + held))
-            w["column"] = "waiting" if own[key] in ("review", "idle") and w["waitingFor"] else own[key]
+            w["column"] = "waiting" if own[key] in ("uncommitted", "paused", "idle") and w["waitingFor"] else own[key]
             w["ownTags"] = list(p["tags"].get(key, []))
             w["tags"] = list(dict.fromkeys(w["ownTags"] + w["ruleTags"]))[:TAGS_LIMIT]
             running = bool(w["agents"])
@@ -805,8 +816,8 @@ def naming(branch: Optional[str], main: bool, path: str) -> Tuple[str, str]:
     return name, "/".join(folders)
 
 
-def scan_checkout(repo: str, path: str, branch: Optional[str], main: bool, prs: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """One checkout as the board lists it; None when its HEAD can't be read."""
+def scan_checkout(repo: str, path: str, branch: Optional[str], main: bool) -> Optional[Dict[str, Any]]:
+    """One checkout as the board lists it, but for its pull request; None when its HEAD can't be read."""
     default = repo_default_branch(repo)
     detached = None
     if not branch:
@@ -815,12 +826,11 @@ def scan_checkout(repo: str, path: str, branch: Optional[str], main: bool, prs: 
             return None
         detached = head.strip()
     base = branch_base(repo, branch, default) if branch and not main else default
-    pr = prs.get(branch) if branch and not main else None
     agent = sessions.agent(path)
     title, folder = naming(branch, main, path)
     return {"path": path, "key": branch or path, "title": title, "folder": folder, "project": project_id(repo), "repo": repo,
             "branch": branch, "detached": detached, "main": main, "base": base,
-            "landed": bool(branch) and not main and landed(repo, branch, default), "git": git_stats(path, base), "pr": pr,
+            "landed": bool(branch) and not main and landed(repo, branch, default), "git": git_stats(path, base),
             "ruleTags": rule_tags(repo, branch or "", path), "agent": {k: v for k, v in agent.items() if k != "running"},
             "agents": checkout_agents(path, agent["running"])}
 
@@ -1179,44 +1189,43 @@ class Poller:
 
     def run(self) -> None:
         while True:
-            self.wake.wait(timeout=3)
-            self.wake.clear()
             forced, self.forced = self.forced, False
             try:
                 self.tick(forced)
             except Exception as e:  # keep polling through transient failures
                 print(f"mission-control: poll failed: {e!r}", file=sys.stderr)
+            self.wake.wait(timeout=3)
+            self.wake.clear()
 
     def tick(self, forced: bool) -> None:
         self.prune_reports()
         now = time.time()
-        if (forced or now - self.last_pr >= PR_INTERVAL) and which("gh"):
+        fetch = bool(which("gh")) and (forced or now - self.last_pr >= PR_INTERVAL)
+        if fetch:
             self.last_pr = now
-            with store.lock:
-                repos = [p["repo"] for p in store.projects if Path(p["repo"]).is_dir()]
-            for repo in repos:
-                prs = fetch_prs(repo)
-                if prs is not None:
-                    self.prs[repo] = prs
-        if forced or now - self.last_scan >= SCAN_INTERVAL:
+        if fetch or forced or now - self.last_scan >= SCAN_INTERVAL:
             self.last_scan = now
-            changed = self.scan()
+            changed = self.scan(fetch)
         else:
             changed = self.check_agents()
         if changed:
             hub.changed()
 
-    def scan(self) -> bool:
-        """Every checkout of every registered project: its main checkout first, then its linked worktrees."""
+    def scan(self, fetch: bool) -> bool:
+        """Every checkout of every registered project, its main checkout first, then its linked worktrees, read side by
+        side; with `fetch`, the projects' pull requests alongside, so the board changes once with both."""
         with store.lock:
             repos = [p["repo"] for p in store.projects if Path(p["repo"]).is_dir()]
-        found = []
-        for repo in repos:
-            for i, (path, branch) in enumerate(registered_worktrees(repo)):
-                if os.path.isdir(path):
-                    w = scan_checkout(repo, path, branch, i == 0, self.prs.get(repo) or {})
-                    if w:
-                        found.append(w)
+        jobs = [(repo, path, branch, i == 0) for repo in repos for i, (path, branch) in enumerate(registered_worktrees(repo))
+                if os.path.isdir(path)]
+        with ThreadPoolExecutor(SCAN_WORKERS) as pool:
+            fetched = {repo: pool.submit(fetch_prs, repo) for repo in repos} if fetch else {}
+            found = [w for w in pool.map(lambda job: scan_checkout(*job), jobs) if w]
+            for repo, prs in fetched.items():
+                if prs.result() is not None:
+                    self.prs[repo] = prs.result()
+        for w in found:
+            w["pr"] = (self.prs.get(w["repo"]) or {}).get(w["branch"]) if w["branch"] and not w["main"] else None
         found.sort(key=lambda w: (w["project"], not w["main"], w["branch"] or "", w["path"]))
         with store.lock:
             previous = store.worktrees
@@ -1225,6 +1234,7 @@ class Poller:
             arrange()
             landed_now = [copy.deepcopy(w) for w in found if w["column"] == "done" and before.get(w["key"], "done") != "done"]
             changed = found != previous
+        store.scanned.set()
         for w in landed_now:
             follow_down(w)
         return changed
@@ -1296,7 +1306,7 @@ def appearance_css(project: str) -> str:
 
 # --- HTTP ------------------------------------------------------------------------
 
-STATIC_ASSETS = {"/design-system.css", "/pipeline.js", "/pipeline.css", "/workbench.js", "/workbench.css"}
+STATIC_ASSETS = {"/design-system.css", "/app.js", "/app.css"}
 SERVER: Optional["Server"] = None
 REPLY = threading.local()
 
@@ -1315,7 +1325,11 @@ def stop_serving() -> None:
         threading.Thread(target=SERVER.shutdown, daemon=True).start()
 
 
+RESTARTING = threading.Event()
+
+
 def restart() -> Dict[str, Any]:
+    RESTARTING.set()
     after_reply(stop_serving)
     return {"ok": True}
 
@@ -1498,6 +1512,9 @@ def main() -> None:
         pass
     finally:
         SERVER.server_close()
+    # A restart runs the server's current code again in this process, which keeps its pid, its log and its launcher.
+    if RESTARTING.is_set():
+        os.execv(sys.executable, [sys.executable, str(ROOT / "server.py")])
 
 
 if __name__ == "__main__":

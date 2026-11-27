@@ -25,6 +25,8 @@ const HOLD_POLL_MS = 10_000;
 const FOLLOW_POLL_MS = 5_000;
 const HOLD_ENTRY = "mission-control.hold";
 const FOLLOW_ENTRY = "mission-control.follow";
+// How many running subagents a report carries.
+const MAX_SUBAGENTS = 6;
 
 interface PullRequest {
 	number: number;
@@ -51,6 +53,7 @@ interface RunningAgent {
 	state: string;
 	step: string | null;
 	todo: { done: number; total: number; current: string | null } | null;
+	subagents: { name: string; step: string | null }[];
 	question: string | null;
 	waitingFor: string[];
 }
@@ -98,6 +101,7 @@ interface Followed {
 
 interface Health {
 	pid: number;
+	started: number;
 	codeMtime: number;
 }
 
@@ -168,16 +172,30 @@ async function refreshBoard(running: Health): Promise<void> {
 	const mtime = Math.max(...mtimes);
 	if (Math.floor(mtime) <= Math.floor(running.codeMtime)) return;
 	await exclusive(async () => {
-		await api("POST", "/api/restart", {}, false).catch(() => {
+		const restarting = await api("POST", "/api/restart", {}, false).then(
+			() => true,
+			() => false,
+		);
+		if (!restarting) {
 			try {
 				process.kill(running.pid, "SIGTERM");
 			} catch {
 				// already gone
 			}
-		});
+		}
 		const deadline = Date.now() + 60_000;
-		while (Date.now() < deadline && (await health())) await Bun.sleep(100);
-		await launch();
+		let now = await health();
+		while (Date.now() < deadline && now?.started === running.started) {
+			await Bun.sleep(100);
+			now = await health();
+		}
+		// The board restarts itself in place and answers again within seconds; one that only stopped is launched anew.
+		const grace = Date.now() + (restarting ? 5_000 : 0);
+		while (!now && Date.now() < grace) {
+			await Bun.sleep(100);
+			now = await health();
+		}
+		if (!now) await launch();
 	});
 }
 
@@ -321,7 +339,7 @@ function callerTerminal(): Promise<{ context: TerminalContext } | { error: strin
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-const COLUMNS: Record<string, string> = { planning: "Planning", waiting: "Waiting", doing: "In Progress", review: "Review", pr: "Pull Request", idle: "Idle", done: "Done" };
+const COLUMNS: Record<string, string> = { planning: "Planning", waiting: "Waiting", doing: "In Progress", uncommitted: "Uncommitted", paused: "Paused", pr: "Pull Request", idle: "Idle", done: "Done" };
 const columnName = (column: string) => COLUMNS[column] ?? column;
 
 /** A checkout's name as the cmux kit shows it, with its folder. */
@@ -417,6 +435,7 @@ function checkoutLine(board: Board, w: Worktree): string {
 			const bits = [a.title ? `"${a.title}"` : "omp", a.state.replace("_", " ")];
 			if (a.step) bits.push(a.step);
 			if (a.todo) bits.push(`to-do ${a.todo.done}/${a.todo.total}`);
+			if (a.subagents.length) bits.push(plural(a.subagents.length, "subagent"));
 			if (a.waitingFor.length) bits.push(`holds its plan for ${a.waitingFor.join(", ")}`);
 			return bits.join(", ");
 		});
@@ -517,15 +536,17 @@ export default function missionControl(pi: ExtensionAPI) {
 	let said: string | null = null;
 	let question: string | null = null;
 	let lastMessage: string | null = null;
+	// The task tool's running jobs by id: each one's name and step.
+	const subagents = new Map<string, { name: string; step: string | null }>();
 	let reportedDetail = "";
-	const detailKey = () => JSON.stringify([runStart, todo, said, question, hold?.keys]);
+	const detailKey = () => JSON.stringify([runStart, todo, said, question, hold?.keys, [...subagents.values()]]);
 	let stepTimer: Timer | undefined;
 	let resendTimer: Timer | undefined;
 	let retryAt = 0;
 	let sentAt = 0;
 	let reports = Promise.resolve();
-	let themeEpoch: number | null = null;
-	let themeTimer: Timer | undefined;
+	let themeVersion = 0;
+	let themeOff: (() => void) | undefined;
 	let sessionCtx: ExtensionContext | null = null;
 	let lastBoard: Board | null = null;
 	let boardAt = 0;
@@ -538,25 +559,24 @@ export default function missionControl(pi: ExtensionAPI) {
 	const seen = new Map<string, { column: string; states: string[]; checks: string | null; review: string | null }>();
 	let followTimer: Timer | undefined;
 
-	/** Gives the board this session's omp theme for its project, once per theme change. */
+	/** Gives the board this session's omp theme for its project. */
 	const syncTheme = () => {
 		if (!themeApi || !projectId) return;
-		const epoch: number = omp.getThemeEpoch();
-		if (epoch === themeEpoch) return;
-		themeEpoch = epoch;
+		const mine = ++themeVersion;
 		const project = projectId;
 		void themeAppearance()
-			.then((look) => (themeEpoch === epoch ? api("POST", "/api/appearance", { project, ...look }, false) : undefined))
+			.then((look) => (themeVersion === mine ? api("POST", "/api/appearance", { project, ...look }, false) : undefined))
 			.catch(() => {});
 	};
 
 	const clearTimers = () => {
 		clearTimeout(stepTimer);
 		clearTimeout(resendTimer);
-		clearInterval(themeTimer);
+		themeOff?.();
+		themeOff = undefined;
 		clearInterval(holdTimer);
 		clearInterval(followTimer);
-		stepTimer = resendTimer = themeTimer = holdTimer = followTimer = undefined;
+		stepTimer = resendTimer = holdTimer = followTimer = undefined;
 	};
 
 	// --- agent state reports
@@ -582,6 +602,7 @@ export default function missionControl(pi: ExtensionAPI) {
 			startedAt: runStart || null,
 			todo,
 			said,
+			subagents: [...subagents.values()],
 			question,
 			waitingFor: state === "waiting" && hold ? hold.keys : [],
 		};
@@ -745,7 +766,8 @@ export default function missionControl(pi: ExtensionAPI) {
 			}
 			if (now.column !== before.column) {
 				if (now.column === "waiting") ctx.ui.notify(`${n} is waiting for ${titlesOf(board, w.project, w.waitingFor).join(", ")}`, "info");
-				else if (now.column === "review") ctx.ui.notify(`${n} is in review: ready for a pull request`, "info");
+				else if (now.column === "uncommitted") ctx.ui.notify(`${n} has uncommitted changes and nothing at work`, "info");
+				else if (now.column === "paused") ctx.ui.notify(`${n} paused: it has commits and no pull request yet`, "info");
 				else if (now.column === "done") ctx.ui.notify(w.pr?.state === "merged" ? `${n}: PR #${w.pr.number} merged` : `${n} is done: it landed`, "info");
 			}
 			if (w.pr && now.checks === "failing" && before.checks !== "failing") ctx.ui.notify(`${n}: PR #${w.pr.number} checks failing`, "warning");
@@ -851,6 +873,37 @@ export default function missionControl(pi: ExtensionAPI) {
 		if (event.choice && PLAN_APPROVALS[event.choice]) void holdApproved(ctx).catch(() => {});
 	});
 
+	// The task tool's jobs, from omp's event bus: each reported with its name and step while it runs, dropped once it settles.
+	const reportSubagents = () => {
+		if (sessionCtx && current) void report(sessionCtx, current, currentStep);
+	};
+	pi.events.on("task:subagent:progress", (data) => {
+		if (!sessionCtx) return;
+		const progress = field(data, "progress");
+		const id = field(progress, "id");
+		if (typeof id !== "string") return;
+		const status = field(progress, "status");
+		if (status !== "running" && status !== "pending") {
+			if (subagents.delete(id)) reportSubagents();
+			return;
+		}
+		if (!subagents.has(id) && subagents.size >= MAX_SUBAGENTS) return;
+		const name = [field(progress, "description"), field(progress, "agent"), field(data, "agent")].find((v) => typeof v === "string" && v.trim());
+		const intent = field(progress, "lastIntent"), tool = field(progress, "currentTool");
+		const sub = {
+			name: oneLine(typeof name === "string" ? name : "subagent", 60),
+			step: typeof intent === "string" && intent.trim() ? oneLine(intent, 200) : typeof tool === "string" && tool ? `Running ${tool}` : null,
+		};
+		const was = subagents.get(id);
+		if (was?.name === sub.name && was.step === sub.step) return;
+		subagents.set(id, sub);
+		reportSubagents();
+	});
+	pi.events.on("task:subagent:lifecycle", (data) => {
+		const id = field(data, "id");
+		if (sessionCtx && typeof id === "string" && field(data, "status") !== "started" && subagents.delete(id)) reportSubagents();
+	});
+
 	const restore = (_event: unknown, ctx: ExtensionContext) => {
 		if (ctx.agent?.kind === "sub") return;
 		serverCwd = ctx.cwd;
@@ -870,6 +923,7 @@ export default function missionControl(pi: ExtensionAPI) {
 		followed = savedFollowed;
 		seen.clear();
 		syncPolls();
+		subagents.clear();
 		reported = "";
 		retryAt = 0;
 		const busy = ["planning", "thinking", "working", "needs_input"].includes(current);
@@ -904,9 +958,8 @@ export default function missionControl(pi: ExtensionAPI) {
 				await ensureBoard();
 				const { project } = await api<{ project: Project }>("POST", "/api/projects", { path: ctx.cwd });
 				projectId = project.id;
-				themeEpoch = null;
 				syncTheme();
-				if (themeApi) themeTimer ??= setInterval(syncTheme, 1000);
+				if (themeApi) themeOff ??= omp.onThemeChange(syncTheme);
 				await openBoard(`${BASE}/?project=${encodeURIComponent(project.id)}`, { focus: true, python: PYTHON, overrideEnvs: TERMINAL_OVERRIDES });
 				ctx.ui.notify(`Mission Control on ${project.name} (${project.defaultBranch})`, "info");
 			} catch (e) {
@@ -1006,7 +1059,7 @@ export default function missionControl(pi: ExtensionAPI) {
 		name: "mission_control_checkouts",
 		label: "Mission Control checkouts",
 		description:
-			"Read-only: list the checkouts Mission Control shows for this project (all: every registered project). For each, its title (folder), branch (or detached commit, or the main checkout), path, column (Planning, Waiting, In Progress, Review, Pull Request, Idle, Done), what it depends on and what needs it with their columns, what it waits for, diff, commits and uncommitted files, pull request with checks, review and unresolved comments, tags, and every omp running there (title, state, step, to-do progress), else its latest asleep session.",
+			"Read-only: list the checkouts Mission Control shows for this project (all: every registered project). For each, its title (folder), branch (or detached commit, or the main checkout), path, column (Idle, Planning, Waiting, In Progress, Uncommitted, Paused, Pull Request, Done), what it depends on and what needs it with their columns, what it waits for, diff, commits and uncommitted files, pull request with checks, review and unresolved comments, tags, and every omp running there (title, state, step, to-do progress), else its latest asleep session.",
 		parameters: z.object({ all: z.boolean().optional() }),
 		approval: "read",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1046,7 +1099,7 @@ export default function missionControl(pi: ExtensionAPI) {
 		name: "mission_control_task",
 		label: "Mission Control task",
 		description:
-			"Start separate work in a new worktree whose omp plans prompt for the user to review. It branches from this checkout's branch; after: true stacks it on this checkout instead (branched from it and waiting for it to land). branch names it (default feature/<slug of the prompt>). Replies with its branch, path and whether its terminal opened (else the command to run); this session is then told when its plan is ready, it needs input, waits, is ready for a pull request, its PR fails checks or gets changes requested, and when it's done.",
+			"Start separate work in a new worktree whose omp plans prompt for the user to review. It branches from this checkout's branch; after: true stacks it on this checkout instead (branched from it and waiting for it to land). branch names it (default feature/<slug of the prompt>). Replies with its branch, path and whether its terminal opened (else the command to run); this session is then told when its plan is ready, it needs input, waits, pauses with commits and no pull request, its PR fails checks or gets changes requested, and when it's done.",
 		parameters: z.object({ prompt: z.string(), branch: z.string().optional(), after: z.boolean().optional() }),
 		approval: "write",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

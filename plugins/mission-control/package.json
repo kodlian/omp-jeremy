@@ -1,6 +1,6 @@
 {
   "name": "omp-mission-control",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Mission Control for omp: every worktree of a project, every omp running in it, and its pull request",
@@ -8,6 +8,11 @@
     "extensions": ["./dist/extension.js"]
   },
   "devDependencies": {
-    "omp-integrations": "workspace:*"
+    "@primer/octicons-react": "19.43.0",
+    "@primer/react": "38.47.0",
+    "omp-integrations": "workspace:*",
+    "omp-web-design-system": "workspace:*",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
   }
 }

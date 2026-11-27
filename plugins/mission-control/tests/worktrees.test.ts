@@ -7,7 +7,7 @@ const ROOT = join(import.meta.dir, "..");
 const EXTRA_PATH = `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`;
 const CALLER = /^(CMUX_|TMUX|OMP_TERMINAL|MISSION_CONTROL_|WT_)/;
 
-type Agent = { id: string; title: string | null; state: string; step: string | null; startedAt: string | null; todo: { done: number; total: number; current: string | null } | null; said: string | null; question: string | null; terminal: boolean };
+type Agent = { id: string; title: string | null; state: string; step: string | null; startedAt: string | null; todo: { done: number; total: number; current: string | null } | null; said: string | null; question: string | null; terminal: boolean; subagents: { name: string; step: string | null }[] };
 type Worktree = {
 	path: string; key: string; title: string; folder: string; project: string; branch: string | null; detached: string | null; main: boolean; base: string; column: string; landed: boolean; tags: string[]; dependsOn: string[]; waitingFor: string[];
 	git: { commits: number; dirty: number; last: { subject: string } | null } | null;
@@ -205,11 +205,11 @@ describe("Mission Control's checkouts", () => {
 			actions: { open: true, pr: null, resume: false, remove: false } });
 		expect(await checkout(fresh)).toMatchObject({ main: false, base: "main", title: "fresh", folder: "", column: "idle", landed: false,
 			actions: { pr: null, resume: false, remove: true } });
-		expect(await checkout(work)).toMatchObject({ column: "review", landed: false, git: { commits: 1, last: { subject: "work in progress" } },
+		expect(await checkout(work)).toMatchObject({ column: "paused", landed: false, git: { commits: 1, last: { subject: "work in progress" } },
 			actions: { pr: "create" } });
 		expect(await checkout(merged)).toMatchObject({ column: "done", landed: true, actions: { pr: null, remove: true } });
 		// Work left uncommitted keeps a landed branch out of Done.
-		expect(await checkout(leftover)).toMatchObject({ column: "idle", landed: true, git: { dirty: 1 } });
+		expect(await checkout(leftover)).toMatchObject({ column: "uncommitted", landed: true, git: { dirty: 1 } });
 		expect(await checkout(loose)).toMatchObject({ branch: null, detached: run(["git", "-C", loose, "rev-parse", "--short", "HEAD"]),
 			column: "idle", actions: { pr: null, remove: true } });
 
@@ -246,11 +246,13 @@ describe("Mission Control's checkouts", () => {
 		const terminal = workspace(work);
 		const startedAt = Math.floor(Date.now() / 1000) - 60;
 		await api("POST", "/api/agent", { path: join(work), sessionId: "work-2", sessionFile: second, state: "working", step: "Reading the plan",
-			todo: { done: 1, total: 3, current: "Check the plan" }, said: "The plan looks right.", startedAt, terminal });
+			todo: { done: 1, total: 3, current: "Check the plan" }, said: "The plan looks right.", startedAt, terminal,
+			subagents: [{ name: "Explore the store", step: "Reading Store.swift" }, "junk", { name: "" }] });
 		const reported = await waitFor("the report", async () =>
 			(await api<State>("GET", "/api/state")).worktrees.find((w) => w.path === work)?.agents.find((a) => a.id === "work-2" && a.state === "working"));
 		expect(reported).toMatchObject({ title: "Second look", step: "Reading the plan", todo: { done: 1, total: 3, current: "Check the plan" },
-			said: "The plan looks right.", startedAt: new Date(startedAt * 1000).toISOString().replace(".000", ""), terminal: true });
+			said: "The plan looks right.", startedAt: new Date(startedAt * 1000).toISOString().replace(".000", ""), terminal: true,
+			subagents: [{ name: "Explore the store", step: "Reading Store.swift" }, { name: "subagent", step: null }] });
 		expect((await call("POST", "/api/agent", { path: dir, sessionId: "elsewhere", state: "idle" })).status).toBe(404);
 
 		// Resume reopens exactly the asleep session in a new terminal; refused where omp already runs.
