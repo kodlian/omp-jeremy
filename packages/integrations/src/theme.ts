@@ -19,16 +19,16 @@ interface OmpThemeApi {
 	getResolvedThemeColors(name: string): Promise<Record<string, string>>;
 	getThemeExportColors(name: string): Promise<Record<string, string>>;
 	isLightTheme(name: string): boolean;
-	getThemeEpoch(): number;
+	onThemeChange(listener: () => void): () => void;
 }
 
-const THEME_EXPORTS = ["getCurrentThemeName", "getResolvedThemeColors", "getThemeExportColors", "isLightTheme", "getThemeEpoch"] as const;
+const THEME_EXPORTS = ["getCurrentThemeName", "getResolvedThemeColors", "getThemeExportColors", "isLightTheme", "onThemeChange"] as const;
 
 export function hasThemeApi(module: object): module is OmpThemeApi {
 	return THEME_EXPORTS.every((name) => typeof (module as Record<string, unknown>)[name] === "function");
 }
 
-// omp's active (or previewed) theme, read through `hasThemeApi`-checked exports.
+// omp's active theme, read through `hasThemeApi`-checked exports.
 export async function currentTheme(api: OmpThemeApi): Promise<OmpTheme> {
 	const name = api.getCurrentThemeName();
 	const [tokens, page] = await Promise.all([api.getResolvedThemeColors(name), api.getThemeExportColors(name)]);

@@ -13,26 +13,24 @@ export function recordedPort(ctx: { sessionManager: { getBranch(): Iterable<{ ty
 /** Keeps a page's colors and font on omp's theme: `omp` is the agent module, whose theme exports are undocumented; without them nothing happens. */
 export function appearanceSync(omp: object, page: () => { setAppearance(appearance: Appearance): void } | null) {
 	const api = hasThemeApi(omp) ? omp : null;
-	let epoch: number | null = null;
-	let timer: Timer | undefined;
-	const sync = async (force = false) => {
+	let version = 0;
+	let unsubscribe: (() => void) | undefined;
+	const sync = async () => {
 		if (!api || !page()) return;
-		const now = api.getThemeEpoch();
-		if (now === epoch && !force) return;
-		epoch = now;
+		const mine = ++version;
 		const [theme, terminal] = await Promise.all([currentTheme(api), terminalConfig()]);
-		if (epoch === now) page()?.setAppearance(toAppearance(theme, terminal));
+		if (mine === version) page()?.setAppearance(toAppearance(theme, terminal));
 	};
 	return {
 		sync,
 		/** Follows theme switches until stop. */
 		start() {
-			if (api && !timer) timer = setInterval(() => void sync().catch(() => {}), 1000);
+			if (api && !unsubscribe) unsubscribe = api.onThemeChange(() => void sync().catch(() => {}));
 		},
 		stop() {
-			clearInterval(timer);
-			timer = undefined;
-			epoch = null;
+			unsubscribe?.();
+			unsubscribe = undefined;
+			version++;
 		},
 	};
 }

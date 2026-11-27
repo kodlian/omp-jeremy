@@ -1,0 +1,84 @@
+/* MARK: omp's terminal colors as Primer's tokens; Primer's own tokens derive from these */
+[data-color-mode][data-dark-theme] {
+  --fgColor-default: var(--fg);
+  --fgColor-muted: var(--muted);
+  --fgColor-neutral: var(--muted);
+  --fgColor-disabled: var(--faint);
+  --fgColor-onEmphasis: var(--accent-fg);
+  --fgColor-accent: var(--accent);
+  --fgColor-success: var(--add);
+  --fgColor-attention: var(--warning);
+  --fgColor-severe: var(--warning);
+  --fgColor-danger: var(--remove);
+  --fgColor-done: var(--merged);
+
+  --bgColor-default: var(--bg);
+  --bgColor-muted: var(--surface);
+  --bgColor-inset: var(--surface);
+  --bgColor-emphasis: color-mix(in srgb, var(--fg) 25%, var(--bg));
+  --bgColor-disabled: var(--surface-2);
+  --bgColor-neutral-muted: color-mix(in srgb, var(--muted) 18%, transparent);
+  --bgColor-neutral-emphasis: var(--faint);
+  --bgColor-accent-muted: color-mix(in srgb, var(--accent) 14%, transparent);
+  --bgColor-accent-emphasis: var(--accent);
+  --bgColor-success-muted: color-mix(in srgb, var(--add) 14%, transparent);
+  --bgColor-success-emphasis: var(--add);
+  --bgColor-attention-muted: color-mix(in srgb, var(--warning) 16%, transparent);
+  --bgColor-attention-emphasis: var(--warning);
+  --bgColor-severe-muted: color-mix(in srgb, var(--warning) 16%, transparent);
+  --bgColor-severe-emphasis: var(--warning);
+  --bgColor-danger-muted: color-mix(in srgb, var(--remove) 14%, transparent);
+  --bgColor-danger-emphasis: var(--remove);
+  --bgColor-done-muted: color-mix(in srgb, var(--merged) 16%, transparent);
+  --bgColor-done-emphasis: var(--merged);
+
+  --borderColor-default: var(--line-strong);
+  --borderColor-muted: var(--line);
+  --borderColor-emphasis: var(--faint);
+  --borderColor-accent-muted: color-mix(in srgb, var(--accent) 40%, transparent);
+  --borderColor-accent-emphasis: var(--accent);
+  --borderColor-success-muted: color-mix(in srgb, var(--add) 40%, transparent);
+  --borderColor-success-emphasis: var(--add);
+  --borderColor-attention-muted: color-mix(in srgb, var(--warning) 40%, transparent);
+  --borderColor-attention-emphasis: var(--warning);
+  --borderColor-severe-muted: color-mix(in srgb, var(--warning) 40%, transparent);
+  --borderColor-severe-emphasis: var(--warning);
+  --borderColor-danger-muted: color-mix(in srgb, var(--remove) 40%, transparent);
+  --borderColor-danger-emphasis: var(--remove);
+  --borderColor-done-muted: color-mix(in srgb, var(--merged) 40%, transparent);
+  --borderColor-done-emphasis: var(--merged);
+
+  --control-bgColor-rest: var(--surface-2);
+  --control-bgColor-hover: color-mix(in srgb, var(--fg) 10%, var(--bg));
+  --control-bgColor-active: color-mix(in srgb, var(--fg) 13%, var(--bg));
+  --control-transparent-bgColor-hover: var(--hover);
+  --control-transparent-bgColor-active: color-mix(in srgb, var(--fg) 12%, transparent);
+  --control-transparent-bgColor-selected: var(--hover);
+  --control-checked-bgColor-hover: color-mix(in srgb, var(--accent) 88%, var(--fg));
+  --control-checked-bgColor-active: color-mix(in srgb, var(--accent) 80%, var(--fg));
+  --button-primary-fgColor-rest: var(--accent-fg);
+  --button-primary-iconColor-rest: var(--accent-fg);
+  --button-primary-bgColor-rest: var(--accent);
+  --button-primary-bgColor-hover: color-mix(in srgb, var(--accent) 88%, var(--fg));
+  --button-primary-bgColor-active: color-mix(in srgb, var(--accent) 80%, var(--fg));
+  --button-primary-bgColor-disabled: color-mix(in srgb, var(--accent) 45%, var(--bg));
+  --button-primary-borderColor-disabled: transparent;
+  --button-primary-fgColor-disabled: color-mix(in srgb, var(--accent-fg) 60%, transparent);
+  --button-danger-fgColor-rest: var(--remove);
+  --button-danger-bgColor-hover: var(--remove);
+  --button-danger-fgColor-hover: var(--accent-fg);
+  --button-danger-iconColor-hover: var(--accent-fg);
+  --button-danger-fgColor-active: var(--accent-fg);
+  --button-danger-fgColor-disabled: color-mix(in srgb, var(--remove) 50%, transparent);
+
+  --overlay-bgColor: var(--raised);
+  --overlay-backdrop-bgColor: rgb(0 0 0 / 0.4);
+  --menu-bgColor-active: var(--surface);
+  --timelineBadge-bgColor: var(--surface-2);
+  --selection-bgColor: color-mix(in srgb, var(--accent) 35%, transparent);
+  --underlineNav-borderColor-active: var(--accent);
+  --shadow-floating-small: 0 0 0 1px var(--line-strong), 0 6px 12px -3px rgb(0 0 0 / 0.4), 0 6px 18px 0 rgb(0 0 0 / 0.4);
+  --shadow-floating-medium: 0 0 0 1px var(--line-strong), 0 8px 16px -4px rgb(0 0 0 / 0.4), 0 4px 32px -4px rgb(0 0 0 / 0.4);
+  --shadow-floating-large: 0 0 0 1px var(--line-strong), 0 24px 48px 0 rgb(0 0 0 / 0.5);
+  --shadow-floating-xlarge: 0 0 0 1px var(--line-strong), 0 32px 64px 0 rgb(0 0 0 / 0.5);
+}

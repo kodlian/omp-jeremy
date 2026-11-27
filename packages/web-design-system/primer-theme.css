@@ -1,0 +1,15 @@
+@import "@primer/primitives/dist/css/primitives.css";
+@import "@primer/primitives/dist/css/functional/themes/dark.css";
+@import "@primer/primitives/dist/css/functional/themes/light.css";
+
+:root {
+  font-size: calc(var(--ui-font-size) * 8 / 7);
+}
+
+/* MARK: omp's fonts as Primer's tokens */
+[data-color-mode][data-dark-theme] {
+  --fontStack-system: var(--ui);
+  --fontStack-sansSerif: var(--ui);
+  --fontStack-sansSerifDisplay: var(--ui);
+  --fontStack-monospace: var(--mono);
+}

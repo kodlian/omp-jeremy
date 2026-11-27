@@ -1,13 +1,22 @@
 {
   "name": "omp-web-design-system",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Shared tokens, reset and controls for the omp plugin web pages",
+  "description": "Shared tokens, reset, Primer theme and toasts for the omp plugin web pages",
   "exports": {
     ".": "./design-system.css",
     "./design-system.css": "./design-system.css",
-    "./toast": "./toast.js"
+    "./primer-theme.css": "./primer-theme.css",
+    "./omp-colors.css": "./omp-colors.css",
+    "./toasts": "./toasts.jsx"
   },
-  "files": ["design-system.css", "toast.js"]
+  "files": ["design-system.css", "primer-theme.css", "omp-colors.css", "toasts.jsx", "toasts.css"],
+  "dependencies": {
+    "@primer/primitives": "11.10.0"
+  },
+  "peerDependencies": {
+    "@primer/react": "38.47.0",
+    "react": "19.3.1"
+  }
 }
