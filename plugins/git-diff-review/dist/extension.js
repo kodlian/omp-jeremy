@@ -144,7 +144,7 @@ async function openBoard(url, options = {}) {
 }
 
 // packages/integrations/src/theme.ts
-var THEME_EXPORTS = ["getCurrentThemeName", "getResolvedThemeColors", "getThemeExportColors", "isLightTheme", "getThemeEpoch"];
+var THEME_EXPORTS = ["getCurrentThemeName", "getResolvedThemeColors", "getThemeExportColors", "isLightTheme", "onThemeChange"];
 function hasThemeApi(module) {
   return THEME_EXPORTS.every((name) => typeof module[name] === "function");
 }
@@ -295,29 +295,26 @@ function recordedPort(ctx, entryType) {
 }
 function appearanceSync(omp, page) {
   const api = hasThemeApi(omp) ? omp : null;
-  let epoch = null;
-  let timer;
-  const sync = async (force = false) => {
+  let version = 0;
+  let unsubscribe;
+  const sync = async () => {
     if (!api || !page())
       return;
-    const now = api.getThemeEpoch();
-    if (now === epoch && !force)
-      return;
-    epoch = now;
+    const mine = ++version;
     const [theme, terminal] = await Promise.all([currentTheme(api), terminalConfig()]);
-    if (epoch === now)
+    if (mine === version)
       page()?.setAppearance(toAppearance(theme, terminal));
   };
   return {
     sync,
     start() {
-      if (api && !timer)
-        timer = setInterval(() => void sync().catch(() => {}), 1000);
+      if (api && !unsubscribe)
+        unsubscribe = api.onThemeChange(() => void sync().catch(() => {}));
     },
     stop() {
-      clearInterval(timer);
-      timer = undefined;
-      epoch = null;
+      unsubscribe?.();
+      unsubscribe = undefined;
+      version++;
     }
   };
 }
@@ -984,7 +981,7 @@ function gitDiffReview(pi) {
       server = startReviewServer(root, hooks, { ports: port ? [port, ...DEFAULT_PORTS] : DEFAULT_PORTS });
       appearance.start();
     }
-    await appearance.sync(true);
+    await appearance.sync();
     return server;
   }
   async function follow(sessionCtx) {

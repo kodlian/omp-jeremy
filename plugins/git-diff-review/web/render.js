@@ -1,7 +1,6 @@
 import { esc } from "omp-web-client/esc";
 import { changedSpan } from "../src/shared/diff.js";
 import { isChangeRow } from "../src/shared/layout.js";
-import { formatPin } from "../src/shared/reference.js";
 import { tokenize } from "omp-web-client/highlight";
 import { icon } from "./icons.js";
 
@@ -126,30 +125,14 @@ function splitRow(pair, i, ctx) {
     <span class="code ${cls(right, "addition")}">${right ? codeHtml(right.newText, ctx.tokens?.get(right)?.new, ctx.spans.get(right)) : ""}</span></div>`;
 }
 
-export function threadHtml(pin, { outdated = false } = {}) {
-  return `<div class="thread" data-pin="${esc(pin.id)}">
-    <div class="thread-head">${icon("comment", 12)}<span class="thread-ref">${esc(formatPin(pin))}</span>${outdated ? `<span class="badge">outdated</span>` : ""}<span class="spacer"></span>
-      <button class="tool-button" data-act="edit-pin" title="Edit">${icon("edit", 13)}</button>
-      <button class="tool-button" data-act="delete-pin" title="Delete">${icon("trash", 13)}</button>
-    </div>
-    <div class="thread-body">${pin.note ? esc(pin.note) : `<span class="muted">No comment, reference only</span>`}</div>
-  </div>`;
+// The thread and composer cards are React components portaled into these slots.
+const COMPOSER_SLOT = `<div class="thread composer" data-slot="composer"></div>`;
+
+function threadSlot(pin, outdated) {
+  return `<div class="thread" data-slot="thread" data-pin="${esc(pin.id)}"${outdated ? ` data-outdated="1"` : ""}></div>`;
 }
 
-export function composerHtml({ reference, note = "" }) {
-  return `<div class="thread composer">
-    <div class="thread-head">${icon("commentAdd", 12)}<span class="thread-ref">${esc(reference)}</span></div>
-    <textarea class="field" rows="3" placeholder="Leave a comment for the agent">${esc(note)}</textarea>
-    <div class="composer-actions">
-      <span class="hint">⌘↩ send review · ⌘⌥↩ send this now</span>
-      <span class="spacer"></span>
-      <button class="btn" data-act="cancel-composer">Cancel</button>
-      <button class="btn primary" data-act="send-review">${icon("send", 12)}Send review</button>
-    </div>
-  </div>`;
-}
-
-// ctx: { items, layout, tokens, spans, pinFor(item), pins: Pin[], composer: { afterIndex, html } | null, truncated }
+// ctx: { items, layout, tokens, spans, pinFor(item), pins: Pin[], composer: { afterIndex, editing } | null }
 export function bodyHtml(file, ctx) {
   if (file.note) return `<div class="body-note">${esc(file.note)}</div>`;
   if (file.binary && !file.rows?.length) return `<div class="body-note">Binary file not shown</div>`;
@@ -176,14 +159,14 @@ export function bodyHtml(file, ctx) {
   const single = ctx.layout === "unified" && hasOld !== hasNew;
   ctx = { ...ctx, single };
   const parts = [`<div class="rows ${ctx.layout}${single ? " single" : ""}" style="--num-w:${Math.max(2, String(maxLine).length)}ch">`];
-  for (const pin of outdated) parts.push(ctx.composer?.editing === pin.id ? ctx.composer.html : threadHtml(pin, { outdated: true }));
+  for (const pin of outdated) parts.push(ctx.composer?.editing === pin.id ? COMPOSER_SLOT : threadSlot(pin, true));
   ctx.items.forEach((item, i) => {
     parts.push(rowFn(item, i, ctx));
     for (const pin of placed.get(i) ?? []) {
       if (ctx.composer?.editing === pin.id) continue;
-      parts.push(threadHtml(pin));
+      parts.push(threadSlot(pin, false));
     }
-    if (ctx.composer?.afterIndex === i) parts.push(ctx.composer.html);
+    if (ctx.composer?.afterIndex === i) parts.push(COMPOSER_SLOT);
   });
   if (file.truncated) parts.push(`<div class="body-note">Diff truncated at 5000 lines</div>`);
   parts.push("</div>");

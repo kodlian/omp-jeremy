@@ -1,76 +1,19 @@
-import {
-  ALargeSmall,
-  ArrowDown,
-  ArrowRight,
-  ArrowUp,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  ChevronUp,
-  Columns2,
-  Copy,
-  FileDiff,
-  Folder,
-  FolderOpen,
-  FolderTree,
-  GitBranch,
-  GitCommitHorizontal,
-  MessageSquare,
-  MessageSquarePlus,
-  Pencil,
-  PanelRight,
-  Plus,
-  RefreshCw,
-  Rows2,
-  Search,
-  Send,
-  Settings,
-  Space,
-  SquareArrowOutUpRight,
-  Trash2,
-  UnfoldVertical,
-  WrapText,
-  X,
-} from "lucide";
-
-const ICONS = {
-  arrowDown: ArrowDown,
-  arrowRight: ArrowRight,
-  arrowUp: ArrowUp,
-  check: Check,
-  chevronDown: ChevronDown,
-  chevronRight: ChevronRight,
-  chevronUp: ChevronUp,
-  split: Columns2,
-  unified: Rows2,
-  copy: Copy,
-  diff: FileDiff,
-  folder: Folder,
-  folderOpen: FolderOpen,
-  tree: FolderTree,
-  branch: GitBranch,
-  commit: GitCommitHorizontal,
-  comment: MessageSquare,
-  commentAdd: MessageSquarePlus,
-  edit: Pencil,
-  sidebar: PanelRight,
-  plus: Plus,
-  refresh: RefreshCw,
-  settings: Settings,
-  search: Search,
-  send: Send,
-  whitespace: Space,
-  openIn: SquareArrowOutUpRight,
-  unfold: UnfoldVertical,
-  trash: Trash2,
-  wrap: WrapText,
-  textSize: ALargeSmall,
-  close: X,
+// Octicons (16px) for the diff body's HTML strings; the React chrome uses @primer/octicons-react.
+const PATHS = {
+  chevronRight: ["M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"],
+  chevronDown: ["M12.78 5.22a.749.749 0 0 1 0 1.06l-4.25 4.25a.749.749 0 0 1-1.06 0L3.22 6.28a.749.749 0 1 1 1.06-1.06L8 8.939l3.72-3.719a.749.749 0 0 1 1.06 0Z"],
+  chevronUp: ["M3.22 10.53a.749.749 0 0 1 0-1.06l4.25-4.25a.749.749 0 0 1 1.06 0l4.25 4.25a.749.749 0 1 1-1.06 1.06L8 6.811 4.28 10.53a.749.749 0 0 1-1.06 0Z"],
+  copy: [
+    "M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z",
+    "M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z",
+  ],
+  openIn: ["M3.75 2h3.5a.75.75 0 0 1 0 1.5h-3.5a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-3.5a.75.75 0 0 1 1.5 0v3.5A1.75 1.75 0 0 1 12.25 14h-8.5A1.75 1.75 0 0 1 2 12.25v-8.5C2 2.784 2.784 2 3.75 2Zm6.854-1h4.146a.25.25 0 0 1 .25.25v4.146a.25.25 0 0 1-.427.177L13.03 4.03 9.28 7.78a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042l3.75-3.75-1.543-1.543A.25.25 0 0 1 10.604 1Z"],
+  comment: ["M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"],
+  plus: ["M7.75 2a.75.75 0 0 1 .75.75V7h4.25a.75.75 0 0 1 0 1.5H8.5v4.25a.75.75 0 0 1-1.5 0V8.5H2.75a.75.75 0 0 1 0-1.5H7V2.75A.75.75 0 0 1 7.75 2Z"],
+  unfold: ["m8.177.677 2.896 2.896a.25.25 0 0 1-.177.427H8.75v1.25a.75.75 0 0 1-1.5 0V4H5.104a.25.25 0 0 1-.177-.427L7.823.677a.25.25 0 0 1 .354 0ZM7.25 10.75a.75.75 0 0 1 1.5 0V12h2.146a.25.25 0 0 1 .177.427l-2.896 2.896a.25.25 0 0 1-.354 0l-2.896-2.896A.25.25 0 0 1 5.104 12H7.25v-1.25Zm-5-2a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM6 8a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5A.75.75 0 0 1 6 8Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM12 8a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5A.75.75 0 0 1 12 8Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5Z"],
 };
 
-const attrs = (o) => Object.entries(o).map(([k, v]) => `${k}="${v}"`).join(" ");
-
 export function icon(name, size = 14) {
-  const body = ICONS[name].map(([tag, a]) => `<${tag} ${attrs(a)}/>`).join("");
-  return `<svg class="icon" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+  const paths = PATHS[name].map((d) => `<path d="${d}"/>`).join("");
+  return `<svg class="icon" viewBox="0 0 16 16" width="${size}" height="${size}" fill="currentColor" aria-hidden="true">${paths}</svg>`;
 }

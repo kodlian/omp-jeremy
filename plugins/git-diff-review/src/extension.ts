@@ -47,7 +47,7 @@ export default function gitDiffReview(pi: ExtensionAPI) {
 			appearance.start();
 		}
 		// The terminal config has no change signal, so each /review re-reads it.
-		await appearance.sync(true);
+		await appearance.sync();
 		return server;
 	}
 
