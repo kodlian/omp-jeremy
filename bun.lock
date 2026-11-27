@@ -38,6 +38,10 @@
         "omp-integrations": "workspace:*",
       },
     },
+    "plugins/cmux-sim-preview": {
+      "name": "omp-cmux-sim-preview",
+      "version": "0.1.0",
+    },
     "plugins/control": {
       "name": "omp-control",
       "version": "0.6.0",
@@ -179,6 +183,8 @@
     "micromark-util-types": ["micromark-util-types@2.0.3", "", {}, "sha512-oxB2Ik03hI0gv+VNn9tnh1t1YEe9MDPptViAEgfdf3YQHsn0pzGTgCdlSCJXcwhqm8phaEuM7zeEu3QQzVBrPg=="],
 
     "omp-better-annotate-plan": ["omp-better-annotate-plan@workspace:plugins/better-annotate-plan"],
+
+    "omp-cmux-sim-preview": ["omp-cmux-sim-preview@workspace:plugins/cmux-sim-preview"],
 
     "omp-control": ["omp-control@workspace:plugins/control"],
 

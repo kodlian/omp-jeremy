@@ -1,6 +1,6 @@
 # omp-jeremy
 
-Four plugins for [omp](https://github.com/can1357/oh-my-pi): see every worktree of a project and every omp running in it with Mission Control, comment on plans right in omp's plan review, review changes in the browser, and audit changes with reviewer subagents and shell checks.
+Five plugins for [omp](https://github.com/can1357/oh-my-pi): see every worktree of a project and every omp running in it with Mission Control, comment on plans right in omp's plan review, review changes in the browser, audit changes with reviewer subagents and shell checks, and preview SwiftUI views in cmux.
 
 ## Mission Control
 
@@ -18,6 +18,10 @@ Pick checks and reviewers with `/control` and run them on the session's change, 
 
 When omp shows a plan for review, select any of its lines with a click, a drag, or `a` and the arrow keys, then press `a` again to annotate them. The note becomes one of omp's own plan annotations: omp shows it under the line and sends it when you pick Refine. See [plugins/better-annotate-plan](plugins/better-annotate-plan/README.md).
 
+## cmux Sim Preview
+
+The `sim-preview` skill runs an iOS app's SwiftUI `#Preview` in the cmux Simulator pane, with about one second of hot reload on save. The skill builds its bundled `SimPreview` Swift package (Xcode required) and links `sim-preview` into `~/.local/bin`.
+
 ## Install from the marketplace
 
 Once this repository is pushed to GitHub:
@@ -28,6 +32,7 @@ omp plugin install mission-control@omp-jeremy
 omp plugin install git-diff-review@omp-jeremy
 omp plugin install control@omp-jeremy
 omp plugin install better-annotate-plan@omp-jeremy
+omp plugin install cmux-sim-preview@omp-jeremy
 ```
 
 Install each plugin independently. Restart omp after installing extensions.

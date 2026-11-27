@@ -1,0 +1,7 @@
+{
+  "name": "omp-cmux-sim-preview",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Run SwiftUI #Previews natively in a cmux Simulator pane with hot reload",
+  "omp": {}
+}
