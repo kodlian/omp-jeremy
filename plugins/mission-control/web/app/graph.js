@@ -54,7 +54,7 @@ export function layout(trees, height) {
   return places;
 }
 
-// Places for the checkouts without one: all at once on a blank canvas, else each below its prerequisite, its folder's group or everything.
+// Places for the checkouts without one: all at once on a blank canvas, else each below its prerequisite, its folder's group or everything; what sits below moves down to make room, so folders never interleave.
 export function placeMissing(trees, placeOf, height) {
   const missing = trees.filter(w => !placeOf(w.key));
   if (!missing.length) return {};
@@ -72,7 +72,9 @@ export function placeMissing(trees, placeOf, height) {
     if (prerequisite) p = { x: prerequisite.x + COLUMN, y: prerequisite.y };
     else if (group.length) p = { x: Math.min(...group.map(o => at(o.key).x)), y: below(group) };
     else p = { x: all.length ? Math.min(...all.map(o => at(o.key).x)) : 0, y: all.length ? below(all) + GROUP_GAP : 0 };
-    for (let o = blocker(w.key, p); o; o = blocker(w.key, p)) p = { x: p.x, y: at(o.key).y + row(o.key) };
+    const above = () => placed().find(o => o.key !== w.key && at(o.key).y < p.y && Math.abs(at(o.key).x - p.x) < NODE_W + 20 && p.y < at(o.key).y + row(o.key));
+    for (let o = above(); o; o = above()) p = { x: p.x, y: at(o.key).y + row(o.key) };
+    if (blocker(w.key, p)) for (const o of placed()) if (at(o.key).y >= p.y) places[o.key] = { x: at(o.key).x, y: at(o.key).y + row(w.key) };
     places[w.key] = p;
   }
   return places;
@@ -92,14 +94,18 @@ export function spread(keys, placeOf, height) {
   return moved;
 }
 
-// A box around each folder's chain heads, sized to their measured heights: the folder named in its heading.
+// A box around each folder's checkouts whose prerequisites all sit in its box, sized to their measured heights: the folder named in its heading.
 export function folderBoxes(trees, placeOf, height) {
-  const keys = new Set(trees.map(w => w.key)), groups = new Map();
-  for (const w of trees) {
-    const p = placeOf(w.key);
-    if (!w.folder || w.main || !p || (w.dependsOn || []).some(k => keys.has(k))) continue;
-    groups.set(w.folder, [...(groups.get(w.folder) || []), w.key]);
-  }
+  const byKey = new Map(trees.map(w => [w.key, w])), boxed = new Map(), groups = new Map();
+  const inBox = w => {
+    if (!boxed.has(w.key)) {
+      boxed.set(w.key, false);
+      const deps = (w.dependsOn || []).map(k => byKey.get(k)).filter(Boolean);
+      boxed.set(w.key, !!w.folder && !w.main && !!placeOf(w.key) && deps.every(d => d.folder === w.folder && inBox(d)));
+    }
+    return boxed.get(w.key);
+  };
+  for (const w of trees) if (inBox(w)) groups.set(w.folder, [...(groups.get(w.folder) || []), w.key]);
   return [...groups].map(([folder, members]) => {
     const ps = members.map(k => ({ ...placeOf(k), bottom: placeOf(k).y + height(k) }));
     const x = Math.min(...ps.map(p => p.x)) - BOX_PAD, y = Math.min(...ps.map(p => p.y)) - BOX_PAD - BOX_HEAD;

@@ -120,11 +120,11 @@ def created_commit(repo: str, branch: str) -> Optional[str]:
 
 
 def branch_base(repo: str, branch: str, default: str) -> str:
-    """The branch `branch` was made from, as cmux's sidebar nests it: its `branch.<name>.nestUnder` setting, else the
-    branch its creation record names; `default` when neither names an existing branch. Read only."""
+    """The branch `branch` was made from, as cmux's sidebar nests it: its `branch.<name>.nestUnder` setting (empty for
+    the top level), else the branch its creation record names; `default` when neither names an existing branch. Read only."""
     code, out, _ = run(["git", "-C", repo, "config", "--get", f"branch.{branch}.nestUnder"], timeout=10)
-    if code == 0 and out.strip() and has_ref(repo, f"refs/heads/{out.strip()}"):
-        return out.strip()
+    if code == 0:
+        return out.strip() if out.strip() and has_ref(repo, f"refs/heads/{out.strip()}") else default
     m = CREATED_FROM.search(creation_record(repo, branch))
     name = m[1] if m else ""
     for prefix in ("refs/heads/", "refs/remotes/origin/", "origin/"):

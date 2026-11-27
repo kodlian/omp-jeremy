@@ -1,6 +1,6 @@
 {
   "name": "omp-mission-control",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "description": "Mission Control for omp: every worktree of a project, every omp running in it, and its pull request",

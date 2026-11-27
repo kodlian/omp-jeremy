@@ -41,7 +41,7 @@ export function Panel() {
             ? <DepList list={pre} made={x => view.madeFrom(x.key, w.key)} onRemove={x => actions.setLink(x.key, w.key, false)} />
             : <p className="p-none">Nothing</p>}
         </Section>
-        {after.length ? <Section title="Needed by" count={after.length}><DepList list={after} made={x => view.madeFrom(w.key, x.key)} /></Section> : null}
+        {after.length ? <Section title="Needed by" count={after.length}><DepList list={after} made={x => view.madeFrom(w.key, x.key)} onRemove={x => actions.setLink(w.key, x.key, false)} /></Section> : null}
         <Section title="Tags" action={<AddTag w={w} />}>
           {w.tags?.length
             ? <div className="tags"><TagLabels w={w} onRemove={t => actions.setTags(w, (w.ownTags || []).filter(x => x !== t))} /></div>
@@ -81,7 +81,7 @@ function DepList({ list, made, onRemove }) {
           <ActionList.LeadingVisual><ColumnGlyph id={x.column} /></ActionList.LeadingVisual>
           <span className="mono">{worktreeName(x)}</span>
           <ActionList.Description variant="inline">{made(x) ? "made from its branch" : columnTitle(x.column)}</ActionList.Description>
-          {onRemove && !made(x) ? <ActionList.TrailingAction label={`Stop depending on ${worktreeName(x)}`} icon={XIcon} onClick={() => onRemove(x)} /> : null}
+          {onRemove ? <ActionList.TrailingAction label={`Remove the dependency with ${worktreeName(x)}`} icon={XIcon} onClick={() => onRemove(x)} /> : null}
         </ActionList.Item>
       ))}
     </ActionList>

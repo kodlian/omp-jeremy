@@ -404,15 +404,21 @@ describe("Mission Control's checkouts", () => {
 		expect((await api<State>("GET", "/api/state")).projects[0].positions).toEqual({});
 	}, 60_000);
 
-	test("A worktree made from another checkout's branch depends on it without a drawn link, which can't be removed", async () => {
+	test("A worktree made from another checkout's branch depends on it; removing that link moves it to the top level, as cmux's sidebar does", async () => {
 		const id = (await api<State>("GET", "/api/state")).projects[0].id;
 		const made = worktree("made", "-b", "made");
 		run(["git", "-C", repo, "config", "branch.made.nestUnder", "work"]);
 		expect(await checkout(made, (w) => w.base === "work")).toMatchObject({ dependsOn: ["work"] });
 		expect((await api<State>("GET", "/api/state")).projects[0].links).toContainEqual({ from: "work", to: "made", madeFrom: true });
 		const link = (from: string, to: string, linked: boolean) => call("PATCH", "/api/projects/links", { id, from, to, linked });
-		expect((await link("work", "made", false)).status).toBe(409);
 		expect(await link("made", "work", true)).toMatchObject({ status: 400, data: { error: "made already depends on work" } });
+		expect((await link("work", "made", false)).status).toBe(200);
+		expect(run(["git", "-C", repo, "config", "--get", "branch.made.nestUnder"])).toBe("");
+		const state = await api<State>("GET", "/api/state");
+		expect(state.projects[0].links.some((x) => x.to === "made")).toBe(false);
+		expect(state.worktrees.find((w) => w.key === "made")).toMatchObject({ base: "main", dependsOn: [] });
+		run(["git", "-C", repo, "config", "branch.made.nestUnder", "work"]);
+		expect(await checkout(made, (w) => w.base === "work")).toMatchObject({ dependsOn: ["work"] });
 	}, 60_000);
 
 	test("When a branch lands, the worktrees made from it move onto its base", async () => {

@@ -10,7 +10,7 @@
       "name": "mission-control",
       "description": "Mission Control: every worktree of a project on a board and a dependency canvas, every omp running in it, and its pull request",
       "source": "./plugins/mission-control",
-      "version": "0.3.0"
+      "version": "0.3.1"
     },
     {
       "name": "git-diff-review",

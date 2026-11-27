@@ -847,7 +847,7 @@ textarea.mono {
   padding: var(--base-size-8) var(--base-size-12);
   border: 1px solid var(--borderColor-default);
   border-radius: var(--borderRadius-medium);
-  background: var(--card-bgColor);
+  background: var(--bgColor-default);
   box-shadow: var(--shadow-resting-small);
   transition: border-color 80ms, opacity 80ms;
 }

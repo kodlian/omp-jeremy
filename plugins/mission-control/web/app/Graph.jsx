@@ -90,7 +90,7 @@ export function Graph({ trees: matching, filtered }) {
 
   const visible = new Set(trees.map(w => w.key));
   const links = view.links.filter(l => visible.has(l.from) && visible.has(l.to) && placeOf(l.from) && placeOf(l.to));
-  const selectedLink = links.find(l => edgeKey(l) === selected && !l.madeFrom);
+  const selectedLink = links.find(l => edgeKey(l) === selected);
   const remove = l => { setSelected(null); actions.setLink(l.from, l.to, false); };
 
   useEffect(() => {
@@ -206,10 +206,8 @@ export function Graph({ trees: matching, filtered }) {
               <g key={key} className="graph-edge" data-complete={from.column === "done" || undefined} data-active={(from.agents || []).some(isBusy) || undefined}
                 data-selected={key === selected || undefined} data-path={edgePath(l)} data-made={l.madeFrom || undefined}>
                 <path className="edge-line" d={d} ref={el => { if (el) el.style.strokeDasharray = started ? halfDash(el.getTotalLength()) : ""; }} />
-                {l.madeFrom ? null : (
-                  <path className="edge-hit" d={d} role="button" tabIndex={0} aria-label={`${worktreeName(view.byKey.get(l.to))} depends on ${worktreeName(from)}`}
-                    onClick={() => setSelected(key)} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelected(key); } }} />
-                )}
+                <path className="edge-hit" d={d} role="button" tabIndex={0} aria-label={`${worktreeName(view.byKey.get(l.to))} depends on ${worktreeName(from)}`}
+                  onClick={() => setSelected(key)} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelected(key); } }} />
               </g>
             );
           })}

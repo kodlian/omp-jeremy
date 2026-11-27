@@ -252,11 +252,10 @@ function MoreMenu({ w, variant = "invisible" }) {
               </ActionMenu.Anchor>
               <ActionMenu.Overlay width="medium">
                 <ActionList selectionVariant="multiple" aria-label={`${worktreeName(w)} depends on`}>
-                  {others.length ? others.map(x => view.madeFrom(x.key, w.key)
-                    ? <ActionList.Item key={x.key} selected disabled>{worktreeName(x)}<ActionList.Description variant="inline">made from</ActionList.Description></ActionList.Item>
-                    : <ActionList.Item key={x.key} selected={linked.has(x.key)} onSelect={() => actions.setLink(x.key, w.key, !linked.has(x.key))}>
-                        {worktreeName(x)}<ActionList.Description variant="inline">{columnTitle(x.column)}</ActionList.Description>
-                      </ActionList.Item>)
+                  {others.length ? others.map(x => (
+                    <ActionList.Item key={x.key} selected={linked.has(x.key)} onSelect={() => actions.setLink(x.key, w.key, !linked.has(x.key))}>
+                      {worktreeName(x)}<ActionList.Description variant="inline">{view.madeFrom(x.key, w.key) ? "made from" : columnTitle(x.column)}</ActionList.Description>
+                    </ActionList.Item>))
                     : <ActionList.Item disabled>The project has no other checkout</ActionList.Item>}
                 </ActionList>
               </ActionMenu.Overlay>

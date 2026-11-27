@@ -495,7 +495,8 @@ def set_project_tag_rules(body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def set_project_link(body: Dict[str, Any]) -> Dict[str, Any]:
-    """Makes checkout `to` depend on checkout `from` (both by key), or drops that link; refuses a cycle."""
+    """Makes checkout `to` depend on checkout `from` (both by key), or drops that link; refuses a cycle. Dropping a link
+    git records (`madeFrom`) moves `to` to the top level through its `nestUnder` setting, as cmux's sidebar does."""
     source, target, linked = body.get("from"), body.get("to"), body.get("linked")
     if not isinstance(source, str) or not isinstance(target, str) or not source or not target or not isinstance(linked, bool):
         raise ApiError(400, "A link needs from, to and linked: true or false")
@@ -504,12 +505,13 @@ def set_project_link(body: Dict[str, Any]) -> Dict[str, Any]:
     with store.lock:
         listed = listed_project(body.get("id"))
         project = remember_project(listed["repo"])
-        current = project_links(project, [w for w in store.worktrees if w["project"] == listed["id"]])
-        if any(x["madeFrom"] and (x["from"], x["to"]) == (source, target) for x in current) and not linked:
-            raise ApiError(409, f"{target} is made from {source}'s branch: that link comes from git")
+        trees = [w for w in store.worktrees if w["project"] == listed["id"]]
+        current = project_links(project, trees)
+        made = any(x["madeFrom"] and (x["from"], x["to"]) == (source, target) for x in current)
+        unnest = next((w for w in trees if w["key"] == target), None) if made and not linked else None
         links = [x for x in project["links"] if (x["from"], x["to"]) != (source, target)]
         if linked:
-            keys = {w["key"] for w in store.worktrees if w["project"] == listed["id"]}
+            keys = {w["key"] for w in trees}
             missing = next((k for k in (source, target) if k not in keys), None)
             if missing:
                 raise ApiError(400, f"{listed['name']} has no checkout {missing}")
@@ -518,9 +520,16 @@ def set_project_link(body: Dict[str, Any]) -> Dict[str, Any]:
             links.append({"from": source, "to": target})
         project["links"] = links
         store.save_board()
+    if unnest:
+        run(["git", "-C", unnest["repo"], "config", f"branch.{unnest['branch']}.nestUnder", ""], timeout=10)
+    with store.lock:
+        if unnest:
+            unnest["base"] = repo_default_branch(unnest["repo"])
         arrange()
         listed = listed_project(body.get("id"))
     hub.changed()
+    if unnest:
+        poller.kick(full=True)
     return {"ok": True, "project": listed}
 
 
@@ -1173,8 +1182,9 @@ def fetch_prs(repo: str) -> Optional[Dict[str, Dict[str, Any]]]:
 # --- poller ----------------------------------------------------------------------
 
 class Poller:
-    """Keeps every checkout current: the full list with its work and pull request every SCAN_INTERVAL, which omp runs
-    in it at every tick, pull requests every PR_INTERVAL."""
+    """Keeps every checkout current: the full list with its work and pull request every SCAN_INTERVAL or as soon as a
+    project's git config changes (cmux's sidebar nesting a worktree, say), which omp runs in it at every tick, pull
+    requests every PR_INTERVAL."""
 
     def __init__(self) -> None:
         self.wake = threading.Event()
@@ -1182,6 +1192,7 @@ class Poller:
         self.last_scan = 0.0
         self.last_pr = 0.0
         self.prs: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self.configs: Dict[str, float] = {}
 
     def kick(self, full: bool = False) -> None:
         self.forced = self.forced or full
@@ -1203,13 +1214,26 @@ class Poller:
         fetch = bool(which("gh")) and (forced or now - self.last_pr >= PR_INTERVAL)
         if fetch:
             self.last_pr = now
-        if fetch or forced or now - self.last_scan >= SCAN_INTERVAL:
+        if self.configs_changed() or fetch or forced or now - self.last_scan >= SCAN_INTERVAL:
             self.last_scan = now
             changed = self.scan(fetch)
         else:
             changed = self.check_agents()
         if changed:
             hub.changed()
+
+    def configs_changed(self) -> bool:
+        """Whether any project's git config changed since the last call."""
+        with store.lock:
+            repos = [p["repo"] for p in store.projects]
+        seen: Dict[str, float] = {}
+        for repo in repos:
+            try:
+                seen[repo] = os.stat(Path(repo) / ".git" / "config").st_mtime
+            except OSError:
+                pass
+        changed, self.configs = seen != self.configs, seen
+        return changed
 
     def scan(self, fetch: bool) -> bool:
         """Every checkout of every registered project, its main checkout first, then its linked worktrees, read side by
