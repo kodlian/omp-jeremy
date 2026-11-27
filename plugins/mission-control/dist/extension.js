@@ -48,7 +48,7 @@ var toolReply = (text, isError = false) => ({ content: [{ type: "text", text }],
 var fonts = new Map;
 
 // packages/integrations/src/theme.ts
-var THEME_EXPORTS = ["getCurrentThemeName", "getResolvedThemeColors", "getThemeExportColors", "isLightTheme", "getThemeEpoch"];
+var THEME_EXPORTS = ["getCurrentThemeName", "getResolvedThemeColors", "getThemeExportColors", "isLightTheme", "onThemeChange"];
 function hasThemeApi(module) {
   return THEME_EXPORTS.every((name) => typeof module[name] === "function");
 }
@@ -86,7 +86,9 @@ var HEARTBEAT_MS = 20000;
 var HOLD_POLL_MS = 1e4;
 var FOLLOW_POLL_MS = 5000;
 var HOLD_ENTRY = "mission-control.hold";
+var HOLD_WIDGET = "mission-control.hold";
 var FOLLOW_ENTRY = "mission-control.follow";
+var MAX_SUBAGENTS = 6;
 
 class BoardError extends Error {
   status;
@@ -146,15 +148,25 @@ async function refreshBoard(running) {
   if (Math.floor(mtime) <= Math.floor(running.codeMtime))
     return;
   await exclusive(async () => {
-    await api("POST", "/api/restart", {}, false).catch(() => {
+    const restarting = await api("POST", "/api/restart", {}, false).then(() => true, () => false);
+    if (!restarting) {
       try {
         process.kill(running.pid, "SIGTERM");
       } catch {}
-    });
+    }
     const deadline = Date.now() + 60000;
-    while (Date.now() < deadline && await health())
+    let now = await health();
+    while (Date.now() < deadline && now?.started === running.started) {
       await Bun.sleep(100);
-    await launch();
+      now = await health();
+    }
+    const grace = Date.now() + (restarting ? 5000 : 0);
+    while (!now && Date.now() < grace) {
+      await Bun.sleep(100);
+      now = await health();
+    }
+    if (!now)
+      await launch();
   });
 }
 async function ensureBoard() {
@@ -264,7 +276,7 @@ function callerTerminal() {
   return terminal;
 }
 var plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
-var COLUMNS = { planning: "Planning", waiting: "Waiting", doing: "In Progress", review: "Review", pr: "Pull Request", idle: "Idle", done: "Done" };
+var COLUMNS = { planning: "Planning", waiting: "Waiting", doing: "In Progress", uncommitted: "Uncommitted", paused: "Paused", pr: "Pull Request", idle: "Idle", done: "Done" };
 var columnName = (column) => COLUMNS[column] ?? column;
 var named = (w) => w.folder ? `${w.title} (${w.folder})` : w.title;
 var isStrings = (value) => Array.isArray(value) && value.every((v) => typeof v === "string");
@@ -354,6 +366,8 @@ function checkoutLine(board, w) {
         bits.push(a.step);
       if (a.todo)
         bits.push(`to-do ${a.todo.done}/${a.todo.total}`);
+      if (a.subagents.length)
+        bits.push(plural(a.subagents.length, "subagent"));
       if (a.waitingFor.length)
         bits.push(`holds its plan for ${a.waitingFor.join(", ")}`);
       return bits.join(", ");
@@ -444,15 +458,16 @@ function missionControl(pi) {
   let said = null;
   let question = null;
   let lastMessage = null;
+  const subagents = new Map;
   let reportedDetail = "";
-  const detailKey = () => JSON.stringify([runStart, todo, said, question, hold?.keys]);
+  const detailKey = () => JSON.stringify([runStart, todo, said, question, hold?.keys, [...subagents.values()]]);
   let stepTimer;
   let resendTimer;
   let retryAt = 0;
   let sentAt = 0;
   let reports = Promise.resolve();
-  let themeEpoch = null;
-  let themeTimer;
+  let themeVersion = 0;
+  let themeOff;
   let sessionCtx = null;
   let lastBoard = null;
   let boardAt = 0;
@@ -463,23 +478,22 @@ function missionControl(pi) {
   let followed = [];
   const seen = new Map;
   let followTimer;
+  let holdLine = null;
   const syncTheme = () => {
     if (!themeApi || !projectId)
       return;
-    const epoch = omp.getThemeEpoch();
-    if (epoch === themeEpoch)
-      return;
-    themeEpoch = epoch;
+    const mine = ++themeVersion;
     const project = projectId;
-    themeAppearance().then((look) => themeEpoch === epoch ? api("POST", "/api/appearance", { project, ...look }, false) : undefined).catch(() => {});
+    themeAppearance().then((look) => themeVersion === mine ? api("POST", "/api/appearance", { project, ...look }, false) : undefined).catch(() => {});
   };
   const clearTimers = () => {
     clearTimeout(stepTimer);
     clearTimeout(resendTimer);
-    clearInterval(themeTimer);
+    themeOff?.();
+    themeOff = undefined;
     clearInterval(holdTimer);
     clearInterval(followTimer);
-    stepTimer = resendTimer = themeTimer = holdTimer = followTimer = undefined;
+    stepTimer = resendTimer = holdTimer = followTimer = undefined;
   };
   const send = () => {
     clearTimeout(stepTimer);
@@ -501,6 +515,7 @@ function missionControl(pi) {
       startedAt: runStart || null,
       todo,
       said,
+      subagents: [...subagents.values()],
       question,
       waitingFor: state === "waiting" && hold ? hold.keys : []
     };
@@ -570,10 +585,23 @@ function missionControl(pi) {
       followTimer = undefined;
     }
   };
-  const setHold = (next) => {
+  const showHold = (board = lastBoard) => {
+    const ctx = sessionCtx;
+    if (!ctx)
+      return;
+    const own = hold && board ? checkoutAt(board, ctx.cwd) : undefined;
+    const names = hold ? board && own ? titlesOf(board, own.project, hold.keys) : hold.keys : [];
+    const line = hold ? `\u23F8 Approved plan on hold: waiting for ${names.join(", ")} to be Done \xB7 it starts on its own once they land` : undefined;
+    if (line === holdLine)
+      return;
+    holdLine = line;
+    ctx.ui.setWidget(HOLD_WIDGET, line ? [line] : undefined);
+  };
+  const setHold = (next, board = lastBoard) => {
     hold = next;
     pi.appendEntry(HOLD_ENTRY, { hold: next });
     syncPolls();
+    showHold(board);
   };
   const stopHeld = (ctx) => {
     stopRun = false;
@@ -588,8 +616,8 @@ function missionControl(pi) {
       return;
     const titles = titlesOf(board, own.project, keys);
     carryHold = true;
-    setHold({ keys, titles });
-    ctx.ui.notify(`Plan approved \xB7 waiting for ${titles.join(", ")}`, "info");
+    setHold({ keys, titles }, board);
+    ctx.ui.notify(`Plan approved \xB7 on hold until ${titles.join(", ")} ${titles.length > 1 ? "are" : "is"} Done`, "info");
     const live = sessionCtx ?? ctx;
     if (live.isIdle()) {
       stopRun = true;
@@ -608,7 +636,7 @@ function missionControl(pi) {
     if (open.length === hold.keys.length)
       return;
     if (open.length) {
-      setHold({ keys: open, titles: hold.titles });
+      setHold({ keys: open, titles: hold.titles }, board);
       if (current === "waiting")
         report(ctx, "waiting");
       return;
@@ -662,8 +690,10 @@ ${f.key}`;
       if (now.column !== before.column) {
         if (now.column === "waiting")
           ctx.ui.notify(`${n} is waiting for ${titlesOf(board, w.project, w.waitingFor).join(", ")}`, "info");
-        else if (now.column === "review")
-          ctx.ui.notify(`${n} is in review: ready for a pull request`, "info");
+        else if (now.column === "uncommitted")
+          ctx.ui.notify(`${n} has uncommitted changes and nothing at work`, "info");
+        else if (now.column === "paused")
+          ctx.ui.notify(`${n} paused: it has commits and no pull request yet`, "info");
         else if (now.column === "done")
           ctx.ui.notify(w.pr?.state === "merged" ? `${n}: PR #${w.pr.number} merged` : `${n} is done: it landed`, "info");
       }
@@ -784,6 +814,42 @@ This session is told when it moves along.`;
     if (event.choice && PLAN_APPROVALS[event.choice])
       holdApproved(ctx).catch(() => {});
   });
+  const reportSubagents = () => {
+    if (sessionCtx && current)
+      report(sessionCtx, current, currentStep);
+  };
+  pi.events.on("task:subagent:progress", (data) => {
+    if (!sessionCtx)
+      return;
+    const progress = field(data, "progress");
+    const id = field(progress, "id");
+    if (typeof id !== "string")
+      return;
+    const status = field(progress, "status");
+    if (status !== "running" && status !== "pending") {
+      if (subagents.delete(id))
+        reportSubagents();
+      return;
+    }
+    if (!subagents.has(id) && subagents.size >= MAX_SUBAGENTS)
+      return;
+    const name = [field(progress, "description"), field(progress, "agent"), field(data, "agent")].find((v) => typeof v === "string" && v.trim());
+    const intent = field(progress, "lastIntent"), tool = field(progress, "currentTool");
+    const sub = {
+      name: oneLine(typeof name === "string" ? name : "subagent", 60),
+      step: typeof intent === "string" && intent.trim() ? oneLine(intent, 200) : typeof tool === "string" && tool ? `Running ${tool}` : null
+    };
+    const was = subagents.get(id);
+    if (was?.name === sub.name && was.step === sub.step)
+      return;
+    subagents.set(id, sub);
+    reportSubagents();
+  });
+  pi.events.on("task:subagent:lifecycle", (data) => {
+    const id = field(data, "id");
+    if (sessionCtx && typeof id === "string" && field(data, "status") !== "started" && subagents.delete(id))
+      reportSubagents();
+  });
   const restore = (_event, ctx) => {
     if (ctx.agent?.kind === "sub")
       return;
@@ -809,11 +875,19 @@ This session is told when it moves along.`;
     followed = savedFollowed;
     seen.clear();
     syncPolls();
+    holdLine = null;
+    showHold();
+    subagents.clear();
     reported = "";
     retryAt = 0;
     const busy = ["planning", "thinking", "working", "needs_input"].includes(current);
     report(ctx, busy ? current : resting(), currentStep);
-    readBoard(false).then(() => hold ? checkHold() : undefined, () => {});
+    readBoard(false).then((board) => {
+      if (!hold)
+        return;
+      showHold(board);
+      return checkHold();
+    }, () => {});
   };
   pi.on("session_start", restore);
   pi.on("session_switch", restore);
@@ -839,10 +913,9 @@ This session is told when it moves along.`;
         await ensureBoard();
         const { project } = await api("POST", "/api/projects", { path: ctx.cwd });
         projectId = project.id;
-        themeEpoch = null;
         syncTheme();
         if (themeApi)
-          themeTimer ??= setInterval(syncTheme, 1000);
+          themeOff ??= omp.onThemeChange(syncTheme);
         await openBoard(`${BASE}/?project=${encodeURIComponent(project.id)}`, { focus: true, python: PYTHON, overrideEnvs: TERMINAL_OVERRIDES });
         ctx.ui.notify(`Mission Control on ${project.name} (${project.defaultBranch})`, "info");
       } catch (e) {
@@ -920,7 +993,7 @@ This session is told when it moves along.`;
   pi.registerTool({
     name: "mission_control_checkouts",
     label: "Mission Control checkouts",
-    description: "Read-only: list the checkouts Mission Control shows for this project (all: every registered project). For each, its title (folder), branch (or detached commit, or the main checkout), path, column (Planning, Waiting, In Progress, Review, Pull Request, Idle, Done), what it depends on and what needs it with their columns, what it waits for, diff, commits and uncommitted files, pull request with checks, review and unresolved comments, tags, and every omp running there (title, state, step, to-do progress), else its latest asleep session.",
+    description: "Read-only: list the checkouts Mission Control shows for this project (all: every registered project). For each, its title (folder), branch (or detached commit, or the main checkout), path, column (Idle, Planning, Waiting, In Progress, Uncommitted, Paused, Pull Request, Done), what it depends on and what needs it with their columns, what it waits for, diff, commits and uncommitted files, pull request with checks, review and unresolved comments, tags, and every omp running there (title, state, step, to-do progress), else its latest asleep session.",
     parameters: z.object({ all: z.boolean().optional() }),
     approval: "read",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -953,7 +1026,7 @@ This session is told when it moves along.`;
   pi.registerTool({
     name: "mission_control_task",
     label: "Mission Control task",
-    description: "Start separate work in a new worktree whose omp plans prompt for the user to review. It branches from this checkout's branch; after: true stacks it on this checkout instead (branched from it and waiting for it to land). branch names it (default feature/<slug of the prompt>). Replies with its branch, path and whether its terminal opened (else the command to run); this session is then told when its plan is ready, it needs input, waits, is ready for a pull request, its PR fails checks or gets changes requested, and when it's done.",
+    description: "Start separate work in a new worktree whose omp plans prompt for the user to review. It branches from this checkout's branch; after: true stacks it on this checkout instead (branched from it and waiting for it to land). branch names it (default feature/<slug of the prompt>). Replies with its branch, path and whether its terminal opened (else the command to run); this session is then told when its plan is ready, it needs input, waits, pauses with commits and no pull request, its PR fails checks or gets changes requested, and when it's done.",
     parameters: z.object({ prompt: z.string(), branch: z.string().optional(), after: z.boolean().optional() }),
     approval: "write",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

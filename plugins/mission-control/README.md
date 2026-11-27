@@ -56,7 +56,7 @@ Every card, in every view, has the same buttons, in this order:
 
 - **Branch:** given, else `feature/<the prompt's first words>` (`-2`, `-3`… when taken). It is created from the default branch, or from **After**'s branch, after fetching `origin`.
 - **After** another checkout: the new branch is made from that checkout's branch (recorded as `branch.<name>.nestUnder`, so the cmux kit nests it there), and the new worktree depends on it.
-- **Prompt:** its omp starts in plan mode on it, told which branch it works on and what it builds on. Approve the plan in that omp; if what it depends on hasn't landed yet, the omp holds the plan (the card shows **Waiting**), and once it has landed the omp tells its agent to rebase and implement the approved plan. Without a prompt, your usual agent starts.
+- **Prompt:** its omp starts in plan mode on it, told which branch it works on and what it builds on. Approve the plan in that omp; if what it depends on hasn't landed yet, the omp holds the plan (the card shows **Waiting**, and a line above the omp's editor names what it waits for until it lands), and once it has landed the omp tells its agent to rebase and implement the approved plan. Without a prompt, your usual agent starts.
 - It is checked out through the `createWorktree` hook when you have one (the cmux kit's `wt` opens its own workspace running the agent), else in `~/.mission-control/worktrees/<repo>/<branch>` with the project's setup script, and, with a prompt, a new terminal there.
 
 When a branch lands, the worktrees made from it move onto its base, where its work went.

@@ -24,6 +24,7 @@ const HEARTBEAT_MS = 20_000;
 const HOLD_POLL_MS = 10_000;
 const FOLLOW_POLL_MS = 5_000;
 const HOLD_ENTRY = "mission-control.hold";
+const HOLD_WIDGET = "mission-control.hold";
 const FOLLOW_ENTRY = "mission-control.follow";
 // How many running subagents a report carries.
 const MAX_SUBAGENTS = 6;
@@ -558,6 +559,8 @@ export default function missionControl(pi: ExtensionAPI) {
 	let followed: Followed[] = [];
 	const seen = new Map<string, { column: string; states: string[]; checks: string | null; review: string | null }>();
 	let followTimer: Timer | undefined;
+	// The hold line last drawn; null when this session's UI hasn't been drawn yet.
+	let holdLine: string | null | undefined = null;
 
 	/** Gives the board this session's omp theme for its project. */
 	const syncTheme = () => {
@@ -679,10 +682,23 @@ export default function missionControl(pi: ExtensionAPI) {
 		}
 	};
 
-	const setHold = (next: Hold | null) => {
+	/** Shows above the editor why the approved plan isn't running while it is held, naming what it still waits for. */
+	const showHold = (board: Board | null = lastBoard) => {
+		const ctx = sessionCtx;
+		if (!ctx) return;
+		const own = hold && board ? checkoutAt(board, ctx.cwd) : undefined;
+		const names = hold ? (board && own ? titlesOf(board, own.project, hold.keys) : hold.keys) : [];
+		const line = hold ? `⏸ Approved plan on hold: waiting for ${names.join(", ")} to be Done · it starts on its own once they land` : undefined;
+		if (line === holdLine) return;
+		holdLine = line;
+		ctx.ui.setWidget(HOLD_WIDGET, line ? [line] : undefined);
+	};
+
+	const setHold = (next: Hold | null, board: Board | null = lastBoard) => {
 		hold = next;
 		pi.appendEntry(HOLD_ENTRY, { hold: next });
 		syncPolls();
+		showHold(board);
 	};
 
 	/** Stops the run an approved plan starts while it is held. */
@@ -700,8 +716,8 @@ export default function missionControl(pi: ExtensionAPI) {
 		if (!own || !keys.length) return;
 		const titles = titlesOf(board, own.project, keys);
 		carryHold = true;
-		setHold({ keys, titles });
-		ctx.ui.notify(`Plan approved · waiting for ${titles.join(", ")}`, "info");
+		setHold({ keys, titles }, board);
+		ctx.ui.notify(`Plan approved · on hold until ${titles.join(", ")} ${titles.length > 1 ? "are" : "is"} Done`, "info");
 		const live = sessionCtx ?? ctx;
 		if (live.isIdle()) {
 			stopRun = true;
@@ -720,7 +736,7 @@ export default function missionControl(pi: ExtensionAPI) {
 		const open = openPrerequisites(board, own, hold.keys);
 		if (open.length === hold.keys.length) return;
 		if (open.length) {
-			setHold({ keys: open, titles: hold.titles });
+			setHold({ keys: open, titles: hold.titles }, board);
 			if (current === "waiting") void report(ctx, "waiting");
 			return;
 		}
@@ -923,13 +939,19 @@ export default function missionControl(pi: ExtensionAPI) {
 		followed = savedFollowed;
 		seen.clear();
 		syncPolls();
+		holdLine = null;
+		showHold();
 		subagents.clear();
 		reported = "";
 		retryAt = 0;
 		const busy = ["planning", "thinking", "working", "needs_input"].includes(current);
 		void report(ctx, busy ? current : resting(), currentStep);
 		void readBoard(false).then(
-			() => (hold ? checkHold() : undefined),
+			(board) => {
+				if (!hold) return;
+				showHold(board);
+				return checkHold();
+			},
 			() => {},
 		);
 	};
